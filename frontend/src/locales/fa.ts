@@ -50,6 +50,8 @@
   pages: {
     login: "ورود",
     quickAddNode: "افزودن سریع گره",
+    quickAddCount: "تعداد گره",
+    quickAddCountHint: "۱ تا ۵۰ گره با برچسب و پورت یکتا ایجاد کنید.",
     selectProtocol: "انتخاب پروتکل",
     home: "خانه",
     inbounds: "ورودی‌ها",
@@ -499,6 +501,9 @@
     pools: "استخرهای رله",
     name: "نام استخر",
     publicHost: "آدرس عمومی",
+    addressMode: "حالت آدرس خروجی",
+    ipv6Only: "فقط IPv6 (پیشنهادی)",
+    preferIPv6: "اولویت IPv6 (دوگانه)",
     portStart: "پورت شروع",
     count: "تعداد",
     usernamePrefix: "پیشوند نام کاربری",

@@ -41,7 +41,9 @@
             </v-btn>
           </v-col>
         </v-row>
-        <v-card style="background-color: background" dir="ltr" v-html="lines.join('<br />')"></v-card>
+        <v-card class="logs-output" dir="ltr">
+          <div v-for="(line, index) in lines" :key="index" class="logs-output__line">{{ line }}</div>
+        </v-card>
       </v-card-text>
     </v-card>
   </v-dialog>
@@ -88,3 +90,25 @@ export default {
   },
 }
 </script>
+
+<style scoped>
+.logs-output {
+  max-height: min(56vh, 520px);
+  overflow: auto !important;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.logs-output__line {
+  min-height: 1.5em;
+}
+
+@media (max-width: 600px) {
+  .logs-output {
+    max-height: 48vh;
+    font-size: 13px;
+  }
+}
+</style>

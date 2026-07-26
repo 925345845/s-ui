@@ -49,6 +49,7 @@
           </v-col>
         </v-row>
         <v-data-table
+          class="changes-table"
           :headers="changesHeaders"
           :items="changes"
           item-value="id"
@@ -143,3 +144,13 @@ export default {
   },
 }
 </script>
+
+<style scoped>
+.changes-table :deep(.v-table__wrapper) {
+  overflow-x: auto;
+}
+
+.changes-table :deep(table) {
+  min-width: 620px;
+}
+</style>

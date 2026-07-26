@@ -50,6 +50,8 @@
   pages: {
     login: "Đăng nhập",
     quickAddNode: "Thêm nhanh node",
+    quickAddCount: "Số lượng node",
+    quickAddCountHint: "Tạo 1-50 node với thẻ và cổng duy nhất.",
     selectProtocol: "Chọn giao thức",
     home: "Trang chủ",
     inbounds: "Đầu Vào",
@@ -499,6 +501,9 @@
     pools: "Nhóm chuyển tiếp",
     name: "Tên nhóm",
     publicHost: "Địa chỉ công khai",
+    addressMode: "Chế độ địa chỉ",
+    ipv6Only: "Chỉ IPv6 (khuyến nghị)",
+    preferIPv6: "Ưu tiên IPv6 (dual stack)",
     portStart: "Cổng bắt đầu",
     count: "Số lượng",
     usernamePrefix: "Tiền tố tên người dùng",

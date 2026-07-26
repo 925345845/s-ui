@@ -94,6 +94,30 @@ func TestRelaySOCKSURIFormatsIPv6(t *testing.T) {
 	}
 }
 
+func TestRelaySOCKSExportUsesBrowserFormat(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		host string
+		ipv6 string
+		port int
+		user string
+		pass string
+		want string
+	}{
+		{name: "ipv4", mode: relayModeUpstream, host: "88.214.24.57", port: 1020, user: "proxy_xbhwi8qipf", pass: "ohNuE5VXWeta6jb@xn", want: "88.214.24.57:1020:proxy_xbhwi8qipf:ohNuE5VXWeta6jb@xn"},
+		{name: "ipv6", mode: relayModeIPv6, host: "88.214.24.57", ipv6: "2001:db8::10", port: 1021, user: "user", pass: "pass", want: "[2001:db8::10]:1021:user:pass"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := relaySOCKSExport(test.mode, test.host, test.ipv6, test.port, test.user, test.pass)
+			if got != test.want {
+				t.Fatalf("export = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestRelayProtocolConfigCreatesIndependentCredentials(t *testing.T) {
 	tests := []struct {
 		protocol string
@@ -185,6 +209,103 @@ func TestApplyRelayAutoAddIPv6Preset(t *testing.T) {
 	}
 }
 
+func TestNormalizeRelayDomainStrategy(t *testing.T) {
+	tests := []struct {
+		name  string
+		mode  string
+		value string
+		want  string
+		valid bool
+	}{
+		{name: "IPv6 default", mode: relayModeIPv6, want: relayDomainStrategyIPv6Only, valid: true},
+		{name: "IPv6 only", mode: relayModeIPv6, value: relayDomainStrategyIPv6Only, want: relayDomainStrategyIPv6Only, valid: true},
+		{name: "dual stack", mode: relayModeIPv6, value: relayDomainStrategyPreferIPv6, want: relayDomainStrategyPreferIPv6, valid: true},
+		{name: "upstream ignores strategy", mode: relayModeUpstream, value: relayDomainStrategyIPv6Only, valid: true},
+		{name: "invalid", mode: relayModeIPv6, value: "prefer_ipv4"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := normalizeRelayDomainStrategy(test.mode, test.value)
+			if test.valid {
+				if err != nil || got != test.want {
+					t.Fatalf("strategy = %q, err=%v; want %q", got, err, test.want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected strategy %q to be rejected", test.value)
+			}
+		})
+	}
+}
+
+func TestRelayDirectOutboundOptionsForceIPv6(t *testing.T) {
+	item := model.RelayItem{IPv6: "2001:db8::10"}
+	options := relayDirectOutboundOptions(RelayCreateRequest{Mode: relayModeIPv6, DomainStrategy: relayDomainStrategyIPv6Only}, item)
+	if options["inet6_bind_address"] != item.IPv6 || options["domain_strategy"] != relayDomainStrategyIPv6Only {
+		t.Fatalf("unexpected IPv6 direct options: %#v", options)
+	}
+}
+
+func TestRepairRelayIPv6OutboundStrategies(t *testing.T) {
+	dbDir := t.TempDir()
+	t.Setenv("SUI_DB_FOLDER", dbDir)
+	if err := database.InitDB(filepath.Join(dbDir, "relay-strategy.db")); err != nil {
+		t.Fatal(err)
+	}
+	db := database.GetDB()
+	if _, err := (&SettingService{}).GetAllSetting(); err != nil {
+		t.Fatal(err)
+	}
+	outbound := model.Outbound{Type: "direct", Tag: "relay-out-old", Options: mustJSON(map[string]interface{}{"inet6_bind_address": "2001:db8::10"})}
+	if err := db.Create(&outbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	items := []model.RelayItem{{IPv6: "2001:db8::10", InboundTag: "relay-in-old", OutboundTag: outbound.Tag}}
+	pool := model.RelayPool{Name: "old-ipv6-pool", Mode: relayModeIPv6, Items: mustJSON(items)}
+	if err := db.Create(&pool).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := (&ConfigService{}).repairRelayIPv6OutboundStrategies(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&pool, pool.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if pool.DomainStrategy != relayDomainStrategyIPv6Only {
+		t.Fatalf("pool strategy = %q", pool.DomainStrategy)
+	}
+	if err := db.First(&outbound, outbound.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	var options map[string]interface{}
+	if err := json.Unmarshal(outbound.Options, &options); err != nil {
+		t.Fatal(err)
+	}
+	if options["domain_strategy"] != relayDomainStrategyIPv6Only || options["inet6_bind_address"] != "2001:db8::10" {
+		t.Fatalf("repaired options = %#v", options)
+	}
+	if err := (&ConfigService{}).repairRelayIPv6OutboundStrategies(); err != nil {
+		t.Fatal(err)
+	}
+	var setting model.Setting
+	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
+		t.Fatal(err)
+	}
+	rules := config["route"].(map[string]interface{})["rules"].([]interface{})
+	if len(rules) != 4 {
+		t.Fatalf("rule count after idempotent repair = %d, want 4", len(rules))
+	}
+	firstRule := rules[0].(map[string]interface{})
+	if firstRule["action"] != "reject" || relayRuleIPVersion(firstRule) != 4 {
+		t.Fatalf("first repaired rule = %#v, want IPv4 reject", firstRule)
+	}
+}
+
 func TestBuildRelayCapabilities(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -241,7 +362,7 @@ func TestUpdateRelayRouteRulesAddsAndRemovesOnlyRelayRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := model.RelayItem{InboundTag: "relay-in", OutboundTag: "relay-out"}
-	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false); err != nil {
+	if err := updateRelayRouteRules(db, []model.RelayItem{item}, true, false); err != nil {
 		t.Fatal(err)
 	}
 	var setting model.Setting
@@ -253,10 +374,43 @@ func TestUpdateRelayRouteRulesAddsAndRemovesOnlyRelayRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	rules := config["route"].(map[string]interface{})["rules"].([]interface{})
-	if len(rules) != 3 {
-		t.Fatalf("rule count = %d, want 3", len(rules))
+	if len(rules) != 4 {
+		t.Fatalf("rule count = %d, want 4", len(rules))
 	}
-	if err := updateRelayRouteRules(db, []model.RelayItem{item}, true); err != nil {
+	firstRule := rules[0].(map[string]interface{})
+	if firstRule["action"] != "reject" || relayRuleIPVersion(firstRule) != 4 {
+		t.Fatalf("first rule = %#v, want IPv4 reject", firstRule)
+	}
+	if err := updateRelayRouteRules(db, []model.RelayItem{item}, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
+		t.Fatal(err)
+	}
+	rules = config["route"].(map[string]interface{})["rules"].([]interface{})
+	if len(rules) != 4 {
+		t.Fatalf("rule count after idempotent update = %d, want 4", len(rules))
+	}
+	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
+		t.Fatal(err)
+	}
+	rules = config["route"].(map[string]interface{})["rules"].([]interface{})
+	if len(rules) != 3 {
+		t.Fatalf("dual-stack rule count = %d, want 3", len(rules))
+	}
+	if err := updateRelayRouteRules(db, []model.RelayItem{item}, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {

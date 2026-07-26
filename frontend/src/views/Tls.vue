@@ -87,7 +87,6 @@
 <script lang="ts" setup>
 import TlsVue from '@/layouts/modals/Tls.vue'
 import Data from '@/store/modules/data'
-import GlassCard from '@/components/glass/GlassCard.vue'
 import { computed, ref } from 'vue'
 import { Inbound } from '@/types/inbounds'
 import { tls } from '@/types/tls'

@@ -6,19 +6,20 @@ import "encoding/json"
 // Items intentionally remain JSON because a pool is created and removed as a
 // single unit and the item credentials are needed for browser export.
 type RelayPool struct {
-	Id         uint            `json:"id" gorm:"primaryKey;autoIncrement"`
-	Name       string          `json:"name"`
-	Source     string          `json:"source,omitempty"`
-	Mode       string          `json:"mode"`
-	Protocol   string          `json:"protocol"`
-	CoreType   string          `json:"core_type"`
-	TlsID      uint            `json:"tls_id,omitempty"`
-	Transport  string          `json:"transport,omitempty"`
-	ListenHost string          `json:"listen_host"`
-	PortStart  int             `json:"port_start"`
-	Count      int             `json:"count"`
-	Items      json.RawMessage `json:"items"`
-	CreatedAt  int64           `json:"created_at"`
+	Id             uint            `json:"id" gorm:"primaryKey;autoIncrement"`
+	Name           string          `json:"name"`
+	Source         string          `json:"source,omitempty"`
+	Mode           string          `json:"mode"`
+	Protocol       string          `json:"protocol"`
+	CoreType       string          `json:"core_type"`
+	TlsID          uint            `json:"tls_id,omitempty"`
+	Transport      string          `json:"transport,omitempty"`
+	DomainStrategy string          `json:"domain_strategy,omitempty"`
+	ListenHost     string          `json:"listen_host"`
+	PortStart      int             `json:"port_start"`
+	Count          int             `json:"count"`
+	Items          json.RawMessage `json:"items"`
+	CreatedAt      int64           `json:"created_at"`
 }
 
 type RelayItem struct {

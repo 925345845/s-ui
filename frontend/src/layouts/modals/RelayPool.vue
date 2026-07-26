@@ -23,18 +23,21 @@
                   <a class="relay-source-link" href="https://github.com/help660vip/auto-add-ipv6" target="_blank" rel="noopener noreferrer">help660vip/auto-add-ipv6</a>
                 </div>
               </div>
-              <v-row dense class="mt-2">
-                <v-col cols="12" sm="6" md="3">
+              <v-row class="relay-quick-fields mt-2">
+                <v-col cols="12" sm="6" md="2">
                   <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
                 </v-col>
-                <v-col cols="6" sm="3" md="2">
+                <v-col cols="6" sm="3" md="1">
                   <v-text-field v-model.number="form.count" type="number" min="1" max="1000" :label="$t('relay.count')" hide-details />
                 </v-col>
                 <v-col cols="6" sm="3" md="2">
                   <v-text-field v-model.number="form.port_start" type="number" min="1" max="65535" :label="$t('relay.portStart')" hide-details />
                 </v-col>
-                <v-col cols="12" sm="6" md="3">
+                <v-col cols="12" sm="6" md="2">
                   <v-text-field v-model="form.username_prefix" :label="$t('relay.usernamePrefix')" dir="ltr" hide-details />
+                </v-col>
+                <v-col cols="12" sm="6" md="3">
+                  <v-select v-model="form.domain_strategy" :items="domainStrategyItems" item-title="title" item-value="value" :label="$t('relay.addressMode')" hide-details />
                 </v-col>
                 <v-col cols="12" sm="6" md="2" class="relay-quick-button-col">
                   <v-btn color="primary" block prepend-icon="mdi-access-point-plus" :loading="loading" :disabled="!canQuickCreateIPv6" @click="create('ipv6', true)">{{ $t('relay.autoAddCreate') }}</v-btn>
@@ -49,7 +52,7 @@
               <v-expansion-panel value="advanced">
                 <v-expansion-panel-title>{{ $t('relay.advancedOptions') }}</v-expansion-panel-title>
                 <v-expansion-panel-text>
-                  <v-row dense>
+                  <v-row density="compact">
               <v-col cols="12" sm="6" md="4">
                 <v-text-field v-model="form.name" :label="$t('relay.name')" hide-details />
               </v-col>
@@ -79,6 +82,9 @@
               </v-col>
               <v-col cols="12" sm="6" md="4">
                 <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-select v-model="form.domain_strategy" :items="domainStrategyItems" item-title="title" item-value="value" :label="$t('relay.addressMode')" hide-details />
               </v-col>
               <v-col cols="12">
                 <v-textarea v-model="form.ipv6_text" :label="$t('relay.ipv6List')" :hint="$t('relay.ipv6ListHint')" persistent-hint rows="3" dir="ltr" hide-details="auto" />
@@ -162,7 +168,7 @@
                     <v-chip size="small" :color="pool.mode === 'ipv6' ? 'info' : 'secondary'" variant="tonal">{{ pool.mode }}</v-chip>
                   </v-card-title>
                   <v-card-text>
-                    <div class="relay-pool-meta" dir="ltr">{{ pool.listen_host }} / {{ pool.count }} {{ $t('relay.items') }}</div>
+                    <div class="relay-pool-meta" dir="ltr">{{ poolAddressSummary(pool) }} / {{ pool.count }} {{ $t('relay.items') }}</div>
                     <v-textarea :model-value="exportText(pool)" rows="4" readonly dir="ltr" hide-details />
                   </v-card-text>
                   <v-card-actions>
@@ -197,7 +203,7 @@ import { i18n } from '@/locales'
 
 interface IPv6Item { interface: string; address: string; prefix: number }
 interface RelayItem { listen_port: number; username: string; password: string; ipv6?: string; protocol?: string; export?: string }
-interface RelayPool { id: number; name: string; source?: string; mode: string; protocol?: string; listen_host: string; count: number; items: RelayItem[] }
+interface RelayPool { id: number; name: string; source?: string; mode: string; protocol?: string; domain_strategy?: string; listen_host: string; count: number; items: RelayItem[] }
 interface RelayCapabilities { os: string; can_add_system_ipv6: boolean; unavailable_reason?: string }
 
 const props = defineProps<{ visible: boolean }>()
@@ -214,7 +220,7 @@ const form = reactive({
   name: '', public_host: window.location.hostname, port_start: 30000, count: 10,
   username_prefix: 'relay', password_length: 12, interface: '', base_ipv6: '', prefix: 64,
   ipv6_text: '', upstream_text: '', add_system_addresses: true, protocol: 'socks',
-  transport: 'http', tls_id: 0, shadowsocks_method: '2022-blake3-aes-256-gcm',
+  transport: 'http', tls_id: 0, domain_strategy: 'ipv6_only', shadowsocks_method: '2022-blake3-aes-256-gcm',
 })
 
 const interfaceItems = computed(() => [...new Set(ipv6.value.map((item) => item.interface))].map((value) => ({ title: value, value })))
@@ -241,6 +247,10 @@ const requiresTls = computed(() => ['trojan', 'hysteria2', 'tuic', 'naive', 'any
 const supportsOptionalTls = computed(() => ['vless', 'vmess'].includes(form.protocol))
 const tlsItems = computed(() => (Data().tlsConfigs ?? []).map((tls: any) => ({ title: tls.name, value: tls.id })))
 const optionalTlsItems = computed(() => [{ title: i18n.global.t('disable'), value: 0 }, ...tlsItems.value])
+const domainStrategyItems = computed(() => [
+  { title: i18n.global.t('relay.ipv6Only'), value: 'ipv6_only' },
+  { title: i18n.global.t('relay.preferIPv6'), value: 'prefer_ipv6' },
+])
 const shadowsocksMethods = [
   'aes-128-gcm', 'aes-192-gcm', 'aes-256-gcm', 'chacha20-ietf-poly1305', 'xchacha20-ietf-poly1305',
   '2022-blake3-aes-128-gcm', '2022-blake3-aes-256-gcm', '2022-blake3-chacha20-poly1305',
@@ -266,6 +276,17 @@ const loadData = async () => {
 const parseItems = (items: any): RelayItem[] => {
   if (Array.isArray(items)) return items
   try { return JSON.parse(items || '[]') } catch { return [] }
+}
+
+const poolAddressSummary = (pool: RelayPool) => {
+  if (pool.mode !== 'ipv6') return pool.listen_host
+  const addresses = [...new Set(pool.items.map((item) => item.ipv6).filter(Boolean))]
+  const mode = pool.domain_strategy === 'prefer_ipv6'
+    ? i18n.global.t('relay.preferIPv6')
+    : i18n.global.t('relay.ipv6Only')
+  if (addresses.length === 0) return `${pool.listen_host} / ${mode}`
+  if (addresses.length <= 2) return `${addresses.join(', ')} / ${mode}`
+  return `${addresses[0]}, ${addresses[1]} ... (+${addresses.length - 2} IPv6) / ${mode}`
 }
 
 const create = async (mode: 'ipv6' | 'upstream', quick = false) => {
@@ -360,14 +381,21 @@ watch(() => props.visible, (visible) => { if (visible) loadData() })
 .relay-quick-heading { display: flex; justify-content: center; text-align: center; }
 .relay-source-link { color: rgb(var(--v-theme-primary)); font-size: 12px; text-decoration: none; }
 .relay-source-link:hover { text-decoration: underline; }
+.relay-quick-fields { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(74px, .55fr) minmax(100px, .8fr) minmax(110px, 1fr) minmax(180px, 1.45fr) minmax(120px, 1fr); gap: 12px; margin-inline: 0; }
+.relay-quick-fields > :deep(.v-col) { width: auto; max-width: none; flex: none; padding: 0; }
 .relay-quick-button-col { display: flex; align-items: center; }
 .relay-advanced :deep(.v-expansion-panel) { border-radius: 8px !important; box-shadow: none !important; border: 1px solid rgba(var(--v-theme-on-surface), 0.1); }
 .relay-pool-card :deep(.v-card-title) { gap: 8px; }
 .relay-actions { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
-.relay-pool-meta { opacity: 0.7; margin-bottom: 10px; }
+.relay-pool-meta { opacity: 0.7; margin-bottom: 10px; overflow-wrap: anywhere; }
 .relay-pool-card { height: 100%; }
 
+@media (max-width: 959px) {
+  .relay-quick-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 @media (max-width: 600px) {
+  .relay-quick-fields { grid-template-columns: minmax(0, 1fr); }
   .relay-dialog { max-height: calc(100vh - 20px); }
   .relay-dialog > :deep(.v-card-title) { justify-content: center; padding-inline: 48px !important; }
   .relay-dialog > :deep(.v-card-title .v-btn) { position: absolute; inset-inline-end: 8px; }

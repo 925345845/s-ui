@@ -50,6 +50,8 @@
   pages: {
     login: "Вход",
     quickAddNode: "Быстрое добавление",
+    quickAddCount: "Количество узлов",
+    quickAddCountHint: "Создайте от 1 до 50 узлов с уникальными тегами и портами.",
     selectProtocol: "Выбрать протокол",
     home: "Главная",
     inbounds: "Входящие",
@@ -500,6 +502,9 @@
     pools: "Пулы ретрансляции",
     name: "Имя пула",
     publicHost: "Публичный адрес",
+    addressMode: "Режим адреса",
+    ipv6Only: "Только IPv6 (рекомендуется)",
+    preferIPv6: "Предпочитать IPv6 (двойной стек)",
     portStart: "Начальный порт",
     count: "Количество",
     usernamePrefix: "Префикс имени",

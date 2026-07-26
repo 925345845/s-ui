@@ -27,15 +27,17 @@ import (
 )
 
 const (
-	relayModeIPv6          = "ipv6"
-	relayModeUpstream      = "upstream"
-	relaySourceAutoAddIPv6 = "help660vip/auto-add-ipv6"
-	relayAddressReady      = "ready"
-	relayAddressTentative  = "tentative"
-	relayAddressDADFailed  = "dadfailed"
-	relayAddressMissing    = "missing"
-	maxRelayItems          = 1000
-	relayCoreSingBox       = model.CoreTypeSingBox
+	relayModeIPv6                 = "ipv6"
+	relayModeUpstream             = "upstream"
+	relaySourceAutoAddIPv6        = "help660vip/auto-add-ipv6"
+	relayDomainStrategyIPv6Only   = "ipv6_only"
+	relayDomainStrategyPreferIPv6 = "prefer_ipv6"
+	relayAddressReady             = "ready"
+	relayAddressTentative         = "tentative"
+	relayAddressDADFailed         = "dadfailed"
+	relayAddressMissing           = "missing"
+	maxRelayItems                 = 1000
+	relayCoreSingBox              = model.CoreTypeSingBox
 )
 
 var relayProtocols = map[string]bool{
@@ -94,6 +96,7 @@ type RelayCreateRequest struct {
 	CoreType           string          `json:"core_type"`
 	TlsID              uint            `json:"tls_id"`
 	Transport          string          `json:"transport"`
+	DomainStrategy     string          `json:"domain_strategy"`
 	ShadowsocksMethod  string          `json:"shadowsocks_method"`
 }
 
@@ -158,6 +161,9 @@ func (s *ConfigService) RestoreRelayIPv6() error {
 	if runtime.GOOS != "linux" {
 		return nil
 	}
+	if err := s.repairRelayIPv6OutboundStrategies(); err != nil {
+		return err
+	}
 	pools, err := s.GetRelayPools()
 	if err != nil {
 		return err
@@ -191,6 +197,85 @@ func (s *ConfigService) RestoreRelayIPv6() error {
 	return nil
 }
 
+// repairRelayIPv6OutboundStrategies upgrades relay pools created before the
+// address-family selector existed. It runs before sing-box starts, so the
+// repaired options are included in the first runtime configuration.
+func (s *ConfigService) repairRelayIPv6OutboundStrategies() error {
+	db := database.GetDB()
+	var pools []model.RelayPool
+	if err := db.Where("mode = ?", relayModeIPv6).Find(&pools).Error; err != nil {
+		return err
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		var ipv6OnlyItems, dualStackItems []model.RelayItem
+		for _, pool := range pools {
+			strategy, err := normalizeRelayDomainStrategy(relayModeIPv6, pool.DomainStrategy)
+			if err != nil {
+				return fmt.Errorf("relay pool %q: %w", pool.Name, err)
+			}
+			if pool.DomainStrategy != strategy {
+				if err := tx.Model(&model.RelayPool{}).Where("id = ?", pool.Id).Update("domain_strategy", strategy).Error; err != nil {
+					return err
+				}
+			}
+			var items []model.RelayItem
+			if err := json.Unmarshal(pool.Items, &items); err != nil {
+				return fmt.Errorf("relay pool %q: invalid items: %w", pool.Name, err)
+			}
+			if strategy == relayDomainStrategyIPv6Only {
+				ipv6OnlyItems = append(ipv6OnlyItems, items...)
+			} else {
+				dualStackItems = append(dualStackItems, items...)
+			}
+			for _, item := range items {
+				if item.IPv6 == "" || item.OutboundTag == "" {
+					continue
+				}
+				var outbound model.Outbound
+				if err := tx.Where("tag = ?", item.OutboundTag).First(&outbound).Error; err != nil {
+					if database.IsNotFound(err) {
+						logger.Warningf("relay pool %q outbound %q was not found", pool.Name, item.OutboundTag)
+						continue
+					}
+					return err
+				}
+				if outbound.Type != "direct" {
+					logger.Warningf("relay pool %q outbound %q is %s, leaving it unchanged", pool.Name, item.OutboundTag, outbound.Type)
+					continue
+				}
+				var options map[string]interface{}
+				if len(outbound.Options) > 0 {
+					if err := json.Unmarshal(outbound.Options, &options); err != nil {
+						return err
+					}
+				}
+				if options == nil {
+					options = map[string]interface{}{}
+				}
+				if options["inet6_bind_address"] == item.IPv6 && options["domain_strategy"] == strategy {
+					continue
+				}
+				options["inet6_bind_address"] = item.IPv6
+				options["domain_strategy"] = strategy
+				if err := tx.Model(&model.Outbound{}).Where("id = ?", outbound.Id).Update("options", mustJSON(options)).Error; err != nil {
+					return err
+				}
+			}
+		}
+		if len(dualStackItems) > 0 {
+			if err := updateRelayRouteRules(tx, dualStackItems, false, false); err != nil {
+				return err
+			}
+		}
+		if len(ipv6OnlyItems) > 0 {
+			if err := updateRelayRouteRules(tx, ipv6OnlyItems, true, false); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost string) (*model.RelayPool, error) {
 	relayMu.Lock()
 	defer relayMu.Unlock()
@@ -217,6 +302,11 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 			req.Upstreams[i].Server = strings.Trim(req.Upstreams[i].Server, "[]")
 		}
 		req.Count = len(req.Upstreams)
+	}
+	var strategyErr error
+	req.DomainStrategy, strategyErr = normalizeRelayDomainStrategy(req.Mode, req.DomainStrategy)
+	if strategyErr != nil {
+		return nil, strategyErr
 	}
 	req.Protocol = strings.ToLower(strings.TrimSpace(req.Protocol))
 	if req.Protocol == "" {
@@ -350,17 +440,18 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	}
 
 	pool := model.RelayPool{
-		Name:       req.Name,
-		Source:     req.Source,
-		Mode:       req.Mode,
-		Protocol:   req.Protocol,
-		CoreType:   req.CoreType,
-		TlsID:      req.TlsID,
-		Transport:  req.Transport,
-		ListenHost: publicHost,
-		PortStart:  req.PortStart,
-		Count:      req.Count,
-		CreatedAt:  time.Now().Unix(),
+		Name:           req.Name,
+		Source:         req.Source,
+		Mode:           req.Mode,
+		Protocol:       req.Protocol,
+		CoreType:       req.CoreType,
+		TlsID:          req.TlsID,
+		Transport:      req.Transport,
+		DomainStrategy: req.DomainStrategy,
+		ListenHost:     publicHost,
+		PortStart:      req.PortStart,
+		Count:          req.Count,
+		CreatedAt:      time.Now().Unix(),
 	}
 	var relayTLS *model.Tls
 	if req.TlsID > 0 {
@@ -410,7 +501,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 			items[i].UpstreamUsername = upstream.Username
 			items[i].UpstreamPassword = upstream.Password
 		} else {
-			outbound.Options, err = json.Marshal(map[string]interface{}{"inet6_bind_address": items[i].IPv6})
+			outbound.Options, err = json.Marshal(relayDirectOutboundOptions(req, items[i]))
 		}
 		if err != nil {
 			return nil, err
@@ -435,13 +526,19 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		if cfg, ok := clientConfig[req.Protocol].(map[string]interface{}); ok {
 			items[i].UUID, _ = cfg["uuid"].(string)
 		}
-		items[i].Export = relayClientLink(req, inbound, clientConfig, publicHost)
+		if req.Protocol == "socks" || req.Protocol == "mixed" {
+			// Browser-oriented SOCKS importers commonly expect four colon-separated
+			// fields rather than a socks5:// URI.
+			items[i].Export = relaySOCKSExport(req.Mode, publicHost, items[i].IPv6, items[i].ListenPort, items[i].Username, items[i].Password)
+		} else {
+			items[i].Export = relayClientLink(req, inbound, clientConfig, publicHost)
+		}
 	}
 	pool.Items = mustJSON(items)
 	if err := tx.Create(&pool).Error; err != nil {
 		return nil, err
 	}
-	if err := updateRelayRouteRules(tx, items, false); err != nil {
+	if err := updateRelayRouteRules(tx, items, req.DomainStrategy == relayDomainStrategyIPv6Only, false); err != nil {
 		return nil, err
 	}
 	pool.Items = mustJSON(items)
@@ -483,6 +580,33 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		}
 	}
 	return &pool, nil
+}
+
+func normalizeRelayDomainStrategy(mode, value string) (string, error) {
+	if mode != relayModeIPv6 {
+		return "", nil
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return relayDomainStrategyIPv6Only, nil
+	}
+	switch value {
+	case relayDomainStrategyIPv6Only, relayDomainStrategyPreferIPv6:
+		return value, nil
+	default:
+		return "", common.NewErrorf("unsupported IPv6 address strategy %q", value)
+	}
+}
+
+func relayDirectOutboundOptions(req RelayCreateRequest, item model.RelayItem) map[string]interface{} {
+	strategy := req.DomainStrategy
+	if strategy == "" {
+		strategy = relayDomainStrategyIPv6Only
+	}
+	return map[string]interface{}{
+		"inet6_bind_address": item.IPv6,
+		"domain_strategy":    strategy,
+	}
 }
 
 func applyRelaySourcePreset(req *RelayCreateRequest) error {
@@ -532,7 +656,7 @@ func (s *ConfigService) DeleteRelay(id uint, actor string) error {
 			}
 		}
 	}()
-	if err := updateRelayRouteRules(tx, items, true); err != nil {
+	if err := updateRelayRouteRules(tx, items, false, true); err != nil {
 		return err
 	}
 	var inboundTags, outboundTags []string
@@ -1046,7 +1170,7 @@ func relayUsedPorts(tx *gorm.DB) (map[int]bool, error) {
 	return used, nil
 }
 
-func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, remove bool) error {
+func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remove bool) error {
 	var setting model.Setting
 	if err := tx.Where("key = ?", "config").First(&setting).Error; err != nil {
 		return err
@@ -1064,40 +1188,64 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, remove bool) er
 	if rules == nil {
 		rules = []interface{}{}
 	}
-	if remove {
-		removeInbound := make(map[string]bool)
-		removeOutbound := make(map[string]bool)
-		for _, item := range items {
-			removeInbound[item.InboundTag] = true
-			removeOutbound[item.OutboundTag] = true
+	targets := make(map[string]string, len(items))
+	for _, item := range items {
+		if item.InboundTag != "" && item.OutboundTag != "" {
+			targets[item.InboundTag] = item.OutboundTag
 		}
-		filtered := make([]interface{}, 0, len(rules))
-		for _, raw := range rules {
-			entry, ok := raw.(map[string]interface{})
-			if !ok {
-				filtered = append(filtered, raw)
+	}
+	routeExists := make(map[string]bool, len(targets))
+	filtered := make([]interface{}, 0, len(rules))
+	for _, raw := range rules {
+		entry, ok := raw.(map[string]interface{})
+		if !ok {
+			filtered = append(filtered, raw)
+			continue
+		}
+		matchedInbounds := relayRuleTargetInbounds(entry, targets)
+		if len(matchedInbounds) == 0 {
+			filtered = append(filtered, raw)
+			continue
+		}
+		outbound := fmt.Sprint(entry["outbound"])
+		routeMatch := false
+		for _, inbound := range matchedInbounds {
+			if targets[inbound] == outbound {
+				routeExists[inbound] = true
+				routeMatch = true
+			}
+		}
+		ipv4Reject := fmt.Sprint(entry["action"]) == "reject" && relayRuleIPVersion(entry) == 4
+		if remove && (routeMatch || ipv4Reject) {
+			continue
+		}
+		// Reinsert generated reject rules at the front so they always run before
+		// the corresponding route rule. Dual-stack repair intentionally drops them.
+		if ipv4Reject {
+			continue
+		}
+		filtered = append(filtered, raw)
+	}
+	if !remove {
+		newRules := make([]interface{}, 0, len(items)*2)
+		for _, item := range items {
+			if _, ok := targets[item.InboundTag]; !ok {
 				continue
 			}
-			inboundMatch := false
-			if inbound, ok := entry["inbound"].([]interface{}); ok {
-				for _, value := range inbound {
-					if removeInbound[fmt.Sprint(value)] {
-						inboundMatch = true
-					}
-				}
+			if ipv6Only {
+				newRules = append(newRules, map[string]interface{}{
+					"inbound": []string{item.InboundTag}, "ip_version": 4, "action": "reject",
+				})
 			}
-			outboundMatch := removeOutbound[fmt.Sprint(entry["outbound"])]
-			if !(inboundMatch && outboundMatch) {
-				filtered = append(filtered, raw)
+			if !routeExists[item.InboundTag] {
+				newRules = append(newRules, map[string]interface{}{
+					"inbound": []string{item.InboundTag}, "action": "route", "outbound": item.OutboundTag,
+				})
 			}
 		}
-		rules = filtered
+		rules = append(newRules, filtered...)
 	} else {
-		newRules := make([]interface{}, 0, len(items)+len(rules))
-		for _, item := range items {
-			newRules = append(newRules, map[string]interface{}{"inbound": []string{item.InboundTag}, "action": "route", "outbound": item.OutboundTag})
-		}
-		rules = append(newRules, rules...)
+		rules = filtered
 	}
 	route["rules"] = rules
 	updated, err := json.MarshalIndent(config, "", "  ")
@@ -1105,6 +1253,42 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, remove bool) er
 		return err
 	}
 	return tx.Model(&model.Setting{}).Where("key = ?", "config").Update("value", string(updated)).Error
+}
+
+func relayRuleTargetInbounds(entry map[string]interface{}, targets map[string]string) []string {
+	var values []string
+	switch inbound := entry["inbound"].(type) {
+	case []interface{}:
+		for _, value := range inbound {
+			values = append(values, fmt.Sprint(value))
+		}
+	case []string:
+		values = append(values, inbound...)
+	case string:
+		values = append(values, inbound)
+	}
+	matched := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := targets[value]; ok {
+			matched = append(matched, value)
+		}
+	}
+	return matched
+}
+
+func relayRuleIPVersion(entry map[string]interface{}) int {
+	switch value := entry["ip_version"].(type) {
+	case float64:
+		return int(value)
+	case int:
+		return value
+	case json.Number:
+		version, _ := strconv.Atoi(value.String())
+		return version
+	default:
+		version, _ := strconv.Atoi(fmt.Sprint(value))
+		return version
+	}
 }
 
 func (s *ConfigService) restoreSingBoxConfig(config []byte) error {
@@ -1204,6 +1388,12 @@ func relaySOCKSURI(host string, port int, username, password string) string {
 		User:   url.UserPassword(username, password),
 		Host:   net.JoinHostPort(host, strconv.Itoa(port)),
 	}).String()
+}
+
+func relaySOCKSExport(mode, publicHost, ipv6 string, port int, username, password string) string {
+	host := relayItemHost(mode, publicHost, ipv6)
+	host = formatRelayHost(host)
+	return fmt.Sprintf("%s:%d:%s:%s", host, port, username, password)
 }
 
 func normalizeRelayPublicHost(value string) (string, error) {

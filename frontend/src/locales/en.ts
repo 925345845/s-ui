@@ -50,6 +50,8 @@
   pages: {
     login: "Login",
     quickAddNode: "Quick Add Node",
+    quickAddCount: "Node count",
+    quickAddCountHint: "Create 1-50 nodes with unique tags and ports.",
     selectProtocol: "Select Protocol",
     home: "Home",
     inbounds: "Inbounds",
@@ -499,6 +501,9 @@
     pools: "Relay pools",
     name: "Pool name",
     publicHost: "Public host",
+    addressMode: "Address mode",
+    ipv6Only: "IPv6 only (recommended)",
+    preferIPv6: "Prefer IPv6 (dual stack)",
     portStart: "Starting port",
     count: "Count",
     usernamePrefix: "Username prefix",

@@ -30,12 +30,24 @@
               v-model="quickAdd.tag"
               :label="$t('objects.tag')"
               hide-details
-              readonly
+              @update:model-value="quickAdd.tagCustomized = true"
             >
               <template v-slot:append-inner>
                 <v-icon icon="mdi-refresh" @click="regenerateQuickAdd" style="cursor: pointer;" />
               </template>
             </v-text-field>
+          </v-col>
+          <v-col cols="12">
+            <v-text-field
+              v-model.number="quickAdd.count"
+              :label="$t('pages.quickAddCount')"
+              :hint="$t('pages.quickAddCountHint')"
+              type="number"
+              min="1"
+              max="50"
+              persistent-hint
+              hide-details="auto"
+            ></v-text-field>
           </v-col>
           <v-col cols="12">
             <v-text-field
@@ -269,6 +281,8 @@ const quickAdd = ref({
   core_type: CoreTypes.SingBox,
   protocol: 'mixed',
   tag: '',
+  tagCustomized: false,
+  count: 1,
   port: RandomUtil.randomIntRange(10000, 60000),
   password: '',
   method: '2022-blake3-aes-256-gcm',
@@ -295,7 +309,7 @@ watch(() => quickAdd.value.protocol, (val) => {
   if (quickAdd.value.core_type === CoreTypes.Xray && val === 'shadowsocks') {
     quickAdd.value.method = '2022-blake3-aes-256-gcm'
   }
-  regenerateQuickAdd()
+  regenerateQuickAdd(false)
 })
 
 watch(() => quickAdd.value.core_type, (val) => {
@@ -313,7 +327,7 @@ watch(() => quickAdd.value.core_type, (val) => {
   } else {
     quickAdd.value.hasMethod = quickAdd.value.protocol === 'shadowsocks'
   }
-  regenerateQuickAdd()
+  regenerateQuickAdd(false)
 })
 
 const closeModal = () => {
@@ -395,14 +409,19 @@ const randomPasswordForMethod = (method: string): string => {
   return RandomUtil.randomSeq(16)
 }
 
-const regenerateQuickAdd = () => {
+const regenerateQuickAdd = (resetTag = true) => {
   const port = RandomUtil.randomIntRange(10000, 60000)
-  quickAdd.value.tag = quickAdd.value.protocol + '-' + port
+  if (resetTag || !quickAdd.value.tagCustomized) {
+    quickAdd.value.tag = quickAdd.value.protocol + '-' + port
+    quickAdd.value.tagCustomized = false
+  }
   quickAdd.value.port = port
   quickAdd.value.password = randomPasswordForMethod(quickAdd.value.method)
 }
 
 const openQuickAdd = () => {
+  quickAdd.value.count = 1
+  quickAdd.value.tagCustomized = false
   regenerateQuickAdd()
   quickAdd.value.visible = true
 }
@@ -474,176 +493,183 @@ const genSelfSignedTls = async (serverName: string): Promise<number> => {
   return 0
 }
 
+const normalizeQuickAddCount = (): number => {
+  const value = Number(quickAdd.value.count)
+  const count = Number.isFinite(value) ? Math.floor(value) : 1
+  quickAdd.value.count = Math.min(50, Math.max(1, count))
+  return quickAdd.value.count
+}
+
+const availableQuickPorts = (count: number): number[] => {
+  const occupied = new Set<number>(
+    inbounds.value
+      .map((item: any) => Number(item.listen_port))
+      .filter((port: number) => Number.isInteger(port) && port > 0)
+  )
+  const ports: number[] = []
+  let candidate = Number(quickAdd.value.port)
+  if (!Number.isInteger(candidate) || candidate < 1 || candidate > 65535) {
+    candidate = RandomUtil.randomIntRange(10000, 60000)
+  }
+  for (let index = 0; index < count; index++) {
+    let attempts = 0
+    while (occupied.has(candidate) && attempts < 65535) {
+      candidate = candidate >= 65535 ? 1 : candidate + 1
+      attempts++
+    }
+    if (attempts >= 65535) return []
+    ports.push(candidate)
+    occupied.add(candidate)
+    candidate = candidate >= 65535 ? 1 : candidate + 1
+  }
+  return ports
+}
+
+const uniqueQuickTags = (count: number, baseTag: string): string[] => {
+  const used = new Set<string>(inbounds.value.map((item: any) => item.tag).filter(Boolean))
+  const tags: string[] = []
+  for (let index = 0; index < count; index++) {
+    const suffix = count > 1 ? `-${index + 1}` : ''
+    const initial = `${baseTag}${suffix}`
+    let tag = initial
+    let copy = 1
+    while (used.has(tag)) {
+      tag = `${initial}-copy${copy}`
+      copy++
+    }
+    used.add(tag)
+    tags.push(tag)
+  }
+  return tags
+}
+
 const createQuickNode = async () => {
   quickAdd.value.loading = true
-  const port = quickAdd.value.port
+  const count = normalizeQuickAddCount()
   const proto = quickAdd.value.protocol
-  const clientName = 'user-' + RandomUtil.randomSeq(6)
-  const password = RandomUtil.randomSeq(10)
-  const uuid = RandomUtil.randomUUID()
+  const ports = availableQuickPorts(count)
+  const baseTag = quickAdd.value.tag.trim() || `${proto}-${ports[0] || RandomUtil.randomIntRange(10000, 60000)}`
+  const tags = uniqueQuickTags(count, baseTag)
+
+  if (!ports.length) {
+    quickAdd.value.loading = false
+    push.error('No available ports for quick add.')
+    return
+  }
 
   let tlsId = 0
   if (needsTls.includes(proto)) {
-    tlsId = await genSelfSignedTls(quickAdd.value.tag)
+    tlsId = await genSelfSignedTls(tags[0])
     if (tlsId === 0) {
       quickAdd.value.loading = false
       push.error('TLS generation failed. Please create TLS certificate in TLS Settings first.')
       return
     }
   }
-  const isXray = quickAdd.value.core_type === CoreTypes.Xray
-  const inbound = createInbound(proto, {
-    id: 0,
-    core_type: quickAdd.value.core_type,
-    tag: quickAdd.value.tag,
-    listen: '::',
-    listen_port: port,
-  } as any)
-
-  switch (proto) {
-    case 'shadowsocks':
-      ;(inbound as any).method = isXray ? '2022-blake3-aes-256-gcm' : quickAdd.value.method || '2022-blake3-aes-256-gcm'
-      ;(inbound as any).password = quickAdd.value.password || randomPasswordForMethod((inbound as any).method)
-      inbound.addrs = []
-      inbound.out_json = {}
-      break
-    case 'vmess':
-      ;(inbound as any).tls_id = tlsId
-      ;(inbound as any).transport = isXray
-        ? { type: 'ws', path: '/', host: location.hostname }
-        : { type: 'http' }
-      inbound.addrs = []
-      inbound.out_json = {}
-      break
-    case 'vless':
-      ;(inbound as any).tls_id = tlsId
-      ;(inbound as any).transport = isXray
-        ? { type: 'xhttp', path: '/xhttp', host: location.hostname, mode: 'auto' }
-        : { type: 'http' }
-      inbound.addrs = []
-      inbound.out_json = {}
-      break
-    case 'trojan':
-      ;(inbound as any).tls_id = tlsId
-      ;(inbound as any).transport = isXray
-        ? { type: 'ws', path: '/', host: location.hostname }
-        : { type: 'http' }
-      inbound.addrs = []
-      inbound.out_json = {}
-      break
-    case 'shadowtls':
-      ;(inbound as any).version = 3
-      ;(inbound as any).password = RandomUtil.randomShadowsocksPassword(16)
-      ;(inbound as any).handshake = { server: quickAdd.value.handshakeServer || 'www.microsoft.com', server_port: 443 }
-      break
-    case 'hysteria2':
-      ;(inbound as any).tls_id = tlsId
-      ;(inbound as any).obfs = { type: 'salamander', password: quickAdd.value.obfsPassword || RandomUtil.randomShadowsocksPassword(16) }
-      break
-    case 'tuic':
-      ;(inbound as any).tls_id = tlsId
-      ;(inbound as any).congestion_control = 'cubic'
-      break
-    case 'naive':
-      ;(inbound as any).tls_id = tlsId
-      break
-    case 'anytls':
-      ;(inbound as any).tls_id = tlsId
-      ;(inbound as any).padding_scheme = [
-        'stop=8',
-        '0=30-30',
-        '1=100-400',
-        '2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000',
-        '3=9-9,500-1000',
-        '4=500-1000',
-        '5=500-1000',
-        '6=500-1000',
-        '7=500-1000'
-      ]
-      break
-    case 'mixed':
-    case 'socks':
-    case 'http':
-      inbound.addrs = []
-      inbound.out_json = {}
-      break
-    case 'direct':
-      break
-  }
-
-  // Create a default client for protocols that need users
   const needsClient = ['shadowsocks', 'vmess', 'vless', 'trojan', 'naive', 'hysteria2', 'tuic', 'anytls', 'shadowtls']
-  let initUsers: number[] | undefined = undefined
-  if (needsClient.includes(proto)) {
-    const protoConfig: any = {}
+  let createdCount = 0
+  const isXray = quickAdd.value.core_type === CoreTypes.Xray
+  for (let index = 0; index < count; index++) {
+    const clientName = 'user-' + RandomUtil.randomSeq(6)
+    const nodePassword = index === 0 ? quickAdd.value.password : randomPasswordForMethod(quickAdd.value.method)
+    const uuid = RandomUtil.randomUUID()
+    const inbound = createInbound(proto, {
+      id: 0,
+      core_type: quickAdd.value.core_type,
+      tag: tags[index],
+      listen: '::',
+      listen_port: ports[index],
+    } as any)
+
     switch (proto) {
       case 'shadowsocks':
-        protoConfig.shadowsocks = { name: clientName, password: RandomUtil.randomShadowsocksPassword(32) }
+        ;(inbound as any).method = isXray ? '2022-blake3-aes-256-gcm' : quickAdd.value.method || '2022-blake3-aes-256-gcm'
+        ;(inbound as any).password = nodePassword || randomPasswordForMethod((inbound as any).method)
+        inbound.addrs = []
+        inbound.out_json = {}
         break
       case 'vmess':
-        protoConfig.vmess = { name: clientName, uuid: uuid, alterId: 0 }
+        ;(inbound as any).tls_id = tlsId
+        ;(inbound as any).transport = isXray ? { type: 'ws', path: '/', host: location.hostname } : { type: 'http' }
+        inbound.addrs = []
+        inbound.out_json = {}
         break
       case 'vless':
-        protoConfig.vless = { name: clientName, uuid: uuid, flow: isXray ? '' : 'xtls-rprx-vision' }
+        ;(inbound as any).tls_id = tlsId
+        ;(inbound as any).transport = isXray ? { type: 'xhttp', path: '/xhttp', host: location.hostname, mode: 'auto' } : { type: 'http' }
+        inbound.addrs = []
+        inbound.out_json = {}
         break
       case 'trojan':
-        protoConfig.trojan = { name: clientName, password: password }
-        break
-      case 'naive':
-        protoConfig.naive = { username: clientName, password: password }
-        break
-      case 'hysteria2':
-        protoConfig.hysteria2 = { name: clientName, password: password }
-        break
-      case 'tuic':
-        protoConfig.tuic = { name: clientName, uuid: uuid, password: password }
-        break
-      case 'anytls':
-        protoConfig.anytls = { name: clientName, password: password }
+        ;(inbound as any).tls_id = tlsId
+        ;(inbound as any).transport = isXray ? { type: 'ws', path: '/', host: location.hostname } : { type: 'http' }
+        inbound.addrs = []
+        inbound.out_json = {}
         break
       case 'shadowtls':
-        protoConfig.shadowtls = { name: clientName, password: RandomUtil.randomShadowsocksPassword(32) }
+        ;(inbound as any).version = 3
+        ;(inbound as any).password = nodePassword || RandomUtil.randomShadowsocksPassword(16)
+        ;(inbound as any).handshake = { server: quickAdd.value.handshakeServer || 'www.microsoft.com', server_port: 443 }
+        break
+      case 'hysteria2':
+        ;(inbound as any).tls_id = tlsId
+        ;(inbound as any).obfs = { type: 'salamander', password: quickAdd.value.obfsPassword || RandomUtil.randomShadowsocksPassword(16) }
+        break
+      case 'tuic':
+        ;(inbound as any).tls_id = tlsId
+        ;(inbound as any).congestion_control = 'cubic'
+        break
+      case 'naive':
+        ;(inbound as any).tls_id = tlsId
+        break
+      case 'anytls':
+        ;(inbound as any).tls_id = tlsId
+        ;(inbound as any).padding_scheme = [
+          'stop=8', '0=30-30', '1=100-400',
+          '2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000',
+          '3=9-9,500-1000', '4=500-1000', '5=500-1000', '6=500-1000', '7=500-1000'
+        ]
+        break
+      case 'mixed':
+      case 'socks':
+      case 'http':
+        inbound.addrs = []
+        inbound.out_json = {}
         break
     }
-    const client = {
-      enable: true,
-      name: clientName,
-      config: protoConfig,
-      inbounds: [],
-      links: [],
-      volume: 0,
-      expiry: 0,
-      up: 0,
-      down: 0,
-      desc: '',
-      group: '',
-    }
-    const clientBody = new URLSearchParams()
-    clientBody.append('object', 'clients')
-    clientBody.append('action', 'new')
-    clientBody.append('data', JSON.stringify(client))
-    try {
-      const clientResp = await fetch('api/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: clientBody.toString(),
-        credentials: 'include',
-      })
-      const clientMsg = await clientResp.json()
-      if (clientMsg.success && clientMsg.obj && clientMsg.obj.clients) {
-        const savedClient = clientMsg.obj.clients.find((c: any) => c.name === clientName)
-        if (savedClient && savedClient.id) {
-          initUsers = [savedClient.id]
-        }
-      }
-    } catch (e) {
-      console.error('Quick add client creation error:', e)
-    }
-  }
 
-  const success = await Data().save('inbounds', 'new', inbound, initUsers)
+    let initUsers: number[] | undefined
+    if (needsClient.includes(proto)) {
+      const protoConfig: any = {}
+      switch (proto) {
+        case 'shadowsocks': protoConfig.shadowsocks = { name: clientName, password: (inbound as any).password }; break
+        case 'vmess': protoConfig.vmess = { name: clientName, uuid, alterId: 0 }; break
+        case 'vless': protoConfig.vless = { name: clientName, uuid, flow: isXray ? '' : 'xtls-rprx-vision' }; break
+        case 'trojan': protoConfig.trojan = { name: clientName, password: nodePassword }; break
+        case 'naive': protoConfig.naive = { username: clientName, password: nodePassword }; break
+        case 'hysteria2': protoConfig.hysteria2 = { name: clientName, password: nodePassword }; break
+        case 'tuic': protoConfig.tuic = { name: clientName, uuid, password: nodePassword }; break
+        case 'anytls': protoConfig.anytls = { name: clientName, password: nodePassword }; break
+        case 'shadowtls': protoConfig.shadowtls = { name: clientName, password: (inbound as any).password }; break
+      }
+      const client = { enable: true, name: clientName, config: protoConfig, inbounds: [], links: [], volume: 0, expiry: 0, up: 0, down: 0, desc: '', group: '' }
+      const clientBody = new URLSearchParams({ object: 'clients', action: 'new', data: JSON.stringify(client) })
+      try {
+        const clientResp = await fetch('api/save', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: clientBody.toString(), credentials: 'include' })
+        const clientMsg = await clientResp.json()
+        const savedClient = clientMsg.success && clientMsg.obj?.clients?.find((c: any) => c.name === clientName)
+        if (savedClient?.id) initUsers = [savedClient.id]
+      } catch (e) {
+        console.error('Quick add client creation error:', e)
+      }
+      if (!initUsers) break
+    }
+
+    if (await Data().save('inbounds', 'new', inbound, initUsers)) createdCount++
+    else break
+  }
   quickAdd.value.loading = false
-  if (success) {
+  if (createdCount === count) {
     quickAdd.value.visible = false
   }
 }

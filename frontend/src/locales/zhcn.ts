@@ -50,6 +50,8 @@
   pages: {
     login: "登录",
     quickAddNode: "一键添加节点",
+    quickAddCount: "创建节点数量",
+    quickAddCountHint: "一次创建 1-50 条节点，标签和端口会自动保持唯一。",
     selectProtocol: "选择协议",
     home: "主页",
     inbounds: "入站管理",
@@ -499,6 +501,9 @@
     pools: "中转批次",
     name: "批次名称",
     publicHost: "对外连接地址",
+    addressMode: "出口地址模式",
+    ipv6Only: "仅 IPv6（推荐）",
+    preferIPv6: "IPv6 优先（双栈）",
     portStart: "起始端口",
     count: "数量",
     usernamePrefix: "账号前缀",

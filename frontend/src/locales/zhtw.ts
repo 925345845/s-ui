@@ -50,6 +50,8 @@
   pages: {
     login: "登錄",
     quickAddNode: "一鍵新增節點",
+    quickAddCount: "建立節點數量",
+    quickAddCountHint: "一次建立 1-50 條節點，標籤和連接埠會自動保持唯一。",
     selectProtocol: "選擇協議",
     home: "主頁",
     inbounds: "入站管理",
@@ -499,6 +501,9 @@
     pools: "中轉批次",
     name: "批次名稱",
     publicHost: "對外連接地址",
+    addressMode: "出口地址模式",
+    ipv6Only: "僅 IPv6（推薦）",
+    preferIPv6: "IPv6 優先（雙棧）",
     portStart: "起始端口",
     count: "數量",
     usernamePrefix: "帳號前綴",

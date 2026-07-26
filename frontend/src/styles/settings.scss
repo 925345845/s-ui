@@ -1,6 +1,6 @@
 /**
  * src/styles/settings.scss
- * Global UI Styles - 1S-UI v1.4.3
+ * Global UI Styles - 1S-UI v1.4.9
  */
 
 @font-face {
@@ -1448,6 +1448,18 @@ body,
 .v-dialog > .v-overlay__content > .v-card {
   --app-current-radius: var(--app-dialog-radius, 20px);
   border-radius: var(--app-current-radius) !important;
+  max-height: calc(100dvh - 32px) !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+/* Keep long secondary pages usable on narrow screens while retaining clipped
+   rounded corners and the existing scrollable card-text sections. */
+.v-menu > .v-overlay__content > .v-card,
+.v-menu .menu-card {
+  background: rgba(var(--v-theme-surface), 0.9) !important;
+  backdrop-filter: blur(18px) saturate(170%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(170%) !important;
 }
 
 /* ===== Unified Page Surfaces ===== */
