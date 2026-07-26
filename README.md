@@ -7,9 +7,9 @@
 [![sing-box](https://img.shields.io/badge/default%20core-sing--box-1677ff)](https://github.com/SagerNet/sing-box)
 [![Xray-core](https://img.shields.io/badge/optional%20core-Xray--core-28a745)](https://github.com/XTLS/Xray-core)
 
-1S-UI is a modern S-UI based proxy management panel with a cleaner web interface, sing-box first runtime, optional Xray-core inbound support, TLS automation, quick node creation, v2rayN compatible links, and multi-platform releases.
+1S-UI is a modern S-UI based proxy management panel focused on Linux server deployments, especially Ubuntu and Debian. It provides a cleaner web interface, sing-box first runtime, optional Xray-core inbound support, TLS automation, quick node creation, and v2rayN compatible links.
 
-1S-UI 是基于 S-UI 二次开发的现代代理管理面板，主打更清爽的 Web 页面、sing-box 默认内核、可选 Xray-core 入站、TLS 自动化、快速添加节点、v2rayN 兼容分享链接和多平台发布。
+1S-UI 是基于 S-UI 二次开发的现代代理管理面板，目前主要维护 Linux 服务器版本，优先支持 Ubuntu 和 Debian。项目主打更清爽的 Web 页面、sing-box 默认内核、可选 Xray-core 入站、TLS 自动化、快速添加节点和 v2rayN 兼容分享链接。
 
 > For learning, research, and technical communication only. Please comply with local laws and regulations.
 >
@@ -39,7 +39,9 @@ The screenshots use local demo data and do not contain real server secrets.
 
 ### 项目定位
 
-1S-UI fork 自 [alireza0/s-ui](https://github.com/alireza0/s-ui)，继续优化了页面布局、节点创建、TLS 配置、OpenWrt Lite 打包、Windows 发布、v2rayN 链接兼容和多内核运行能力。
+1S-UI fork 自 [alireza0/s-ui](https://github.com/alireza0/s-ui)，继续优化了页面布局、节点创建、TLS 配置、Linux 部署、v2rayN 链接兼容和多内核运行能力。
+
+> 当前维护策略：主要维护 Linux（Ubuntu、Debian）服务器版本。Windows 暂停维护，只保留源码和手动兼容构建；OpenWrt Lite 保留现有实验版本，暂不作为主要开发目标。
 
 默认运行核心是 [sing-box](https://github.com/SagerNet/sing-box)。当需要 Xray 独有能力时，例如 VLESS XHTTP、Reality、部分 Xray TLS/传输设置，可以在入站级别选择 [Xray-core](https://github.com/XTLS/Xray-core)。
 
@@ -58,7 +60,7 @@ The screenshots use local demo data and do not contain real server secrets.
 - IPv6 地址由面板内置 `ip -6 addr add` 管理，等待 DAD 就绪并在失败时回滚；不修改系统默认路由，避免影响 SSH 和面板连通性
 - 首页仪表卡、运行状态、日志、备份恢复、使用量统计
 - 响应式 Vue 3 + Vuetify 页面，支持顶部菜单、侧边栏、暗色模式和背景设置
-- Linux、Windows、Docker、OpenWrt Lite 多平台发布
+- 主要维护 Linux（Ubuntu、Debian）服务器版本和 Linux Docker 镜像；Windows 暂停维护，OpenWrt Lite 保留实验版本
 
 ### 快速安装
 
@@ -164,7 +166,9 @@ opkg install ./s-ui-lite_1.4.9-1_x86_64.ipk
 
 ### Overview
 
-1S-UI is a proxy management panel based on [S-UI](https://github.com/alireza0/s-ui). It keeps sing-box as the default runtime and adds a refined UI, quick node creation, TLS automation, v2rayN-compatible sharing links, optional Xray-core inbound support, and release packaging for several platforms.
+1S-UI is a proxy management panel based on [S-UI](https://github.com/alireza0/s-ui). It keeps sing-box as the default runtime and adds a refined UI, quick node creation, TLS automation, v2rayN-compatible sharing links, and optional Xray-core inbound support.
+
+> Maintenance policy: Linux servers, especially Ubuntu and Debian, are the primary supported targets. Windows maintenance is paused; its source and manual compatibility workflow remain available. OpenWrt Lite remains experimental and is not a primary development target.
 
 ### Features
 
@@ -181,7 +185,7 @@ opkg install ./s-ui-lite_1.4.9-1_x86_64.ipk
 - Shadowsocks defaults to `2022-blake3-aes-256-gcm` with 256-bit password strength
 - Dashboard cards, runtime status, logs, backup and restore, usage statistics
 - Responsive Vue 3 + Vuetify frontend with top menu, sidebar, dark mode, and background settings
-- Linux, Windows, Docker, and OpenWrt Lite releases
+- Primary support for Linux servers (Ubuntu and Debian) and Linux Docker images; Windows maintenance is paused and OpenWrt Lite remains experimental
 
 ### Install
 
@@ -234,7 +238,9 @@ See [docs/openwrt-lite.md](docs/openwrt-lite.md) for architecture and packaging 
 
 ### 概要
 
-1S-UI は [S-UI](https://github.com/alireza0/s-ui) をベースにしたプロキシ管理パネルです。標準ランタイムは sing-box で、必要に応じて Xray-core 入站も利用できます。UI、クイックノード作成、TLS 管理、v2rayN 互換リンク、多平台リリースを強化しています。
+1S-UI は [S-UI](https://github.com/alireza0/s-ui) をベースにしたプロキシ管理パネルです。標準ランタイムは sing-box で、必要に応じて Xray-core 入站も利用できます。現在は Ubuntu と Debian を中心とする Linux サーバー版を主に保守しています。
+
+> 保守方針：Linux（Ubuntu、Debian）を主要サポート対象とします。Windows の保守は一時停止し、ソースと手動互換ビルドのみを残します。OpenWrt Lite は実験版として維持します。
 
 ### 主な機能
 
@@ -245,7 +251,7 @@ See [docs/openwrt-lite.md](docs/openwrt-lite.md) for architecture and packaging 
 - TLS、ACME、ECH、Reality、Pinned SHA256 を集中管理
 - v2rayN 互換の Hysteria2 共有リンクに対応し、Xray 用 `pinSHA256` は hex 形式で出力
 - ダッシュボード、実行状態、ログ、バックアップ、使用量統計
-- Linux、Windows、Docker、OpenWrt Lite に対応
+- Linux（Ubuntu、Debian）と Linux Docker を主にサポート。Windows は保守一時停止、OpenWrt Lite は実験版
 
 ### インストール
 
@@ -289,7 +295,9 @@ opkg install ./s-ui-lite_1.4.9-1_x86_64.ipk
 
 ### 개요
 
-1S-UI는 [S-UI](https://github.com/alireza0/s-ui)를 기반으로 한 프록시 관리 패널입니다. 기본 런타임은 sing-box이며, 필요한 경우 인바운드 단위로 Xray-core를 선택할 수 있습니다. 더 깔끔한 웹 UI, 빠른 노드 생성, TLS 자동화, v2rayN 호환 공유 링크, 다중 플랫폼 릴리스를 제공합니다.
+1S-UI는 [S-UI](https://github.com/alireza0/s-ui)를 기반으로 한 프록시 관리 패널입니다. 기본 런타임은 sing-box이며, 필요한 경우 인바운드 단위로 Xray-core를 선택할 수 있습니다. 현재 Ubuntu와 Debian 중심의 Linux 서버 버전을 주로 유지보수합니다.
+
+> 유지보수 정책: Linux(Ubuntu, Debian)가 주요 지원 대상입니다. Windows 유지보수는 일시 중단하며 소스와 수동 호환 빌드만 유지합니다. OpenWrt Lite는 실험 버전으로 유지합니다.
 
 ### 주요 기능
 
@@ -300,7 +308,7 @@ opkg install ./s-ui-lite_1.4.9-1_x86_64.ipk
 - TLS, ACME, ECH, Reality, Pinned SHA256 통합 관리
 - v2rayN 호환 Hysteria2 공유 링크와 Xray용 hex `pinSHA256` 출력
 - 대시보드 카드, 런타임 상태, 로그, 백업/복원, 사용량 통계
-- Linux, Windows, Docker, OpenWrt Lite 릴리스 지원
+- Linux(Ubuntu, Debian)와 Linux Docker를 주로 지원하며 Windows 유지보수는 중단, OpenWrt Lite는 실험 버전으로 유지
 
 ### 설치
 

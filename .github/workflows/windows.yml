@@ -1,9 +1,6 @@
-name: 构建 Windows 版 S-UI
+name: Windows 兼容构建（暂停维护）
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
