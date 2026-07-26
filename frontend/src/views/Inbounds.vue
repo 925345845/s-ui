@@ -87,7 +87,7 @@
               :hint="$t('pages.quickAddCountHint')"
               type="number"
               min="1"
-              max="50"
+              :max="maxQuickAddCount"
               persistent-hint
               hide-details="auto"
             ></v-text-field>
@@ -476,6 +476,8 @@ const shadowsocksMethods = [
   '2022-blake3-chacha20-poly1305',
 ]
 
+const maxQuickAddCount = 100
+
 const randomPasswordForMethod = (method: string): string => {
   if (method === '2022-blake3-aes-128-gcm') return RandomUtil.randomShadowsocksPassword(16)
   if (method.startsWith('2022')) return RandomUtil.randomShadowsocksPassword(32)
@@ -569,7 +571,7 @@ const genSelfSignedTls = async (serverName: string): Promise<number> => {
 const normalizeQuickAddCount = (): number => {
   const value = Number(quickAdd.value.count)
   const count = Number.isFinite(value) ? Math.floor(value) : 1
-  quickAdd.value.count = Math.min(50, Math.max(1, count))
+  quickAdd.value.count = Math.min(maxQuickAddCount, Math.max(1, count))
   return quickAdd.value.count
 }
 

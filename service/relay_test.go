@@ -120,6 +120,37 @@ func TestRelaySOCKSExportUsesBrowserFormat(t *testing.T) {
 	}
 }
 
+func TestNextRelayPortRangeSkipsUsedBatch(t *testing.T) {
+	used := make(map[int]bool)
+	for port := 30000; port <= 30009; port++ {
+		used[port] = true
+	}
+	got, err := nextRelayPortRange(used, 30000, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 30010 {
+		t.Fatalf("port start = %d, want 30010", got)
+	}
+}
+
+func TestNextRelayPortRangeRequiresContinuousPorts(t *testing.T) {
+	used := map[int]bool{30004: true, 30008: true}
+	got, err := nextRelayPortRange(used, 30000, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 30009 {
+		t.Fatalf("port start = %d, want 30009", got)
+	}
+}
+
+func TestNextRelayPortRangeReportsExhaustion(t *testing.T) {
+	if _, err := nextRelayPortRange(map[int]bool{65535: true}, 65535, 1); err == nil {
+		t.Fatal("expected an exhausted port range error")
+	}
+}
+
 func TestRelayBitBrowserProxyInfo(t *testing.T) {
 	tests := []struct {
 		name string

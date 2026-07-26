@@ -565,10 +565,13 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	if err != nil {
 		return nil, err
 	}
+	portStart, err := nextRelayPortRange(usedPorts, req.PortStart, req.Count)
+	if err != nil {
+		return nil, err
+	}
+	req.PortStart = portStart
 	for i := range items {
-		if usedPorts[items[i].ListenPort] {
-			return nil, common.NewErrorf("relay port %d is already used", items[i].ListenPort)
-		}
+		items[i].ListenPort = portStart + i
 		usedPorts[items[i].ListenPort] = true
 	}
 
@@ -1301,6 +1304,27 @@ func relayUsedPorts(tx *gorm.DB) (map[int]bool, error) {
 		}
 	}
 	return used, nil
+}
+
+func nextRelayPortRange(used map[int]bool, preferredStart, count int) (int, error) {
+	if preferredStart < 1 || preferredStart > 65535 || count < 1 || count > 65535-preferredStart+1 {
+		return 0, common.NewError("relay port range is invalid")
+	}
+	lastStart := 65535 - count + 1
+	for start := preferredStart; start <= lastStart; {
+		conflict := 0
+		for port := start; port < start+count; port++ {
+			if used[port] {
+				conflict = port
+				break
+			}
+		}
+		if conflict == 0 {
+			return start, nil
+		}
+		start = conflict + 1
+	}
+	return 0, common.NewErrorf("no continuous relay port range of %d ports is available from %d", count, preferredStart)
 }
 
 func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remove bool) error {

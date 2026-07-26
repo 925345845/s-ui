@@ -219,7 +219,7 @@ import { i18n } from '@/locales'
 
 interface IPv6Item { interface: string; address: string; prefix: number }
 interface RelayItem { listen_port: number; username: string; password: string; ipv6?: string; protocol?: string; export?: string }
-interface RelayPool { id: number; name: string; source?: string; mode: string; protocol?: string; domain_strategy?: string; listen_host: string; count: number; items: RelayItem[] }
+interface RelayPool { id: number; name: string; source?: string; mode: string; protocol?: string; domain_strategy?: string; listen_host: string; port_start: number; count: number; items: RelayItem[] }
 interface RelayCapabilities { os: string; can_add_system_ipv6: boolean; unavailable_reason?: string }
 
 const props = defineProps<{ visible: boolean }>()
@@ -331,7 +331,15 @@ const create = async (mode: 'ipv6' | 'upstream', quick = false) => {
     let msg: any
     try { msg = await response.json() } catch { msg = { success: false, msg: i18n.global.t('relay.invalidResponse') } }
     if (msg.success) {
-      push.success({ message: i18n.global.t('relay.created') })
+      const allocatedStart = Number(msg.obj?.port_start)
+      const allocatedCount = Number(msg.obj?.count)
+      if (Number.isInteger(allocatedStart) && Number.isInteger(allocatedCount) && allocatedStart > 0 && allocatedCount > 0) {
+        const allocatedEnd = allocatedStart + allocatedCount - 1
+        if (allocatedEnd < 65535) form.port_start = allocatedEnd + 1
+        push.success({ message: i18n.global.t('relay.createdRange', { start: allocatedStart, end: allocatedEnd }) })
+      } else {
+        push.success({ message: i18n.global.t('relay.created') })
+      }
       tab.value = 'pools'
       form.name = ''
       form.ipv6_text = ''
