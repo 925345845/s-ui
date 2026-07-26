@@ -54,9 +54,23 @@ func NewConfigService(singCore *core.Core) *ConfigService {
 }
 
 func (s *ConfigService) GetConfig(data string) (*[]byte, error) {
+	return s.GetConfigWithDB(data, database.GetDB())
+}
+
+// GetConfigWithDB builds a complete sing-box configuration using the supplied
+// database handle. Relay pool creation uses a transaction here so the new
+// routes and resources can be validated by a core restart before committing.
+func (s *ConfigService) GetConfigWithDB(data string, db *gorm.DB) (*[]byte, error) {
 	var err error
 	if len(data) == 0 {
-		data, err = s.SettingService.GetConfig()
+		var setting model.Setting
+		err = db.Where("key = ?", "config").First(&setting).Error
+		if database.IsNotFound(err) {
+			data = defaultConfig
+			err = nil
+		} else if err == nil {
+			data = setting.Value
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -67,19 +81,19 @@ func (s *ConfigService) GetConfig(data string) (*[]byte, error) {
 		return nil, err
 	}
 
-	singboxConfig.Inbounds, err = s.InboundService.GetAllConfig(database.GetDB())
+	singboxConfig.Inbounds, err = s.InboundService.GetAllConfig(db)
 	if err != nil {
 		return nil, err
 	}
-	singboxConfig.Outbounds, err = s.OutboundService.GetAllConfig(database.GetDB())
+	singboxConfig.Outbounds, err = s.OutboundService.GetAllConfig(db)
 	if err != nil {
 		return nil, err
 	}
-	singboxConfig.Services, err = s.ServicesService.GetAllConfig(database.GetDB())
+	singboxConfig.Services, err = s.ServicesService.GetAllConfig(db)
 	if err != nil {
 		return nil, err
 	}
-	singboxConfig.Endpoints, err = s.EndpointService.GetAllConfig(database.GetDB())
+	singboxConfig.Endpoints, err = s.EndpointService.GetAllConfig(db)
 	if err != nil {
 		return nil, err
 	}

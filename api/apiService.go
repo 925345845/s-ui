@@ -452,6 +452,35 @@ func (a *ApiService) GetCheckWarp(c *gin.Context) {
 	jsonObj(c, result, nil)
 }
 
+func (a *ApiService) GetRelayData(c *gin.Context) {
+	data, err := a.ConfigService.GetRelayData()
+	jsonObj(c, data, err)
+}
+
+func (a *ApiService) CreateRelay(c *gin.Context, loginUser string) {
+	var req service.RelayCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		jsonMsg(c, "relay", err)
+		return
+	}
+	pool, err := a.ConfigService.CreateRelay(req, loginUser, getHostname(c))
+	if err != nil {
+		jsonMsg(c, "relay", err)
+		return
+	}
+	jsonObj(c, pool, nil)
+}
+
+func (a *ApiService) DeleteRelay(c *gin.Context, loginUser string) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || id == 0 {
+		jsonMsg(c, "relay", common.NewError("invalid relay pool id"))
+		return
+	}
+	err = a.ConfigService.DeleteRelay(uint(id), loginUser)
+	jsonMsg(c, "relay", err)
+}
+
 type PinnedSha256Request struct {
 	Cert       string `json:"cert"`
 	CertPath   string `json:"certPath"`

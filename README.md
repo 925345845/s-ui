@@ -52,6 +52,10 @@ The screenshots use local demo data and do not contain real server secrets.
 - TLS、ACME、ECH、Reality、Pinned Peer Certificate SHA256 集中管理
 - Hysteria2 / TLS 分享链接兼容 v2rayN，`pinSHA256` 按 Xray 需要输出 hex 指纹
 - Shadowsocks 默认使用 `2022-blake3-aes-256-gcm` 和 256 位密码强度
+- 一键中转节点：导入上游 SOCKS5，或按本机公网 IPv6 前缀批量生成 SOCKS5、HTTP、Mixed、Shadowsocks、VLESS、VMess、Trojan、Hysteria2、TUIC、Naive、AnyTLS
+- 内置安全集成 [help660vip/auto-add-ipv6](https://github.com/help660vip/auto-add-ipv6)：一键生成 IPv6 出口 SOCKS5；面板以 Go 实现地址生成流程，不下载或执行上游脚本
+- 中转批次自动创建独立账号、入站、出站和路由规则；SOCKS5/Mixed 导出 `IPv6:端口:账号:密码`，其它协议导出标准分享链接
+- IPv6 地址由面板内置 `ip -6 addr add` 管理，等待 DAD 就绪并在失败时回滚；不修改系统默认路由，避免影响 SSH 和面板连通性
 - 首页仪表卡、运行状态、日志、备份恢复、使用量统计
 - 响应式 Vue 3 + Vuetify 页面，支持顶部菜单、侧边栏、暗色模式和背景设置
 - Linux、Windows、Docker、OpenWrt Lite 多平台发布
@@ -142,6 +146,7 @@ opkg install ./s-ui-lite_1.4.8-1_x86_64.ipk
 | --- | --- |
 | 首页 | 系统仪表、运行状态、备份恢复、日志、使用量统计 |
 | 入站管理 | 创建、编辑、克隆、删除入站，快速添加节点 |
+| 一键中转 | IPv6 地址池或上游 SOCKS5 批量创建多协议节点，复制账号密码或分享链接 |
 | 用户管理 | 用户、流量、到期时间、分组、在线状态、二维码 |
 | 出站管理 | 出站协议、拨号参数、TLS、传输层配置 |
 | 节点管理 | WireGuard、Tailscale、Warp 等端点 |
@@ -169,6 +174,10 @@ opkg install ./s-ui-lite_1.4.8-1_x86_64.ipk
 - Quick node creation with generated port, tag, user, TLS, and protocol defaults
 - Centralized TLS, ACME, ECH, Reality, and pinned SHA256 management
 - v2rayN-compatible Hysteria2 links, including Xray-ready hex `pinSHA256`
+- One-click multi-protocol relay pools from local public IPv6 addresses or upstream SOCKS5 entries
+- Safe built-in integration of [help660vip/auto-add-ipv6](https://github.com/help660vip/auto-add-ipv6) for one-click IPv6 egress SOCKS5 pools; 1S-UI implements the workflow in Go and never downloads or executes the upstream script
+- Each relay item gets its own inbound, credentials, outbound, route, and protocol-specific export
+- IPv6 address management waits for duplicate-address detection, rolls back failed batches, removes only panel-created addresses, and never changes the host default route
 - Shadowsocks defaults to `2022-blake3-aes-256-gcm` with 256-bit password strength
 - Dashboard cards, runtime status, logs, backup and restore, usage statistics
 - Responsive Vue 3 + Vuetify frontend with top menu, sidebar, dark mode, and background settings

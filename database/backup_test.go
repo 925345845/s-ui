@@ -25,10 +25,14 @@ func TestGetDbIncludesServicesAndTokens(t *testing.T) {
 	}
 	service := model.Service{Type: "derp", Tag: "backup-service", Options: json.RawMessage(`{}`)}
 	token := model.Tokens{Desc: "backup-token", Token: "secret-token", UserId: user.Id}
+	relayPool := model.RelayPool{Name: "backup-relay", Mode: "upstream", ListenHost: "127.0.0.1", PortStart: 30000, Count: 1, Items: json.RawMessage(`[]`)}
 	if err := GetDB().Create(&service).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := GetDB().Create(&token).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := GetDB().Create(&relayPool).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -58,5 +62,12 @@ func TestGetDbIncludesServicesAndTokens(t *testing.T) {
 	}
 	if tokenCount != 1 {
 		t.Fatalf("token count = %d, want 1", tokenCount)
+	}
+	var relayCount int64
+	if err = backupDB.Model(&model.RelayPool{}).Where("name = ?", relayPool.Name).Count(&relayCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if relayCount != 1 {
+		t.Fatalf("relay pool count = %d, want 1", relayCount)
 	}
 }

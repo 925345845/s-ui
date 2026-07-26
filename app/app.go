@@ -89,6 +89,9 @@ func (a *APP) Start() error {
 		return err
 	}
 
+	if err := a.configService.RestoreRelayIPv6(); err != nil {
+		logger.Warning("restore relay IPv6 addresses failed: ", err)
+	}
 	err = a.configService.StartCore()
 	if err != nil {
 		logger.Error(err)

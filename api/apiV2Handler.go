@@ -35,6 +35,8 @@ func (a *APIv2Handler) initRouter(g *gin.RouterGroup) {
 		a.checkToken(c)
 	})
 	g.POST("/:postAction", a.postHandler)
+	g.POST("/relay/:id/delete", func(c *gin.Context) { a.ApiService.DeleteRelay(c, a.findUsername(c)) })
+	g.POST("/relay/create", func(c *gin.Context) { a.ApiService.CreateRelay(c, a.findUsername(c)) })
 	g.GET("/:getAction", a.getHandler)
 }
 
@@ -102,6 +104,8 @@ func (a *APIv2Handler) getHandler(c *gin.Context) {
 		a.ApiService.GetCheckOutbound(c)
 	case "checkWarp":
 		a.ApiService.GetCheckWarp(c)
+	case "relay":
+		a.ApiService.GetRelayData(c)
 	default:
 		jsonMsg(c, "failed", common.NewError("unknown action: ", action))
 	}

@@ -58,7 +58,7 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 
 	engine := gin.Default()
 
-	webFS, htmlPattern, assetsFS, err := getWebFiles()
+	webFS, htmlPattern, assetsFS, dynamicIndex, err := getWebFiles()
 	if err != nil {
 		return nil, err
 	}
@@ -123,6 +123,10 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 			c.String(404, "")
 			return
 		}
+		if strings.HasPrefix(c.Request.URL.Path, assetsBasePath) {
+			c.Status(http.StatusNotFound)
+			return
+		}
 		if c.Request.URL.Path != base_url+"login" && !api.IsLogin(c) {
 			c.Redirect(http.StatusTemporaryRedirect, base_url+"login")
 			return
@@ -132,10 +136,28 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 			return
 		}
 		setIndexNoCache(c)
+		if dynamicIndex {
+			renderDynamicIndex(c, webFS, htmlPattern, base_url)
+			return
+		}
 		c.HTML(http.StatusOK, "index.html", gin.H{"BASE_URL": base_url})
 	})
 
 	return engine, nil
+}
+
+func renderDynamicIndex(c *gin.Context, webFS fs.FS, htmlPattern, baseURL string) {
+	t, err := template.New("").ParseFS(webFS, htmlPattern)
+	if err != nil {
+		logger.Error("load web UI index failed: ", err)
+		c.String(http.StatusInternalServerError, "web UI is temporarily unavailable")
+		return
+	}
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Status(http.StatusOK)
+	if err := t.ExecuteTemplate(c.Writer, "index.html", gin.H{"BASE_URL": baseURL}); err != nil {
+		logger.Error("render web UI index failed: ", err)
+	}
 }
 
 func setIndexNoCache(c *gin.Context) {
@@ -144,18 +166,18 @@ func setIndexNoCache(c *gin.Context) {
 	c.Header("Expires", "0")
 }
 
-func getWebFiles() (fs.FS, string, fs.FS, error) {
+func getWebFiles() (fs.FS, string, fs.FS, bool, error) {
 	if _, err := fs.Stat(content, "html/index.html"); err == nil {
 		assetsFS, err := fs.Sub(content, "html/assets")
-		return content, "html/index.html", assetsFS, err
+		return content, "html/index.html", assetsFS, false, err
 	}
 
 	if _, err := os.Stat("frontend/dist/index.html"); err == nil {
 		logger.Info("embedded web UI not found, using frontend/dist")
-		return os.DirFS("frontend/dist"), "index.html", os.DirFS("frontend/dist/assets"), nil
+		return os.DirFS("frontend/dist"), "index.html", os.DirFS("frontend/dist/assets"), true, nil
 	}
 
-	return nil, "", nil, fmt.Errorf("web UI assets not found, run `cd frontend && npm run build` or `./build.sh` first")
+	return nil, "", nil, false, fmt.Errorf("web UI assets not found, run `cd frontend && npm run build` or `./build.sh` first")
 }
 
 func (s *Server) Start() (err error) {

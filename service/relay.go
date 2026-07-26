@@ -1,0 +1,1252 @@
+package service
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/netip"
+	"net/url"
+	"os/exec"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/Hhz0823/1s-ui/database"
+	"github.com/Hhz0823/1s-ui/database/model"
+	"github.com/Hhz0823/1s-ui/logger"
+	"github.com/Hhz0823/1s-ui/util"
+	"github.com/Hhz0823/1s-ui/util/common"
+	"github.com/gofrs/uuid/v5"
+
+	"gorm.io/gorm"
+)
+
+const (
+	relayModeIPv6          = "ipv6"
+	relayModeUpstream      = "upstream"
+	relaySourceAutoAddIPv6 = "help660vip/auto-add-ipv6"
+	relayAddressReady      = "ready"
+	relayAddressTentative  = "tentative"
+	relayAddressDADFailed  = "dadfailed"
+	relayAddressMissing    = "missing"
+	maxRelayItems          = 1000
+	relayCoreSingBox       = model.CoreTypeSingBox
+)
+
+var relayProtocols = map[string]bool{
+	"socks": true, "http": true, "mixed": true, "shadowsocks": true,
+	"vless": true, "vmess": true, "trojan": true, "hysteria2": true,
+	"tuic": true, "naive": true, "anytls": true,
+}
+
+var relayTLSProtocols = map[string]bool{
+	"trojan": true, "hysteria2": true, "tuic": true, "naive": true, "anytls": true,
+}
+
+var relayTLSSupportedProtocols = map[string]bool{
+	"vless": true, "vmess": true, "trojan": true, "hysteria2": true, "tuic": true, "naive": true, "anytls": true,
+}
+
+var relayShadowsocksMethods = map[string]bool{
+	"aes-128-gcm": true, "aes-192-gcm": true, "aes-256-gcm": true,
+	"chacha20-ietf-poly1305": true, "xchacha20-ietf-poly1305": true,
+	"2022-blake3-aes-128-gcm": true, "2022-blake3-aes-256-gcm": true,
+	"2022-blake3-chacha20-poly1305": true,
+}
+
+var relayMu sync.Mutex
+
+type RelayIPv6 struct {
+	Interface string `json:"interface"`
+	Address   string `json:"address"`
+	Prefix    int    `json:"prefix"`
+}
+
+type RelayUpstream struct {
+	Server   string `json:"server"`
+	Port     int    `json:"port"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type RelayCreateRequest struct {
+	Name               string          `json:"name"`
+	Source             string          `json:"source"`
+	Mode               string          `json:"mode"`
+	PortStart          int             `json:"port_start"`
+	Count              int             `json:"count"`
+	UsernamePrefix     string          `json:"username_prefix"`
+	PasswordLength     int             `json:"password_length"`
+	PublicHost         string          `json:"public_host"`
+	Interface          string          `json:"interface"`
+	BaseIPv6           string          `json:"base_ipv6"`
+	Prefix             int             `json:"prefix"`
+	AddSystemAddresses bool            `json:"add_system_addresses"`
+	IPv6Addresses      []string        `json:"ipv6_addresses"`
+	Upstreams          []RelayUpstream `json:"upstreams"`
+	UpstreamText       string          `json:"upstream_text"`
+	Protocol           string          `json:"protocol"`
+	CoreType           string          `json:"core_type"`
+	TlsID              uint            `json:"tls_id"`
+	Transport          string          `json:"transport"`
+	ShadowsocksMethod  string          `json:"shadowsocks_method"`
+}
+
+type RelayData struct {
+	Pools        []model.RelayPool `json:"pools"`
+	IPv6         []RelayIPv6       `json:"ipv6"`
+	Capabilities RelayCapabilities `json:"capabilities"`
+}
+
+type RelayCapabilities struct {
+	OS                string `json:"os"`
+	CanAddSystemIPv6  bool   `json:"can_add_system_ipv6"`
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
+}
+
+func (s *ConfigService) GetRelayPools() ([]model.RelayPool, error) {
+	var pools []model.RelayPool
+	err := database.GetDB().Order("id desc").Find(&pools).Error
+	if err != nil {
+		return nil, err
+	}
+	return pools, nil
+}
+
+func (s *ConfigService) GetRelayIPv6() ([]RelayIPv6, error) {
+	return discoverRelayIPv6()
+}
+
+func (s *ConfigService) GetRelayData() (*RelayData, error) {
+	pools, err := s.GetRelayPools()
+	if err != nil {
+		return nil, err
+	}
+	ipv6, err := s.GetRelayIPv6()
+	if err != nil {
+		return nil, err
+	}
+	return &RelayData{Pools: pools, IPv6: ipv6, Capabilities: getRelayCapabilities()}, nil
+}
+
+func getRelayCapabilities() RelayCapabilities {
+	_, ipCommandErr := exec.LookPath("ip")
+	return buildRelayCapabilities(runtime.GOOS, relayHasRoot(), ipCommandErr == nil)
+}
+
+func buildRelayCapabilities(goos string, hasRoot, hasIPCommand bool) RelayCapabilities {
+	capabilities := RelayCapabilities{OS: goos}
+	switch {
+	case goos != "linux":
+		capabilities.UnavailableReason = "unsupported_os"
+	case !hasRoot:
+		capabilities.UnavailableReason = "root_required"
+	case !hasIPCommand:
+		capabilities.UnavailableReason = "iproute2_required"
+	default:
+		capabilities.CanAddSystemIPv6 = true
+	}
+	return capabilities
+}
+
+func (s *ConfigService) RestoreRelayIPv6() error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	pools, err := s.GetRelayPools()
+	if err != nil {
+		return err
+	}
+	for _, pool := range pools {
+		var items []model.RelayItem
+		if err := json.Unmarshal(pool.Items, &items); err != nil {
+			return fmt.Errorf("relay pool %q: invalid items: %w", pool.Name, err)
+		}
+		for _, item := range items {
+			if !item.AddedByUs || item.IPv6 == "" {
+				continue
+			}
+			exists, err := relayAddressExists(item.IPv6)
+			if err != nil {
+				logger.Warningf("check relay IPv6 %s failed: %v", item.IPv6, err)
+				continue
+			}
+			if !exists {
+				if err := addRelayAddress(item.Interface, item.IPv6, item.Prefix); err != nil {
+					logger.Warningf("restore relay IPv6 %s: %v", item.IPv6, err)
+					continue
+				}
+			}
+			if err := waitRelayAddressReady(item.Interface, item.IPv6); err != nil {
+				logger.Warningf("restore relay IPv6 %s readiness: %v", item.IPv6, err)
+				_ = deleteRelayAddress(item.Interface, item.IPv6, item.Prefix)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost string) (*model.RelayPool, error) {
+	relayMu.Lock()
+	defer relayMu.Unlock()
+
+	if err := applyRelaySourcePreset(&req); err != nil {
+		return nil, err
+	}
+	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
+	if req.Mode != relayModeIPv6 && req.Mode != relayModeUpstream {
+		return nil, common.NewError("relay mode must be ipv6 or upstream")
+	}
+	if req.Mode == relayModeUpstream && len(req.Upstreams) == 0 {
+		parsed, parseErr := parseRelayUpstreams(req.UpstreamText)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		req.Upstreams = parsed
+	}
+	if req.Mode == relayModeIPv6 && req.Count <= 0 {
+		return nil, common.NewError("relay count must be greater than zero")
+	}
+	if req.Mode == relayModeUpstream {
+		for i := range req.Upstreams {
+			req.Upstreams[i].Server = strings.Trim(req.Upstreams[i].Server, "[]")
+		}
+		req.Count = len(req.Upstreams)
+	}
+	req.Protocol = strings.ToLower(strings.TrimSpace(req.Protocol))
+	if req.Protocol == "" {
+		req.Protocol = "socks"
+	}
+	if !relayProtocols[req.Protocol] {
+		return nil, common.NewErrorf("relay protocol %q is not supported", req.Protocol)
+	}
+	req.CoreType = strings.TrimSpace(req.CoreType)
+	if req.CoreType == "" {
+		req.CoreType = relayCoreSingBox
+	}
+	if req.CoreType != relayCoreSingBox {
+		return nil, common.NewError("relay batches currently require sing-box; Xray inbound batches use a separate routing model")
+	}
+	if relayTLSProtocols[req.Protocol] && req.TlsID == 0 {
+		return nil, common.NewErrorf("relay protocol %s requires an existing TLS configuration", req.Protocol)
+	}
+	if req.TlsID > 0 && !relayTLSSupportedProtocols[req.Protocol] {
+		return nil, common.NewErrorf("relay protocol %s does not support TLS", req.Protocol)
+	}
+	if req.Transport == "" {
+		req.Transport = "http"
+	}
+	if req.Protocol != "vless" && req.Protocol != "vmess" && req.Protocol != "trojan" {
+		req.Transport = ""
+	}
+	if req.ShadowsocksMethod == "" {
+		req.ShadowsocksMethod = "2022-blake3-aes-256-gcm"
+	}
+	if req.Protocol == "shadowsocks" && !relayShadowsocksMethods[req.ShadowsocksMethod] {
+		return nil, common.NewError("unsupported Shadowsocks method")
+	}
+	if req.Count > maxRelayItems {
+		return nil, common.NewErrorf("relay count cannot exceed %d", maxRelayItems)
+	}
+	if req.PortStart < 1 || req.PortStart > 65535 || req.Count > 65535-req.PortStart+1 {
+		return nil, common.NewError("relay port range is invalid")
+	}
+	if req.PasswordLength < 8 || req.PasswordLength > 64 {
+		req.PasswordLength = 12
+	}
+	if strings.TrimSpace(req.UsernamePrefix) == "" {
+		req.UsernamePrefix = "relay"
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		req.Name = "relay-" + common.Random(5)
+	}
+	requestedHost := strings.TrimSpace(req.PublicHost)
+	if requestedHost == "" {
+		requestedHost = strings.TrimSpace(publicHost)
+	}
+	if requestedHost == "" {
+		requestedHost = "127.0.0.1"
+	}
+	var err error
+	publicHost, err = normalizeRelayPublicHost(requestedHost)
+	if err != nil {
+		return nil, err
+	}
+	req.PublicHost = publicHost
+
+	items, err := s.prepareRelayItems(req)
+	if err != nil {
+		return nil, err
+	}
+	added := make([]model.RelayItem, 0)
+	cleanup := true
+	defer func() {
+		if cleanup {
+			for _, item := range added {
+				if item.AddedByUs {
+					_ = deleteRelayAddress(item.Interface, item.IPv6, item.Prefix)
+				}
+			}
+		}
+	}()
+	for i := range items {
+		if items[i].IPv6 == "" {
+			continue
+		}
+		already, err := relayAddressExists(items[i].IPv6)
+		if err != nil {
+			return nil, err
+		}
+		if !already && !req.AddSystemAddresses {
+			return nil, common.NewErrorf("IPv6 %s is not currently assigned; enable system address creation", items[i].IPv6)
+		}
+		if !already {
+			if err := addRelayAddress(items[i].Interface, items[i].IPv6, items[i].Prefix); err != nil {
+				return nil, err
+			}
+			items[i].AddedByUs = true
+			added = append(added, items[i])
+		}
+	}
+	for _, item := range items {
+		if err := waitRelayAddressReady(item.Interface, item.IPv6); err != nil {
+			return nil, err
+		}
+	}
+
+	db := database.GetDB()
+	tx := db.Begin()
+	if tx.Error != nil {
+		return nil, tx.Error
+	}
+	committed := false
+	var oldConfig []byte
+	var newConfig []byte
+	defer func() {
+		if !committed {
+			_ = tx.Rollback().Error
+			if len(oldConfig) > 0 && corePtr != nil {
+				if restoreErr := s.restoreSingBoxConfig(oldConfig); restoreErr != nil {
+					logger.Error("restore core after relay create failed: ", restoreErr)
+				}
+			}
+		}
+	}()
+
+	usedPorts, err := relayUsedPorts(tx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		if usedPorts[items[i].ListenPort] {
+			return nil, common.NewErrorf("relay port %d is already used", items[i].ListenPort)
+		}
+		usedPorts[items[i].ListenPort] = true
+	}
+
+	pool := model.RelayPool{
+		Name:       req.Name,
+		Source:     req.Source,
+		Mode:       req.Mode,
+		Protocol:   req.Protocol,
+		CoreType:   req.CoreType,
+		TlsID:      req.TlsID,
+		Transport:  req.Transport,
+		ListenHost: publicHost,
+		PortStart:  req.PortStart,
+		Count:      req.Count,
+		CreatedAt:  time.Now().Unix(),
+	}
+	var relayTLS *model.Tls
+	if req.TlsID > 0 {
+		relayTLS = &model.Tls{}
+		if err := tx.First(relayTLS, req.TlsID).Error; err != nil {
+			return nil, common.NewErrorf("TLS configuration %d was not found", req.TlsID)
+		}
+	}
+	for i := range items {
+		listenAddress := "::"
+		if req.Mode == relayModeIPv6 {
+			listenAddress = items[i].IPv6
+		}
+		listenHost := relayItemHost(req.Mode, publicHost, items[i].IPv6)
+		inboundOptions, clientConfig, err := relayProtocolConfig(req, &items[i])
+		if err != nil {
+			return nil, err
+		}
+		inbound := model.Inbound{
+			Type:     req.Protocol,
+			Tag:      fmt.Sprintf("relay-%s-%d", common.Random(5), items[i].ListenPort),
+			CoreType: req.CoreType,
+			Addrs:    mustJSON([]map[string]interface{}{{"server": listenHost, "server_port": items[i].ListenPort}}),
+			OutJson:  json.RawMessage("{}"),
+			TlsId:    req.TlsID,
+			Options:  mustJSON(relayInboundOptions(req, inboundOptions, listenAddress, items[i].ListenPort)),
+		}
+		inbound.Tls = relayTLS
+		if err := tx.Create(&inbound).Error; err != nil {
+			return nil, err
+		}
+		items[i].InboundID = inbound.Id
+		items[i].InboundTag = inbound.Tag
+		outbound := model.Outbound{
+			Type: "direct",
+			Tag:  fmt.Sprintf("relay-out-%s", common.Random(7)),
+		}
+		if req.Mode == relayModeUpstream {
+			upstream := req.Upstreams[i]
+			outbound.Type = "socks"
+			outbound.Options, err = json.Marshal(map[string]interface{}{
+				"server": upstream.Server, "server_port": upstream.Port,
+				"version": "5", "username": upstream.Username, "password": upstream.Password,
+			})
+			items[i].UpstreamServer = upstream.Server
+			items[i].UpstreamPort = upstream.Port
+			items[i].UpstreamUsername = upstream.Username
+			items[i].UpstreamPassword = upstream.Password
+		} else {
+			outbound.Options, err = json.Marshal(map[string]interface{}{"inet6_bind_address": items[i].IPv6})
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Create(&outbound).Error; err != nil {
+			return nil, err
+		}
+		items[i].OutboundTag = outbound.Tag
+		client := model.Client{
+			Enable: true, Name: items[i].Username,
+			Config:    mustJSON(clientConfig),
+			Inbounds:  mustJSON([]uint{inbound.Id}),
+			Links:     mustJSON(relayClientLinks(req, inbound, clientConfig, publicHost)),
+			CreatedAt: time.Now().Unix(),
+		}
+		if err := tx.Create(&client).Error; err != nil {
+			return nil, err
+		}
+		items[i].ClientID = client.Id
+		items[i].Protocol = req.Protocol
+		items[i].Method = req.ShadowsocksMethod
+		if cfg, ok := clientConfig[req.Protocol].(map[string]interface{}); ok {
+			items[i].UUID, _ = cfg["uuid"].(string)
+		}
+		items[i].Export = relayClientLink(req, inbound, clientConfig, publicHost)
+	}
+	pool.Items = mustJSON(items)
+	if err := tx.Create(&pool).Error; err != nil {
+		return nil, err
+	}
+	if err := updateRelayRouteRules(tx, items, false); err != nil {
+		return nil, err
+	}
+	pool.Items = mustJSON(items)
+	if err := tx.Model(&model.RelayPool{}).Where("id = ?", pool.Id).Update("items", pool.Items).Error; err != nil {
+		return nil, err
+	}
+
+	if corePtr != nil && corePtr.IsRunning() {
+		oldConfigPtr, err := s.GetConfig("")
+		if err != nil {
+			return nil, err
+		}
+		oldConfig = *oldConfigPtr
+		newConfigPtr, err := s.GetConfigWithDB("", tx)
+		if err != nil {
+			return nil, err
+		}
+		if err = corePtr.Stop(); err != nil {
+			return nil, err
+		}
+		newConfig = *newConfigPtr
+		if err = corePtr.Start(newConfig); err != nil {
+			return nil, common.NewErrorf("relay configuration rejected by sing-box: %v", err)
+		}
+	}
+	changeData := mustJSON(req)
+	if err := tx.Create(&model.Changes{DateTime: time.Now().Unix(), Actor: actor, Key: "relay", Action: "create", Obj: changeData}).Error; err != nil {
+		return nil, err
+	}
+	if err := tx.Commit().Error; err != nil {
+		return nil, err
+	}
+	committed = true
+	cleanup = false
+	LastUpdate.Store(time.Now().UnixMilli())
+	if corePtr != nil && !corePtr.IsRunning() {
+		if err := s.StartCore(); err != nil {
+			return &pool, common.NewErrorf("relay saved, but core update failed: %v", err)
+		}
+	}
+	return &pool, nil
+}
+
+func applyRelaySourcePreset(req *RelayCreateRequest) error {
+	req.Source = strings.TrimSpace(req.Source)
+	switch req.Source {
+	case "":
+		return nil
+	case relaySourceAutoAddIPv6:
+		req.Mode = relayModeIPv6
+		req.Protocol = "socks"
+		req.CoreType = relayCoreSingBox
+		req.AddSystemAddresses = true
+		req.TlsID = 0
+		req.Transport = ""
+		return nil
+	default:
+		return common.NewErrorf("unsupported relay source %q", req.Source)
+	}
+}
+
+func (s *ConfigService) DeleteRelay(id uint, actor string) error {
+	relayMu.Lock()
+	defer relayMu.Unlock()
+
+	var pool model.RelayPool
+	db := database.GetDB()
+	if err := db.First(&pool, id).Error; err != nil {
+		return err
+	}
+	var items []model.RelayItem
+	if err := json.Unmarshal(pool.Items, &items); err != nil {
+		return err
+	}
+	tx := db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	committed := false
+	var oldConfig []byte
+	defer func() {
+		if !committed {
+			_ = tx.Rollback().Error
+			if len(oldConfig) > 0 && corePtr != nil {
+				if restoreErr := s.restoreSingBoxConfig(oldConfig); restoreErr != nil {
+					logger.Error("restore core after relay delete failed: ", restoreErr)
+				}
+			}
+		}
+	}()
+	if err := updateRelayRouteRules(tx, items, true); err != nil {
+		return err
+	}
+	var inboundTags, outboundTags []string
+	var clientIDs []uint
+	for _, item := range items {
+		inboundTags = append(inboundTags, item.InboundTag)
+		outboundTags = append(outboundTags, item.OutboundTag)
+		if item.ClientID > 0 {
+			clientIDs = append(clientIDs, item.ClientID)
+		}
+	}
+	if len(clientIDs) > 0 {
+		if err := tx.Where("id IN ?", clientIDs).Delete(&model.Client{}).Error; err != nil {
+			return err
+		}
+	}
+	if len(inboundTags) > 0 {
+		if err := tx.Where("tag IN ?", inboundTags).Delete(&model.Inbound{}).Error; err != nil {
+			return err
+		}
+	}
+	if len(outboundTags) > 0 {
+		if err := tx.Where("tag IN ?", outboundTags).Delete(&model.Outbound{}).Error; err != nil {
+			return err
+		}
+	}
+	if err := tx.Delete(&pool).Error; err != nil {
+		return err
+	}
+	if corePtr != nil && corePtr.IsRunning() {
+		oldConfigPtr, err := s.GetConfig("")
+		if err != nil {
+			return err
+		}
+		oldConfig = *oldConfigPtr
+		newConfig, err := s.GetConfigWithDB("", tx)
+		if err != nil {
+			return err
+		}
+		if err = corePtr.Stop(); err != nil {
+			return err
+		}
+		if err = corePtr.Start(*newConfig); err != nil {
+			return common.NewErrorf("remaining configuration rejected by sing-box: %v", err)
+		}
+	}
+	if err := tx.Create(&model.Changes{DateTime: time.Now().Unix(), Actor: actor, Key: "relay", Action: "delete", Obj: mustJSON(id)}).Error; err != nil {
+		return err
+	}
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
+	committed = true
+	LastUpdate.Store(time.Now().UnixMilli())
+	for _, item := range items {
+		if item.AddedByUs {
+			if err := deleteRelayAddress(item.Interface, item.IPv6, item.Prefix); err != nil {
+				logger.Warningf("remove relay IPv6 %s: %v", item.IPv6, err)
+			}
+		}
+	}
+	return nil
+}
+
+func relayProtocolConfig(req RelayCreateRequest, item *model.RelayItem) (map[string]interface{}, map[string]interface{}, error) {
+	password := item.Password
+	username := item.Username
+	options := map[string]interface{}{}
+	client := map[string]interface{}{}
+
+	switch req.Protocol {
+	case "socks", "http":
+		client[req.Protocol] = map[string]interface{}{"username": username, "password": password}
+	case "mixed":
+		client["mixed"] = map[string]interface{}{"username": username, "password": password}
+		client["socks"] = map[string]interface{}{"username": username, "password": password}
+		client["http"] = map[string]interface{}{"username": username, "password": password}
+	case "shadowsocks":
+		method := req.ShadowsocksMethod
+		options["method"] = method
+		if strings.HasPrefix(method, "2022") {
+			item.Password = relayShadowsocksKey(method)
+			item.InboundPassword = relayShadowsocksKey(method)
+			password = item.Password
+			options["password"] = item.InboundPassword
+		} else {
+			options["password"] = password
+		}
+		key := "shadowsocks"
+		if method == "2022-blake3-aes-128-gcm" {
+			key = "shadowsocks16"
+		}
+		client[key] = map[string]interface{}{"name": username, "password": password}
+	case "vless":
+		item.UUID = randomUUID()
+		client["vless"] = map[string]interface{}{"name": username, "uuid": item.UUID, "flow": ""}
+	case "vmess":
+		item.UUID = randomUUID()
+		client["vmess"] = map[string]interface{}{"name": username, "uuid": item.UUID, "alterId": 0}
+	case "trojan":
+		client["trojan"] = map[string]interface{}{"name": username, "password": password}
+	case "hysteria2":
+		client["hysteria2"] = map[string]interface{}{"name": username, "password": password}
+	case "tuic":
+		item.UUID = randomUUID()
+		client["tuic"] = map[string]interface{}{"name": username, "uuid": item.UUID, "password": password}
+		options["congestion_control"] = "cubic"
+	case "naive":
+		client["naive"] = map[string]interface{}{"username": username, "password": password}
+	case "anytls":
+		client["anytls"] = map[string]interface{}{"name": username, "password": password}
+		options["padding_scheme"] = []string{"stop=8", "0=30-30", "1=100-400", "2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000", "3=9-9,500-1000", "4=500-1000", "5=500-1000", "6=500-1000", "7=500-1000"}
+	default:
+		return nil, nil, common.NewErrorf("relay protocol %q is not supported", req.Protocol)
+	}
+	if req.Protocol == "vless" || req.Protocol == "vmess" || req.Protocol == "trojan" {
+		options["transport"] = relayTransport(req.Transport)
+	}
+	return options, client, nil
+}
+
+func relayShadowsocksKey(method string) string {
+	length := 32
+	if method == "2022-blake3-aes-128-gcm" {
+		length = 16
+	}
+	key := make([]byte, length)
+	if _, err := rand.Read(key); err != nil {
+		return base64.StdEncoding.EncodeToString([]byte(common.Random(length)))
+	}
+	return base64.StdEncoding.EncodeToString(key)
+}
+
+func relayInboundOptions(req RelayCreateRequest, protocolOptions map[string]interface{}, listen string, port int) map[string]interface{} {
+	options := map[string]interface{}{"listen": listen, "listen_port": port}
+	for key, value := range protocolOptions {
+		options[key] = value
+	}
+	return options
+}
+
+func relayTransport(value string) map[string]interface{} {
+	switch value {
+	case "ws":
+		return map[string]interface{}{"type": "ws", "path": "/"}
+	case "grpc":
+		return map[string]interface{}{"type": "grpc", "service_name": "relay"}
+	case "httpupgrade":
+		return map[string]interface{}{"type": "httpupgrade", "path": "/"}
+	case "quic":
+		return map[string]interface{}{"type": "quic"}
+	default:
+		return map[string]interface{}{"type": "http", "path": "/"}
+	}
+}
+
+func relayClientLink(req RelayCreateRequest, inbound model.Inbound, clientConfig map[string]interface{}, publicHost string) string {
+	links := relayClientLinks(req, inbound, clientConfig, publicHost)
+	if len(links) > 0 {
+		return links[0]["uri"]
+	}
+	return ""
+}
+
+func relayClientLinks(req RelayCreateRequest, inbound model.Inbound, clientConfig map[string]interface{}, publicHost string) []map[string]string {
+	host := relayItemHost(req.Mode, publicHost, "")
+	if req.Mode == relayModeIPv6 {
+		var options map[string]interface{}
+		_ = json.Unmarshal(inbound.Options, &options)
+		if value, ok := options["listen"].(string); ok && value != "" {
+			host = value
+		}
+	}
+	copyInbound := inbound
+	linkHost := host
+	if req.Protocol != "vmess" {
+		linkHost = formatRelayHost(host)
+	}
+	copyInbound.Addrs = mustJSON([]map[string]interface{}{{"server": linkHost, "server_port": relayListenPort(inbound)}})
+	link := util.LinkGenerator(mustJSON(clientConfig), &copyInbound, publicHost, "")
+	result := make([]map[string]string, 0, len(link))
+	for _, uri := range link {
+		result = append(result, map[string]string{"remark": inbound.Tag, "type": "local", "uri": uri})
+	}
+	return result
+}
+
+func relayListenPort(inbound model.Inbound) int {
+	var options struct {
+		ListenPort int `json:"listen_port"`
+	}
+	_ = json.Unmarshal(inbound.Options, &options)
+	return options.ListenPort
+}
+
+func randomUUID() string {
+	value, err := uuid.NewV4()
+	if err != nil {
+		return common.Random(32)
+	}
+	return value.String()
+}
+
+func (s *ConfigService) prepareRelayItems(req RelayCreateRequest) ([]model.RelayItem, error) {
+	items := make([]model.RelayItem, req.Count)
+	usedUsernames := make(map[string]bool)
+	if req.Mode == relayModeUpstream {
+		for i, upstream := range req.Upstreams {
+			if err := validateUpstream(upstream); err != nil {
+				return nil, fmt.Errorf("upstream line %d: %w", i+1, err)
+			}
+			items[i] = model.RelayItem{ListenPort: req.PortStart + i, Username: uniqueRelayUsername(req.UsernamePrefix, i, usedUsernames), Password: common.Random(req.PasswordLength), UpstreamServer: upstream.Server, UpstreamPort: upstream.Port, UpstreamUsername: upstream.Username, UpstreamPassword: upstream.Password}
+		}
+		return items, nil
+	}
+	base, prefix, iface, err := resolveRelayBase(req)
+	if err != nil {
+		return nil, err
+	}
+	addresses := make([]netip.Addr, 0, req.Count)
+	usedAddresses := make(map[string]bool)
+	if len(req.IPv6Addresses) > req.Count {
+		return nil, common.NewErrorf("IPv6 address list cannot contain more than %d entries", req.Count)
+	}
+	for _, raw := range req.IPv6Addresses {
+		ip, p, err := parseRelayAddress(raw, prefix)
+		if err != nil {
+			return nil, fmt.Errorf("invalid IPv6 address %q: %w", raw, err)
+		}
+		if p != prefix || !ip.IsGlobalUnicast() || ip.IsPrivate() || !netip.PrefixFrom(ip, prefix).Contains(base) {
+			return nil, fmt.Errorf("IPv6 address %q is outside the selected public prefix", raw)
+		}
+		if usedAddresses[ip.String()] {
+			return nil, fmt.Errorf("duplicate IPv6 address %q", raw)
+		}
+		usedAddresses[ip.String()] = true
+		addresses = append(addresses, ip)
+	}
+	if len(addresses) > req.Count {
+		addresses = addresses[:req.Count]
+	}
+	for len(addresses) < req.Count {
+		ip, err := randomRelayIPv6(base, prefix)
+		if err != nil {
+			return nil, err
+		}
+		if usedAddresses[ip.String()] || ip == base || !ip.IsGlobalUnicast() {
+			continue
+		}
+		usedAddresses[ip.String()] = true
+		addresses = append(addresses, ip)
+	}
+	usedUsernames = make(map[string]bool)
+	for i, ip := range addresses {
+		items[i] = model.RelayItem{ListenPort: req.PortStart + i, Username: uniqueRelayUsername(req.UsernamePrefix, i, usedUsernames), Password: common.Random(req.PasswordLength), IPv6: ip.String(), Interface: iface, Prefix: prefix}
+	}
+	return items, nil
+}
+
+func resolveRelayBase(req RelayCreateRequest) (netip.Addr, int, string, error) {
+	if strings.TrimSpace(req.BaseIPv6) != "" {
+		ip, prefix, err := parseRelayAddress(req.BaseIPv6, req.Prefix)
+		if err != nil {
+			return netip.Addr{}, 0, "", err
+		}
+		if req.Prefix > 0 {
+			prefix = req.Prefix
+		}
+		if prefix < 1 || prefix > 128 || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+			return netip.Addr{}, 0, "", common.NewError("base IPv6 must be a public global-unicast address")
+		}
+		hostBits := 128 - prefix
+		if hostBits == 0 || (hostBits < 63 && req.Count > (1<<hostBits)-1) {
+			return netip.Addr{}, 0, "", common.NewError("IPv6 prefix does not contain enough addresses for this pool")
+		}
+		iface := req.Interface
+		if iface == "" {
+			iface = findRelayInterface(ip, prefix)
+		}
+		if iface == "" {
+			return netip.Addr{}, 0, "", common.NewError("IPv6 interface was not found")
+		}
+		return ip, prefix, iface, nil
+	}
+	detected, err := discoverRelayIPv6()
+	if err != nil {
+		return netip.Addr{}, 0, "", err
+	}
+	for _, candidate := range detected {
+		if req.Interface == "" || req.Interface == candidate.Interface {
+			ip, _ := netip.ParseAddr(candidate.Address)
+			return ip, candidate.Prefix, candidate.Interface, nil
+		}
+	}
+	return netip.Addr{}, 0, "", common.NewError("no public IPv6 address was detected")
+}
+
+func discoverRelayIPv6() ([]RelayIPv6, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]RelayIPv6, 0)
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagLoopback != 0 || strings.HasPrefix(iface.Name, "tun") || iface.Name == "docker0" {
+			continue
+		}
+		addresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, raw := range addresses {
+			prefix, err := netip.ParsePrefix(raw.String())
+			if err != nil || !prefix.Addr().Is6() || !prefix.Addr().IsGlobalUnicast() || prefix.Addr().IsPrivate() {
+				continue
+			}
+			result = append(result, RelayIPv6{Interface: iface.Name, Address: prefix.Addr().String(), Prefix: prefix.Bits()})
+		}
+	}
+	return result, nil
+}
+
+func parseRelayAddress(raw string, fallbackPrefix int) (netip.Addr, int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return netip.Addr{}, 0, common.NewError("empty IPv6 address")
+	}
+	if prefix, err := netip.ParsePrefix(raw); err == nil {
+		return prefix.Addr(), prefix.Bits(), nil
+	}
+	ip, err := netip.ParseAddr(raw)
+	if err != nil {
+		return netip.Addr{}, 0, err
+	}
+	if fallbackPrefix == 0 {
+		return netip.Addr{}, 0, common.NewError("IPv6 prefix is required")
+	}
+	return ip, fallbackPrefix, nil
+}
+
+func randomRelayIPv6(base netip.Addr, prefix int) (netip.Addr, error) {
+	masked := base.As16()
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return netip.Addr{}, err
+	}
+	for bit := prefix; bit < 128; bit++ {
+		byteIndex := bit / 8
+		mask := byte(1 << (7 - (bit % 8)))
+		if random[byteIndex]&mask != 0 {
+			masked[byteIndex] |= mask
+		} else {
+			masked[byteIndex] &^= mask
+		}
+	}
+	return netip.AddrFrom16(masked), nil
+}
+
+func addRelayAddress(iface, ip string, prefix int) error {
+	if runtime.GOOS != "linux" {
+		return common.NewError("adding IPv6 addresses is supported on Linux only")
+	}
+	if !relayHasRoot() {
+		return common.NewError("root permission is required to add IPv6 addresses")
+	}
+	if iface == "" || prefix < 1 || prefix > 128 {
+		return common.NewError("invalid IPv6 interface or prefix")
+	}
+	if _, err := net.InterfaceByName(iface); err != nil {
+		return err
+	}
+	if _, err := exec.LookPath("ip"); err != nil {
+		return common.NewError("iproute2 is required: ", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ip", "-6", "addr", "add", ip+"/"+strconv.Itoa(prefix), "dev", iface)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ip address add failed: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func waitRelayAddressReady(iface, ip string) error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	if iface == "" {
+		return common.NewError("IPv6 interface is required")
+	}
+	if _, err := netip.ParseAddr(ip); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		output, err := exec.CommandContext(ctx, "ip", "-6", "-o", "addr", "show", "dev", iface).CombinedOutput()
+		cancel()
+		if err != nil {
+			return fmt.Errorf("check IPv6 address readiness failed: %v: %s", err, strings.TrimSpace(string(output)))
+		}
+		switch relayIPv6AddressState(string(output), ip) {
+		case relayAddressReady:
+			return nil
+		case relayAddressDADFailed:
+			return common.NewErrorf("IPv6 duplicate-address detection failed for %s", ip)
+		}
+		if time.Now().After(deadline) {
+			return common.NewErrorf("IPv6 address %s did not become ready before timeout", ip)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func relayIPv6AddressState(output, address string) string {
+	want, err := netip.ParseAddr(address)
+	if err != nil {
+		return relayAddressMissing
+	}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		for index, field := range fields {
+			if field != "inet6" || index+1 >= len(fields) {
+				continue
+			}
+			prefix, err := netip.ParsePrefix(fields[index+1])
+			if err != nil || prefix.Addr() != want {
+				continue
+			}
+			tentative := false
+			for _, flag := range fields[index+2:] {
+				switch flag {
+				case relayAddressDADFailed:
+					return relayAddressDADFailed
+				case relayAddressTentative:
+					tentative = true
+				}
+			}
+			if tentative {
+				return relayAddressTentative
+			}
+			return relayAddressReady
+		}
+	}
+	return relayAddressMissing
+}
+
+func deleteRelayAddress(iface, ip string, prefix int) error {
+	if runtime.GOOS != "linux" || iface == "" || ip == "" {
+		return nil
+	}
+	if !relayHasRoot() {
+		return common.NewError("root permission is required to remove IPv6 addresses")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ip", "-6", "addr", "del", ip+"/"+strconv.Itoa(prefix), "dev", iface)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		if strings.Contains(string(output), "Cannot assign requested address") || strings.Contains(string(output), "RTNETLINK answers: Cannot assign requested address") {
+			return nil
+		}
+		return fmt.Errorf("ip address delete failed: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func relayAddressExists(ip string) (bool, error) {
+	want, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false, err
+	}
+	detected, err := discoverRelayIPv6()
+	if err != nil {
+		return false, err
+	}
+	for _, item := range detected {
+		candidate, _ := netip.ParseAddr(item.Address)
+		if candidate == want {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func findRelayInterface(ip netip.Addr, prefix int) string {
+	detected, _ := discoverRelayIPv6()
+	network := netip.PrefixFrom(ip, prefix)
+	for _, item := range detected {
+		candidate, _ := netip.ParseAddr(item.Address)
+		if item.Prefix == prefix && network.Contains(candidate) {
+			return item.Interface
+		}
+	}
+	return ""
+}
+
+func relayUsedPorts(tx *gorm.DB) (map[int]bool, error) {
+	var inbounds []model.Inbound
+	if err := tx.Find(&inbounds).Error; err != nil {
+		return nil, err
+	}
+	used := make(map[int]bool)
+	for _, inbound := range inbounds {
+		var options struct {
+			ListenPort int `json:"listen_port"`
+		}
+		if err := json.Unmarshal(inbound.Options, &options); err == nil && options.ListenPort > 0 {
+			used[options.ListenPort] = true
+		}
+	}
+	return used, nil
+}
+
+func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, remove bool) error {
+	var setting model.Setting
+	if err := tx.Where("key = ?", "config").First(&setting).Error; err != nil {
+		return err
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
+		return err
+	}
+	route, _ := config["route"].(map[string]interface{})
+	if route == nil {
+		route = map[string]interface{}{}
+		config["route"] = route
+	}
+	rules, _ := route["rules"].([]interface{})
+	if rules == nil {
+		rules = []interface{}{}
+	}
+	if remove {
+		removeInbound := make(map[string]bool)
+		removeOutbound := make(map[string]bool)
+		for _, item := range items {
+			removeInbound[item.InboundTag] = true
+			removeOutbound[item.OutboundTag] = true
+		}
+		filtered := make([]interface{}, 0, len(rules))
+		for _, raw := range rules {
+			entry, ok := raw.(map[string]interface{})
+			if !ok {
+				filtered = append(filtered, raw)
+				continue
+			}
+			inboundMatch := false
+			if inbound, ok := entry["inbound"].([]interface{}); ok {
+				for _, value := range inbound {
+					if removeInbound[fmt.Sprint(value)] {
+						inboundMatch = true
+					}
+				}
+			}
+			outboundMatch := removeOutbound[fmt.Sprint(entry["outbound"])]
+			if !(inboundMatch && outboundMatch) {
+				filtered = append(filtered, raw)
+			}
+		}
+		rules = filtered
+	} else {
+		newRules := make([]interface{}, 0, len(items)+len(rules))
+		for _, item := range items {
+			newRules = append(newRules, map[string]interface{}{"inbound": []string{item.InboundTag}, "action": "route", "outbound": item.OutboundTag})
+		}
+		rules = append(newRules, rules...)
+	}
+	route["rules"] = rules
+	updated, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	return tx.Model(&model.Setting{}).Where("key = ?", "config").Update("value", string(updated)).Error
+}
+
+func (s *ConfigService) restoreSingBoxConfig(config []byte) error {
+	if corePtr == nil {
+		return nil
+	}
+	if corePtr.IsRunning() {
+		if err := corePtr.Stop(); err != nil {
+			return err
+		}
+	}
+	return corePtr.Start(config)
+}
+
+func uniqueRelayUsername(prefix string, index int, used map[string]bool) string {
+	for {
+		candidate := fmt.Sprintf("%s-%d-%s", prefix, index+1, common.Random(4))
+		if !used[candidate] {
+			used[candidate] = true
+			return candidate
+		}
+	}
+}
+
+func validateUpstream(upstream RelayUpstream) error {
+	server := strings.TrimSpace(strings.Trim(upstream.Server, "[]"))
+	if server == "" || upstream.Port < 1 || upstream.Port > 65535 {
+		return common.NewError("SOCKS5 server or port is invalid")
+	}
+	if strings.ContainsAny(server, "/?#@") || strings.ContainsAny(server, " \t\r\n") {
+		return common.NewError("SOCKS5 server is invalid")
+	}
+	if _, err := netip.ParseAddr(server); err != nil && (len(server) > 253 || strings.Contains(server, ":")) {
+		return common.NewError("SOCKS5 server is invalid")
+	}
+	return nil
+}
+
+func parseRelayUpstreams(text string) ([]RelayUpstream, error) {
+	var result []RelayUpstream
+	for lineNo, raw := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		upstream, err := parseRelayUpstreamLine(line)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", lineNo+1, err)
+		}
+		result = append(result, upstream)
+	}
+	if len(result) == 0 {
+		return nil, common.NewError("no valid SOCKS5 entries found")
+	}
+	return result, nil
+}
+
+func parseRelayUpstreamLine(line string) (RelayUpstream, error) {
+	if strings.HasPrefix(strings.ToLower(line), "socks5://") || strings.HasPrefix(strings.ToLower(line), "socks://") {
+		parsed, err := url.Parse(line)
+		if err != nil || parsed.Hostname() == "" || parsed.Port() == "" {
+			return RelayUpstream{}, common.NewError("invalid SOCKS5 URL")
+		}
+		port, _ := strconv.Atoi(parsed.Port())
+		username, password := "", ""
+		if parsed.User != nil {
+			username = parsed.User.Username()
+			password, _ = parsed.User.Password()
+		}
+		return RelayUpstream{Server: parsed.Hostname(), Port: port, Username: username, Password: password}, validateUpstream(RelayUpstream{Server: parsed.Hostname(), Port: port, Username: username, Password: password})
+	}
+	parts := strings.Split(line, ":")
+	if len(parts) < 4 {
+		return RelayUpstream{}, common.NewError("expected host:port:username:password")
+	}
+	password := parts[len(parts)-1]
+	username := parts[len(parts)-2]
+	port, err := strconv.Atoi(parts[len(parts)-3])
+	if err != nil {
+		return RelayUpstream{}, common.NewError("invalid SOCKS5 port")
+	}
+	server := strings.Join(parts[:len(parts)-3], ":")
+	server = strings.Trim(server, "[]")
+	upstream := RelayUpstream{Server: server, Port: port, Username: username, Password: password}
+	return upstream, validateUpstream(upstream)
+}
+
+func mustJSON(value interface{}) json.RawMessage {
+	data, _ := json.Marshal(value)
+	return data
+}
+
+func relaySOCKSURI(host string, port int, username, password string) string {
+	host = strings.Trim(host, "[]")
+	return (&url.URL{
+		Scheme: "socks5",
+		User:   url.UserPassword(username, password),
+		Host:   net.JoinHostPort(host, strconv.Itoa(port)),
+	}).String()
+}
+
+func normalizeRelayPublicHost(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", common.NewError("public host is required")
+	}
+	if strings.HasPrefix(value, "[") || strings.HasSuffix(value, "]") {
+		if !strings.HasPrefix(value, "[") || !strings.HasSuffix(value, "]") {
+			return "", common.NewError("public host has invalid IPv6 brackets")
+		}
+		value = strings.TrimSuffix(strings.TrimPrefix(value, "["), "]")
+	}
+	if ip, err := netip.ParseAddr(value); err == nil {
+		return ip.String(), nil
+	}
+	if strings.ContainsAny(value, ":/@?#") || strings.ContainsAny(value, " \t\r\n") || len(value) > 253 {
+		return "", common.NewError("public host must be a hostname or IP address without a port")
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(value, "."), ".") {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return "", common.NewError("public host is invalid")
+		}
+		for _, ch := range label {
+			if (ch < 'a' || ch > 'z') && (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') && ch != '-' {
+				return "", common.NewError("public host is invalid")
+			}
+		}
+	}
+	return strings.TrimSuffix(value, "."), nil
+}
+
+func formatRelayHost(host string) string {
+	host = strings.TrimSpace(host)
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		return "[" + host + "]"
+	}
+	return host
+}
+
+func relayItemHost(mode, publicHost, ipv6 string) string {
+	if mode == relayModeIPv6 && ipv6 != "" {
+		return ipv6
+	}
+	return publicHost
+}

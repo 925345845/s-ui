@@ -94,6 +94,9 @@
       <v-divider></v-divider>
       <v-card-actions>
         <v-spacer></v-spacer>
+        <v-btn color="secondary" variant="tonal" prepend-icon="mdi-ip-network" @click="quickAdd.visible = false; relayModal.visible = true">
+          {{ $t('relay.batchCreate') }}
+        </v-btn>
         <v-btn color="primary" variant="outlined" @click="quickAdd.visible = false">{{ $t('actions.close') }}</v-btn>
         <v-btn color="primary" variant="tonal" :loading="quickAdd.loading" @click="createQuickNode">{{ $t('actions.save') }}</v-btn>
       </v-card-actions>
@@ -114,12 +117,19 @@
     :tag="stats.tag"
     @close="closeStats"
   />
+  <RelayPool
+    :visible="relayModal.visible"
+    @close="relayModal.visible = false"
+  />
   <v-row class="page-toolbar" align="center" justify="start">
     <v-col cols="auto" class="page-toolbar__actions">
       <v-btn color="primary" prepend-icon="mdi-plus" @click="showModal(0)">{{ $t('actions.add') }}</v-btn>
       <v-btn color="primary" variant="tonal" class="ml-2" @click="openQuickAdd">
         <v-icon start icon="mdi-lightning-bolt"></v-icon>
         {{ $t('pages.quickAddNode') }}
+      </v-btn>
+      <v-btn color="secondary" variant="tonal" prepend-icon="mdi-shuffle-variant" @click="relayModal.visible = true">
+        {{ $t('pages.relay') }}
       </v-btn>
     </v-col>
   </v-row>
@@ -217,6 +227,7 @@ import { CoreTypes, createInbound, Inbound } from '@/types/inbounds'
 import RandomUtil from '@/plugins/randomUtil'
 import { i18n } from '@/locales'
 import { push } from 'notivue'
+import RelayPool from '@/layouts/modals/RelayPool.vue'
 
 const isOpenWrtLite = import.meta.env.VITE_OPENWRT_LITE === 'true'
 
@@ -244,6 +255,8 @@ const modal = ref({
   visible: false,
   id: 0,
 })
+
+const relayModal = ref({ visible: false })
 
 let delOverlay = ref(new Array<boolean>)
 

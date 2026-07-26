@@ -110,6 +110,7 @@ func InitDB(dbPath string) error {
 		&model.Stats{},
 		&model.Client{},
 		&model.Changes{},
+		&model.RelayPool{},
 	)
 	if err != nil {
 		return err
