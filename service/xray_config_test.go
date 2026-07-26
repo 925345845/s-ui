@@ -1,0 +1,121 @@
+//go:build !openwrt_lite
+
+package service
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"reflect"
+	"testing"
+
+	"github.com/Hhz0823/1s-ui/database"
+	"github.com/Hhz0823/1s-ui/database/model"
+)
+
+func TestBuildXrayStreamSettingsCurrentTransports(t *testing.T) {
+	tests := []struct {
+		name        string
+		network     string
+		transport   map[string]interface{}
+		settingsKey string
+		wantNetwork string
+	}{
+		{name: "raw", network: "raw", transport: map[string]interface{}{"accept_proxy_protocol": true}, settingsKey: "rawSettings", wantNetwork: "raw"},
+		{name: "websocket", network: "ws", transport: map[string]interface{}{"host": "cdn.example.com", "path": "/ws"}, settingsKey: "wsSettings", wantNetwork: "ws"},
+		{name: "grpc", network: "grpc", transport: map[string]interface{}{"service_name": "edge"}, settingsKey: "grpcSettings", wantNetwork: "grpc"},
+		{name: "httpupgrade", network: "httpupgrade", transport: map[string]interface{}{"host": "cdn.example.com", "path": "/up"}, settingsKey: "httpupgradeSettings", wantNetwork: "httpupgrade"},
+		{name: "xhttp", network: "xhttp", transport: map[string]interface{}{"host": "cdn.example.com", "path": "/x", "mode": "stream-one"}, settingsKey: "xhttpSettings", wantNetwork: "xhttp"},
+		{name: "mkcp", network: "kcp", transport: map[string]interface{}{"mtu": float64(1400)}, settingsKey: "kcpSettings", wantNetwork: "kcp"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stream, err := buildXrayStreamSettings(&model.Inbound{}, test.transport, test.network)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stream["network"] != test.wantNetwork || stream[test.settingsKey] == nil {
+				t.Fatalf("unexpected stream settings: %#v", stream)
+			}
+			if test.network == "ws" {
+				settings := stream["wsSettings"].(map[string]interface{})
+				if settings["host"] != "cdn.example.com" || settings["headers"] != nil {
+					t.Fatalf("websocket host uses obsolete shape: %#v", settings)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildXrayStreamSettingsRejectsRealityOnKCP(t *testing.T) {
+	tlsConfig := &model.Tls{Server: json.RawMessage(`{"enabled":true,"reality":{"enabled":true}}`)}
+	_, err := buildXrayStreamSettings(&model.Inbound{Tls: tlsConfig}, map[string]interface{}{}, "kcp")
+	if err == nil {
+		t.Fatal("Reality with mKCP was accepted")
+	}
+}
+
+func TestBuildXrayDokodemoInbound(t *testing.T) {
+	inbound := &model.Inbound{Tag: "transparent", Options: json.RawMessage(`{
+		"listen":"0.0.0.0","listen_port":12345,"network":"tcp,udp",
+		"address":"127.0.0.1","port":8080,"follow_redirect":true
+	}`)}
+	config, err := (&InboundService{}).buildXrayDokodemoInbound(inbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := config["settings"].(map[string]interface{})
+	if config["protocol"] != "dokodemo-door" || settings["address"] != "127.0.0.1" || settings["port"] != 8080 {
+		t.Fatalf("unexpected dokodemo config: %#v", config)
+	}
+}
+
+func TestXrayHysteriaMasqueradeMapping(t *testing.T) {
+	tests := []struct {
+		value interface{}
+		want  map[string]interface{}
+	}{
+		{value: "https://example.com/", want: map[string]interface{}{"type": "proxy", "url": "https://example.com/"}},
+		{value: "file:///srv/www", want: map[string]interface{}{"type": "file", "dir": "/srv/www"}},
+		{value: "hello", want: map[string]interface{}{"type": "string", "content": "hello"}},
+	}
+	for _, test := range tests {
+		got, ok := xrayHysteriaMasquerade(test.value)
+		if !ok {
+			t.Fatalf("masquerade was rejected: %#v", test.value)
+		}
+		if !reflect.DeepEqual(got, test.want) {
+			t.Fatalf("unexpected masquerade mapping: got %#v, want %#v", got, test.want)
+		}
+	}
+}
+
+func TestFetchXrayVlessClientsKeepsVisionFlowOnRaw(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "xray-flow.db")); err != nil {
+		t.Fatal(err)
+	}
+	db := database.GetDB()
+	client := model.Client{
+		Enable:   true,
+		Name:     "vision-user",
+		Config:   json.RawMessage(`{"vless":{"uuid":"11111111-1111-4111-8111-111111111111","flow":"xtls-rprx-vision"}}`),
+		Inbounds: json.RawMessage(`[42]`),
+	}
+	if err := db.Create(&client).Error; err != nil {
+		t.Fatal(err)
+	}
+	clients, err := (&InboundService{}).fetchXrayVlessClients(db, 42, "raw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clients) != 1 || clients[0]["flow"] != "xtls-rprx-vision" {
+		t.Fatalf("Vision flow was lost for RAW transport: %#v", clients)
+	}
+}
+
+func TestXrayCapabilitiesDoNotAdvertiseRemovedTransports(t *testing.T) {
+	for _, capability := range xrayTransportCapabilities() {
+		if (capability.ID == "http" || capability.ID == "quic") && capability.Supported {
+			t.Fatalf("removed transport advertised as supported: %#v", capability)
+		}
+	}
+}

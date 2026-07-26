@@ -2,6 +2,8 @@
 
 package core
 
+import "fmt"
+
 type XrayRuntime struct{}
 
 func NewXrayRuntime() *XrayRuntime {
@@ -10,6 +12,10 @@ func NewXrayRuntime() *XrayRuntime {
 
 func (r *XrayRuntime) Validate(rawConfig []byte) error {
 	return nil
+}
+
+func (r *XrayRuntime) Version() (string, error) {
+	return "", fmt.Errorf("Xray-core is disabled in OpenWrt Lite build")
 }
 
 func (r *XrayRuntime) Start(rawConfig []byte) error {

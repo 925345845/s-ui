@@ -138,6 +138,24 @@ func (s *InboundService) GetAllXrayConfig(db *gorm.DB) ([]map[string]interface{}
 				return nil, err
 			}
 			result = append(result, config)
+		case "mixed":
+			config, err := s.buildXrayMixedInbound(db, inbound)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, config)
+		case "hysteria2":
+			config, err := s.buildXrayHysteria2Inbound(db, inbound)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, config)
+		case "dokodemo-door":
+			config, err := s.buildXrayDokodemoInbound(inbound)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, config)
 		default:
 			return nil, common.NewErrorf("xray inbound type <%s> is not supported yet", inbound.Type)
 		}
@@ -349,6 +367,86 @@ func (s *InboundService) buildXrayHTTPInbound(db *gorm.DB, inbound *model.Inboun
 	}, nil
 }
 
+func (s *InboundService) buildXrayMixedInbound(db *gorm.DB, inbound *model.Inbound) (map[string]interface{}, error) {
+	config, err := s.buildXraySocksInbound(db, inbound)
+	if err != nil {
+		return nil, err
+	}
+	config["protocol"] = "mixed"
+	return config, nil
+}
+
+func (s *InboundService) buildXrayHysteria2Inbound(db *gorm.DB, inbound *model.Inbound) (map[string]interface{}, error) {
+	full, listen, port, transport, _, err := xrayInboundBasics(inbound, "hysteria")
+	if err != nil {
+		return nil, err
+	}
+	if inbound.Tls == nil {
+		return nil, common.NewErrorf("xray hysteria2 inbound <%s> requires TLS", inbound.Tag)
+	}
+
+	clients, err := s.fetchXrayHysteria2Clients(db, inbound.Id)
+	if err != nil {
+		return nil, err
+	}
+	streamSettings, err := buildXrayStreamSettings(inbound, transport, "hysteria")
+	if err != nil {
+		return nil, err
+	}
+	if idleTimeout := toInt((*full)["udp_idle_timeout"]); idleTimeout > 0 {
+		streamSettings["hysteriaSettings"].(map[string]interface{})["udpIdleTimeout"] = idleTimeout
+	}
+	if masquerade, ok := xrayHysteriaMasquerade((*full)["masquerade"]); ok {
+		streamSettings["hysteriaSettings"].(map[string]interface{})["masquerade"] = masquerade
+	}
+
+	return map[string]interface{}{
+		"tag":      inbound.Tag,
+		"listen":   listen,
+		"port":     port,
+		"protocol": "hysteria",
+		"settings": map[string]interface{}{
+			"version": 2,
+			"clients": clients,
+		},
+		"streamSettings": streamSettings,
+	}, nil
+}
+
+func (s *InboundService) buildXrayDokodemoInbound(inbound *model.Inbound) (map[string]interface{}, error) {
+	full, err := inbound.MarshalFull()
+	if err != nil {
+		return nil, err
+	}
+	listen, port, err := xrayListenAndPort(full, inbound.Tag)
+	if err != nil {
+		return nil, err
+	}
+
+	settings := map[string]interface{}{
+		"network":        stringValue((*full)["network"], "tcp,udp"),
+		"followRedirect": boolValue((*full)["follow_redirect"]),
+	}
+	if address, _ := (*full)["address"].(string); address != "" {
+		settings["address"] = address
+	}
+	if targetPort := toInt((*full)["port"]); targetPort > 0 {
+		settings["port"] = targetPort
+	}
+
+	config := map[string]interface{}{
+		"tag":      inbound.Tag,
+		"listen":   listen,
+		"port":     port,
+		"protocol": "dokodemo-door",
+		"settings": settings,
+	}
+	if sniffing, ok := (*full)["sniffing"].(map[string]interface{}); ok && len(sniffing) > 0 {
+		config["sniffing"] = sniffing
+	}
+	return config, nil
+}
+
 func (s *InboundService) fetchXrayVlessClients(db *gorm.DB, inboundId uint, network string) ([]map[string]interface{}, error) {
 	var users []struct {
 		Name   string
@@ -377,7 +475,7 @@ func (s *InboundService) fetchXrayVlessClients(db *gorm.DB, inboundId uint, netw
 			"id":    uuid,
 			"email": user.Name,
 		}
-		if network == "tcp" {
+		if network == "tcp" || network == "raw" {
 			if flow, _ := cfg["flow"].(string); flow != "" {
 				client["flow"] = flow
 			}
@@ -493,6 +591,26 @@ func (s *InboundService) fetchXrayAccountClients(db *gorm.DB, inboundId uint, pr
 	return accounts, nil
 }
 
+func (s *InboundService) fetchXrayHysteria2Clients(db *gorm.DB, inboundId uint) ([]map[string]interface{}, error) {
+	users, err := fetchXrayClientConfigs(db, inboundId, "hysteria2")
+	if err != nil {
+		return nil, err
+	}
+	clients := make([]map[string]interface{}, 0, len(users))
+	for _, user := range users {
+		var cfg map[string]interface{}
+		if err := json.Unmarshal([]byte(user.Config), &cfg); err != nil {
+			return nil, err
+		}
+		password, _ := cfg["password"].(string)
+		if password == "" {
+			continue
+		}
+		clients = append(clients, map[string]interface{}{"auth": password, "email": user.Name})
+	}
+	return clients, nil
+}
+
 type xrayClientConfigRow struct {
 	Name   string
 	Config string
@@ -522,27 +640,53 @@ func buildXrayStreamSettings(inbound *model.Inbound, transport map[string]interf
 		}
 	case "ws":
 		stream["wsSettings"] = map[string]interface{}{
-			"path": stringValue(transport["path"], "/"),
-			"headers": map[string]interface{}{
-				"Host": stringValue(transport["host"], ""),
-			},
+			"path":                stringValue(transport["path"], "/"),
+			"host":                stringValue(transport["host"], ""),
+			"heartbeatPeriod":     toInt(transport["heartbeat_period"]),
+			"acceptProxyProtocol": boolValue(transport["accept_proxy_protocol"]),
 		}
 	case "grpc":
 		stream["grpcSettings"] = map[string]interface{}{
-			"serviceName": stringValue(transport["service_name"], ""),
+			"serviceName":          stringValue(transport["service_name"], ""),
+			"authority":            stringValue(transport["authority"], ""),
+			"multiMode":            boolValue(transport["multi_mode"]),
+			"idle_timeout":         toInt(transport["idle_timeout"]),
+			"health_check_timeout": toInt(transport["health_check_timeout"]),
 		}
 	case "httpupgrade":
 		stream["httpupgradeSettings"] = map[string]interface{}{
-			"path": stringValue(transport["path"], "/"),
-			"host": stringValue(transport["host"], ""),
+			"path":                stringValue(transport["path"], "/"),
+			"host":                stringValue(transport["host"], ""),
+			"acceptProxyProtocol": boolValue(transport["accept_proxy_protocol"]),
+		}
+	case "kcp", "mkcp":
+		stream["network"] = "kcp"
+		stream["kcpSettings"] = map[string]interface{}{
+			"mtu":              intValue(transport["mtu"], 1350),
+			"tti":              intValue(transport["tti"], 50),
+			"uplinkCapacity":   intValue(transport["uplink_capacity"], 5),
+			"downlinkCapacity": intValue(transport["downlink_capacity"], 20),
+			"cwndMultiplier":   intValue(transport["cwnd_multiplier"], 2),
+			"maxSendingWindow": intValue(transport["max_sending_window"], 2048),
+		}
+	case "hysteria":
+		stream["hysteriaSettings"] = map[string]interface{}{
+			"version":        2,
+			"udpIdleTimeout": intValue(transport["udp_idle_timeout"], 60),
 		}
 	case "tcp", "raw":
-		stream["network"] = "tcp"
+		stream["network"] = "raw"
+		stream["rawSettings"] = map[string]interface{}{
+			"acceptProxyProtocol": boolValue(transport["accept_proxy_protocol"]),
+		}
 	default:
 		return nil, common.NewErrorf("xray transport <%s> is not supported yet", network)
 	}
 
 	if inbound.Tls != nil && len(inbound.Tls.Server) > 2 {
+		if xrayRealityEnabled(inbound.Tls) && network != "tcp" && network != "raw" && network != "xhttp" && network != "grpc" {
+			return nil, common.NewErrorf("Xray Reality only supports RAW, XHTTP and gRPC, got <%s>", network)
+		}
 		if err := addXraySecurity(stream, inbound.Tls); err != nil {
 			return nil, err
 		}
@@ -733,6 +877,78 @@ func stringValue(value interface{}, fallback string) string {
 		return s
 	}
 	return fallback
+}
+
+func intValue(value interface{}, fallback int) int {
+	if result := toInt(value); result > 0 {
+		return result
+	}
+	return fallback
+}
+
+func boolValue(value interface{}) bool {
+	result, _ := value.(bool)
+	return result
+}
+
+func xrayRealityEnabled(tlsConfig *model.Tls) bool {
+	if tlsConfig == nil {
+		return false
+	}
+	var server map[string]interface{}
+	if json.Unmarshal(tlsConfig.Server, &server) != nil {
+		return false
+	}
+	reality, _ := server["reality"].(map[string]interface{})
+	enabled, _ := reality["enabled"].(bool)
+	return enabled
+}
+
+func xrayHysteriaMasquerade(value interface{}) (map[string]interface{}, bool) {
+	result := map[string]interface{}{}
+	switch masquerade := value.(type) {
+	case string:
+		masquerade = strings.TrimSpace(masquerade)
+		if masquerade == "" {
+			return nil, false
+		}
+		switch {
+		case strings.HasPrefix(masquerade, "http://"), strings.HasPrefix(masquerade, "https://"):
+			result["type"], result["url"] = "proxy", masquerade
+		case strings.HasPrefix(masquerade, "file://"):
+			result["type"], result["dir"] = "file", strings.TrimPrefix(masquerade, "file://")
+		default:
+			result["type"], result["content"] = "string", masquerade
+		}
+	case map[string]interface{}:
+		if kind, _ := masquerade["type"].(string); kind != "" {
+			result["type"] = kind
+		}
+		if directory, _ := masquerade["directory"].(string); directory != "" {
+			result["dir"] = directory
+		}
+		if target, _ := masquerade["url"].(string); target != "" {
+			result["url"] = target
+		}
+		if rewrite, ok := masquerade["rewrite_host"].(bool); ok {
+			result["rewriteHost"] = rewrite
+		}
+		if insecure, ok := masquerade["insecure"].(bool); ok {
+			result["insecure"] = insecure
+		}
+		if content, _ := masquerade["content"].(string); content != "" {
+			result["content"] = content
+		}
+		if headers, ok := masquerade["headers"].(map[string]interface{}); ok {
+			result["headers"] = headers
+		}
+		if status := toInt(masquerade["status_code"]); status > 0 {
+			result["statusCode"] = status
+		}
+	default:
+		return nil, false
+	}
+	return result, len(result) > 0
 }
 
 func sanitizeFileName(value string) string {

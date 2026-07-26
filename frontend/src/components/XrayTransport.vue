@@ -26,6 +26,29 @@
       <v-col cols="12" sm="6" md="4" v-if="transport.type == 'grpc'">
         <v-text-field hide-details label="Service Name" v-model="transport.service_name"></v-text-field>
       </v-col>
+      <v-col cols="12" sm="6" md="4" v-if="transport.type == 'grpc'">
+        <v-text-field hide-details label="Authority" v-model="transport.authority"></v-text-field>
+      </v-col>
+      <v-col cols="12" sm="6" md="4" v-if="transport.type == 'grpc'">
+        <v-switch hide-details color="primary" label="Multi mode" v-model="transport.multi_mode"></v-switch>
+      </v-col>
+      <template v-if="transport.type == 'kcp'">
+        <v-col cols="12" sm="6" md="4">
+          <v-text-field hide-details label="MTU" type="number" min="21" v-model.number="transport.mtu"></v-text-field>
+        </v-col>
+        <v-col cols="12" sm="6" md="4">
+          <v-text-field hide-details label="TTI" type="number" min="10" max="1000" suffix="ms" v-model.number="transport.tti"></v-text-field>
+        </v-col>
+        <v-col cols="12" sm="6" md="4">
+          <v-text-field hide-details :label="$t('stats.upload')" type="number" min="1" suffix="MB/s" v-model.number="transport.uplink_capacity"></v-text-field>
+        </v-col>
+        <v-col cols="12" sm="6" md="4">
+          <v-text-field hide-details :label="$t('stats.download')" type="number" min="1" suffix="MB/s" v-model.number="transport.downlink_capacity"></v-text-field>
+        </v-col>
+      </template>
+      <v-col cols="12" sm="6" md="4" v-if="supportsProxyProtocol">
+        <v-switch hide-details color="primary" label="Proxy Protocol" v-model="transport.accept_proxy_protocol"></v-switch>
+      </v-col>
     </v-row>
   </v-card>
 </template>
@@ -37,7 +60,8 @@ export default {
     return {
       transportTypes: [
         { title: 'XHTTP', value: 'xhttp' },
-        { title: 'TCP', value: 'tcp' },
+        { title: 'RAW', value: 'raw' },
+        { title: 'mKCP', value: 'kcp' },
         { title: 'WebSocket', value: 'ws' },
         { title: 'gRPC', value: 'grpc' },
         { title: 'HTTPUpgrade', value: 'httpupgrade' },
@@ -58,6 +82,9 @@ export default {
     hasPath(): boolean {
       return ['xhttp', 'ws', 'httpupgrade'].includes(this.transport.type)
     },
+    supportsProxyProtocol(): boolean {
+      return ['raw', 'tcp', 'ws', 'httpupgrade'].includes(this.transport.type)
+    },
   },
   watch: {
     'transport.type'(value: string) {
@@ -66,6 +93,14 @@ export default {
         this.transport.mode = this.transport.mode || 'auto'
       } else if (value == 'grpc') {
         this.transport.service_name = this.transport.service_name || ''
+        this.transport.authority = this.transport.authority || ''
+      } else if (value == 'kcp') {
+        this.transport.mtu = this.transport.mtu || 1350
+        this.transport.tti = this.transport.tti || 50
+        this.transport.uplink_capacity = this.transport.uplink_capacity || 5
+        this.transport.downlink_capacity = this.transport.downlink_capacity || 20
+        this.transport.cwnd_multiplier = this.transport.cwnd_multiplier || 2
+        this.transport.max_sending_window = this.transport.max_sending_window || 2048
       } else if (['ws', 'httpupgrade'].includes(value)) {
         this.transport.path = this.transport.path || '/'
       }

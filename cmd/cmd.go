@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"time"
 
 	"github.com/Hhz0823/1s-ui/cmd/migration"
 	"github.com/Hhz0823/1s-ui/config"
@@ -16,6 +17,7 @@ func ParseCmd() {
 
 	adminCmd := flag.NewFlagSet("admin", flag.ExitOnError)
 	settingCmd := flag.NewFlagSet("setting", flag.ExitOnError)
+	agentCmd := flag.NewFlagSet("agent", flag.ExitOnError)
 
 	var username string
 	var password string
@@ -25,6 +27,11 @@ func ParseCmd() {
 	var subPath string
 	var reset bool
 	var show bool
+	var agentPanel string
+	var agentToken string
+	var agentInterval time.Duration
+	var agentInsecure bool
+	var agentOnce bool
 	settingCmd.BoolVar(&reset, "reset", false, "reset all settings")
 	settingCmd.BoolVar(&show, "show", false, "show current settings")
 	settingCmd.IntVar(&port, "port", 0, "set panel port")
@@ -36,6 +43,11 @@ func ParseCmd() {
 	adminCmd.BoolVar(&reset, "reset", false, "reset first admin credentials")
 	adminCmd.StringVar(&username, "username", "", "set login username")
 	adminCmd.StringVar(&password, "password", "", "set login password")
+	agentCmd.StringVar(&agentPanel, "panel", os.Getenv("SUI_AGENT_PANEL"), "panel base URL, including its path")
+	agentCmd.StringVar(&agentToken, "token", os.Getenv("SUI_AGENT_TOKEN"), "agent enrollment token")
+	agentCmd.DurationVar(&agentInterval, "interval", 15*time.Second, "heartbeat interval (5s-5m)")
+	agentCmd.BoolVar(&agentInsecure, "insecure", false, "skip panel TLS certificate verification")
+	agentCmd.BoolVar(&agentOnce, "once", false, "send one heartbeat and exit")
 
 	oldUsage := flag.Usage
 	flag.Usage = func() {
@@ -43,6 +55,7 @@ func ParseCmd() {
 		fmt.Println()
 		fmt.Println("Commands:")
 		fmt.Println("    admin          set/reset/show first admin credentials")
+		fmt.Println("    agent          connect this host to a 1S-UI panel")
 		fmt.Println("    uri            Show panel URI")
 		fmt.Println("    migrate        migrate form older version")
 		fmt.Println("    setting        set/reset/show settings")
@@ -50,6 +63,8 @@ func ParseCmd() {
 		adminCmd.Usage()
 		fmt.Println()
 		settingCmd.Usage()
+		fmt.Println()
+		agentCmd.Usage()
 	}
 
 	flag.Parse()
@@ -105,6 +120,12 @@ func ParseCmd() {
 			updateSetting(port, path, subPort, subPath)
 			showSetting()
 		}
+	case "agent":
+		if err := agentCmd.Parse(os.Args[2:]); err != nil {
+			fmt.Println(err)
+			return
+		}
+		runAgent(agentPanel, agentToken, agentInterval, agentInsecure, agentOnce)
 	default:
 		fmt.Println("Invalid subcommands")
 		flag.Usage()

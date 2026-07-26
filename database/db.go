@@ -111,6 +111,7 @@ func InitDB(dbPath string) error {
 		&model.Client{},
 		&model.Changes{},
 		&model.RelayPool{},
+		&model.AgentNode{},
 	)
 	if err != nil {
 		return err

@@ -85,6 +85,38 @@ func (r *XrayRuntime) Validate(rawConfig []byte) error {
 	return validationErr
 }
 
+func (r *XrayRuntime) Version() (string, error) {
+	r.mu.Lock()
+	if err := r.validateBinaryLocked(); err != nil {
+		r.mu.Unlock()
+		return "", err
+	}
+	xrayPath := r.xrayPath
+	r.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, xrayPath, "version").CombinedOutput()
+	message := strings.TrimSpace(string(output))
+	if err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		if message != "" {
+			err = fmt.Errorf("%w: %s", err, message)
+		}
+		r.mu.Lock()
+		r.lastError = err.Error()
+		r.lastOutput = message
+		r.mu.Unlock()
+		return "", err
+	}
+	if line, _, ok := strings.Cut(message, "\n"); ok {
+		message = strings.TrimSpace(line)
+	}
+	return message, nil
+}
+
 func (r *XrayRuntime) Start(rawConfig []byte) error {
 	r.mu.Lock()
 

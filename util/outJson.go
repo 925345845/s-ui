@@ -11,7 +11,7 @@ import (
 // Fill Inbound's out_json
 func FillOutJson(i *model.Inbound, hostname string) error {
 	switch i.Type {
-	case "direct", "tun", "redirect", "tproxy":
+	case "direct", "tun", "redirect", "tproxy", "dokodemo-door":
 		return nil
 	}
 	var outJson map[string]interface{}

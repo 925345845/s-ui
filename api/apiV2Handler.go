@@ -101,6 +101,8 @@ func (a *APIv2Handler) getHandler(c *gin.Context) {
 		a.ApiService.GetSingboxConfig(c)
 	case "xray-config":
 		a.ApiService.GetXrayConfig(c)
+	case "checkXray":
+		a.ApiService.GetCheckXray(c)
 	case "checkOutbound":
 		a.ApiService.GetCheckOutbound(c)
 	case "checkWarp":

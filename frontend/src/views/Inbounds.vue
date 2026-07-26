@@ -1,4 +1,47 @@
 <template>
+  <v-dialog v-model="xrayCheck.visible" width="min(720px, calc(100vw - 24px))">
+    <v-card>
+      <v-card-title class="text-center">{{ $t('xray.selfCheck') }}</v-card-title>
+      <v-divider />
+      <v-card-text>
+        <v-alert
+          v-if="xrayCheck.result"
+          :type="xrayCheck.result.healthy ? 'success' : 'error'"
+          variant="tonal"
+          class="mb-4"
+        >{{ xrayCheck.result.healthy ? $t('xray.checkPassed') : (xrayCheck.result.error || $t('xray.checkFailed')) }}</v-alert>
+        <v-list v-if="xrayCheck.result" density="compact" bg-color="transparent">
+          <v-list-item :title="$t('xray.binary')" :subtitle="xrayCheck.result.version || xrayCheck.result.path || '-'">
+            <template #append><v-icon :color="xrayCheck.result.binary_available ? 'success' : 'error'" :icon="xrayCheck.result.binary_available ? 'mdi-check-circle' : 'mdi-close-circle'" /></template>
+          </v-list-item>
+          <v-list-item :title="$t('xray.configValidation')">
+            <template #append><v-icon :color="xrayCheck.result.config_valid ? 'success' : 'error'" :icon="xrayCheck.result.config_valid ? 'mdi-check-circle' : 'mdi-close-circle'" /></template>
+          </v-list-item>
+          <v-list-item :title="$t('xray.runtime')">
+            <template #append><v-chip size="small" :color="xrayCheck.result.running ? 'success' : 'default'">{{ xrayCheck.result.running ? $t('online') : $t('disable') }}</v-chip></template>
+          </v-list-item>
+        </v-list>
+        <div v-if="xrayCheck.result" class="xray-capability-groups">
+          <div>
+            <div class="xray-capability-title">{{ $t('xray.protocols') }}</div>
+            <div class="xray-capabilities">
+              <v-chip v-for="item in xrayCheck.result.protocols.filter((item: any) => item.supported)" :key="item.id" size="small" variant="tonal" color="primary">{{ item.name }}</v-chip>
+            </div>
+          </div>
+          <div>
+            <div class="xray-capability-title">{{ $t('xray.transports') }}</div>
+            <div class="xray-capabilities">
+              <v-chip v-for="item in xrayCheck.result.transports.filter((item: any) => item.supported)" :key="item.id" size="small" variant="tonal" color="secondary">{{ item.name }}</v-chip>
+            </div>
+          </div>
+        </div>
+      </v-card-text>
+      <v-card-actions class="justify-center">
+        <v-btn variant="outlined" @click="xrayCheck.visible = false">{{ $t('actions.close') }}</v-btn>
+        <v-btn color="primary" variant="tonal" prepend-icon="mdi-stethoscope" :loading="xrayCheck.loading" @click="runXrayCheck">{{ $t('actions.test') }}</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
   <v-dialog v-model="quickAdd.visible" transition="dialog-bottom-transition" width="min(560px, calc(100vw - 24px))">
     <v-card class="rounded-lg">
       <v-card-title>{{ $t('pages.quickAddNode') }}</v-card-title>
@@ -142,6 +185,9 @@
       </v-btn>
       <v-btn color="secondary" variant="tonal" prepend-icon="mdi-shuffle-variant" @click="relayModal.visible = true">
         {{ $t('pages.relay') }}
+      </v-btn>
+      <v-btn v-if="!isOpenWrtLite" variant="tonal" prepend-icon="mdi-stethoscope" @click="openXrayCheck">
+        {{ $t('xray.selfCheck') }}
       </v-btn>
     </v-col>
   </v-row>
@@ -295,6 +341,29 @@ const quickAdd = ref({
   loading: false,
 })
 
+const xrayCheck = ref<{ visible: boolean, loading: boolean, result: any }>({
+  visible: false,
+  loading: false,
+  result: null,
+})
+
+const runXrayCheck = async () => {
+  xrayCheck.value.loading = true
+  try {
+    const msg = await HttpUtils.get('api/checkXray')
+    xrayCheck.value.result = msg.success ? msg.obj : { healthy: false, error: msg.msg }
+  } catch (error: any) {
+    xrayCheck.value.result = { healthy: false, error: error?.message || i18n.global.t('xray.checkFailed') }
+  } finally {
+    xrayCheck.value.loading = false
+  }
+}
+
+const openXrayCheck = () => {
+  xrayCheck.value.visible = true
+  runXrayCheck()
+}
+
 const coreOptions = computed(() => {
   const items = [{ title: 'sing-box', value: CoreTypes.SingBox }]
   if (!isOpenWrtLite) items.push({ title: 'Xray-core', value: CoreTypes.Xray })
@@ -304,7 +373,7 @@ const coreOptions = computed(() => {
 watch(() => quickAdd.value.protocol, (val) => {
   quickAdd.value.hasPassword = val === 'shadowsocks'
   quickAdd.value.hasMethod = val === 'shadowsocks' && quickAdd.value.core_type !== CoreTypes.Xray
-  quickAdd.value.hasObfs = val === 'hysteria2'
+  quickAdd.value.hasObfs = val === 'hysteria2' && quickAdd.value.core_type !== CoreTypes.Xray
   quickAdd.value.hasHandshake = val === 'shadowtls'
   if (quickAdd.value.core_type === CoreTypes.Xray && val === 'shadowsocks') {
     quickAdd.value.method = '2022-blake3-aes-256-gcm'
@@ -324,8 +393,10 @@ watch(() => quickAdd.value.core_type, (val) => {
       quickAdd.value.method = '2022-blake3-aes-256-gcm'
       quickAdd.value.hasMethod = false
     }
+	quickAdd.value.hasObfs = false
   } else {
     quickAdd.value.hasMethod = quickAdd.value.protocol === 'shadowsocks'
+	quickAdd.value.hasObfs = quickAdd.value.protocol === 'hysteria2'
   }
   regenerateQuickAdd(false)
 })
@@ -383,6 +454,8 @@ const xrayProtocolOptions = [
   { title: 'Shadowsocks', value: 'shadowsocks' },
   { title: 'SOCKS', value: 'socks' },
   { title: 'HTTP', value: 'http' },
+  { title: 'Mixed', value: 'mixed' },
+  { title: 'Hysteria2', value: 'hysteria2' },
 ]
 
 const protocolOptions = computed(() => {
@@ -613,7 +686,9 @@ const createQuickNode = async () => {
         break
       case 'hysteria2':
         ;(inbound as any).tls_id = tlsId
-        ;(inbound as any).obfs = { type: 'salamander', password: quickAdd.value.obfsPassword || RandomUtil.randomShadowsocksPassword(16) }
+        if (!isXray) {
+          ;(inbound as any).obfs = { type: 'salamander', password: quickAdd.value.obfsPassword || RandomUtil.randomShadowsocksPassword(16) }
+        }
         break
       case 'tuic':
         ;(inbound as any).tls_id = tlsId
@@ -688,3 +763,23 @@ const closeStats = () => {
   stats.value.visible = false
 }
 </script>
+
+<style scoped>
+.xray-capability-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.xray-capability-title {
+  margin-bottom: 6px;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.xray-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+</style>

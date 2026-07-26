@@ -74,6 +74,11 @@ const routes = [
         name: 'pages.settings',
         component: () => import('@/views/Settings.vue'),
       },
+      {
+        path: '/agents',
+        name: 'pages.agents',
+        component: () => import('@/views/Agents.vue'),
+      },
     ],
   },
 ]

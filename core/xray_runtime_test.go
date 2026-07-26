@@ -17,6 +17,10 @@ func TestXrayValidate(t *testing.T) {
 	dir := t.TempDir()
 	xrayPath := filepath.Join(dir, "xray")
 	script := `#!/bin/sh
+if [ "$1" = "version" ]; then
+  echo "Xray 26.3.27 test"
+  exit 0
+fi
 config=""
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "-config" ]; then
@@ -38,10 +42,14 @@ exit 0
 	t.Setenv("SUI_BIN_FOLDER", dir)
 
 	xray := NewXrayRuntime()
+	version, err := xray.Version()
+	if err != nil || version != "Xray 26.3.27 test" {
+		t.Fatalf("Version() = %q, %v", version, err)
+	}
 	if err := xray.Validate([]byte(`{"valid":true}`)); err != nil {
 		t.Fatalf("Validate(valid) error = %v", err)
 	}
-	err := xray.Validate([]byte(`{"invalid":true}`))
+	err = xray.Validate([]byte(`{"invalid":true}`))
 	if err == nil || !strings.Contains(err.Error(), "invalid test config") {
 		t.Fatalf("Validate(invalid) error = %v", err)
 	}

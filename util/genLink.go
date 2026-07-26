@@ -99,6 +99,8 @@ func LinkGenerator(clientConfig json.RawMessage, i *model.Inbound, hostname stri
 			return xrayVmessLink(userConfig["vmess"], *inbound, Addrs)
 		case "trojan":
 			return xrayTrojanLink(userConfig["trojan"], *inbound, Addrs)
+		case "hysteria2":
+			return hysteria2Link(userConfig["hysteria2"], *inbound, Addrs)
 		}
 		return []string{}
 	}
@@ -812,6 +814,10 @@ func getXrayTransportParams(t interface{}) []LinkParam {
 		if serviceName, ok := transport["service_name"].(string); ok {
 			params = append(params, LinkParam{"serviceName", serviceName})
 		}
+	case "kcp", "mkcp":
+		params[0].Value = "kcp"
+	case "hysteria":
+		params[0].Value = "hysteria"
 	}
 	return params
 }

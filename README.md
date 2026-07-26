@@ -49,7 +49,8 @@ The screenshots use local demo data and do not contain real server secrets.
 
 - 入站、出站、端点、服务、DNS、路由、用户和管理员管理
 - 入站级核心选择：默认 sing-box，可选 Xray-core
-- 支持 VMess、VLESS、Trojan、Shadowsocks、Hysteria2、TUIC、Naive、ShadowTLS、AnyTLS、WireGuard 等协议
+- Xray 入站支持 VMess、VLESS、Trojan、Shadowsocks、SOCKS、HTTP、Mixed、Hysteria2 和 Dokodemo-door
+- Xray 传输支持 XHTTP、RAW、mKCP、gRPC、WebSocket、HTTPUpgrade；HTTP/2 和旧 QUIC 已按 Xray-core 当前状态标记为移除，使用 XHTTP stream-one/HTTP3
 - 一键添加节点，自动生成端口、标签、用户、TLS 和协议默认参数
 - TLS、ACME、ECH、Reality、Pinned Peer Certificate SHA256 集中管理
 - Hysteria2 / TLS 分享链接兼容 v2rayN，`pinSHA256` 按 Xray 需要输出 hex 指纹
@@ -57,9 +58,11 @@ The screenshots use local demo data and do not contain real server secrets.
 - 一键中转节点：导入上游 SOCKS5，或按本机公网 IPv6 前缀批量生成 SOCKS5、HTTP、Mixed、Shadowsocks、VLESS、VMess、Trojan、Hysteria2、TUIC、Naive、AnyTLS
 - 内置安全集成 [help660vip/auto-add-ipv6](https://github.com/help660vip/auto-add-ipv6)：一键生成 IPv6 出口 SOCKS5；面板以 Go 实现地址生成流程，不下载或执行上游脚本
 - 中转批次自动创建独立账号、入站、出站和路由规则；SOCKS5/Mixed 导出 `IPv6:端口:账号:密码`，其它协议导出标准分享链接
-- 中转批次可直接导出 BitBrowser 官方批量导入 Excel；IPv6 代理自动使用 `ipv6:[IPv6]:端口:账号:密码`
+- 中转批次可直接导出 BitBrowser 官方批量导入 Excel；IPv6 代理使用无方括号的导入格式
 - IPv6 地址由面板内置 `ip -6 addr add` 管理，等待 DAD 就绪并在失败时回滚；不修改系统默认路由，避免影响 SSH 和面板连通性
 - 首页仪表卡、运行状态、日志、备份恢复、使用量统计
+- 服务器监控 Agent：面板生成单次密钥，Agent 主动上报 CPU、内存、磁盘、网络、地址和 sing-box/Xray 状态；只开放心跳，不提供远程执行
+- Xray 自检：检查二进制版本、生成配置、运行状态和当前协议/传输能力
 - 响应式 Vue 3 + Vuetify 页面，支持顶部菜单、侧边栏、暗色模式和背景设置
 - 主要维护 Linux（Ubuntu、Debian）服务器版本和 Linux Docker 镜像；Windows 暂停维护，OpenWrt Lite 保留实验版本
 
@@ -86,6 +89,8 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 | 订阅端口 | `2096` |
 | 订阅路径 | `/sub/` |
 | 数据目录 | `/usr/local/s-ui/db` |
+
+服务器 Agent：在面板的“服务器监控”页面添加节点并复制一次性显示的安装命令。命令只下载对应架构的轻量 `sui-agent`，先验证心跳，再写入权限为 `0600` 的 `/etc/default/1s-ui-agent` 并启用 systemd 服务。Agent 主动连接面板，不开放远程控制端口。
 
 常用命令：
 
@@ -390,6 +395,7 @@ go test ./...
 ```text
 .
 ├── api/          # HTTP API
+├── agent/        # 轻量服务器 Agent 采集和心跳
 ├── app/          # Application bootstrap
 ├── cmd/          # CLI commands and migrations
 ├── config/       # Version, name, and environment config
@@ -409,6 +415,7 @@ go test ./...
 - Change the administrator username and password after installation
 - Use non-default panel paths and ports
 - Keep databases, private keys, certificate files, and API tokens private
+- Agent tokens are shown only during enrollment or rotation; store the copied command securely
 - Put public panels behind HTTPS reverse proxies
 - Review subscription and sharing links before sending them to others
 

@@ -29,6 +29,7 @@ export const InTypes = {
   Tun: 'tun',
   Redirect: 'redirect',
   TProxy: 'tproxy',
+  DokodemoDoor: 'dokodemo-door',
 }
 
 type InType = typeof InTypes[keyof typeof InTypes]
@@ -66,11 +67,24 @@ interface InboundBasics extends Listen {
 }
 
 export interface XrayTransport {
-  type: 'tcp' | 'raw' | 'ws' | 'grpc' | 'httpupgrade' | 'xhttp'
+  type: 'tcp' | 'raw' | 'ws' | 'grpc' | 'httpupgrade' | 'xhttp' | 'kcp' | 'hysteria'
   host?: string
   path?: string
   mode?: 'auto' | 'packet-up' | 'stream-up' | 'stream-one'
   service_name?: string
+  authority?: string
+  multi_mode?: boolean
+  idle_timeout?: number
+  health_check_timeout?: number
+  heartbeat_period?: number
+  accept_proxy_protocol?: boolean
+  mtu?: number
+  tti?: number
+  uplink_capacity?: number
+  downlink_capacity?: number
+  cwnd_multiplier?: number
+  max_sending_window?: number
+  udp_idle_timeout?: number
 }
 
 interface ShadowTLSHandShake extends Dial {
@@ -195,6 +209,17 @@ export interface Redirect extends InboundBasics {}
 export interface TProxy extends InboundBasics {
   network?: "udp" | "tcp"
 }
+export interface DokodemoDoor extends InboundBasics {
+  network?: "tcp" | "udp" | "tcp,udp"
+  address?: string
+  port?: number
+  follow_redirect?: boolean
+  sniffing?: {
+    enabled: boolean
+    destOverride?: string[]
+    routeOnly?: boolean
+  }
+}
 
 // Create interfaces dynamically based on InTypes keys
 type InterfaceMap = {
@@ -215,6 +240,7 @@ type InterfaceMap = {
   tun: Tun
   redirect: Redirect
   tproxy: TProxy
+  'dokodemo-door': DokodemoDoor
 }
 
 // Create union type from InterfaceMap
@@ -249,17 +275,23 @@ const defaultValues: Record<InType, Inbound> = {
   tun: <Tun>{ type: InTypes.Tun, mtu: 9000, stack: 'system', udp_timeout: '5m', auto_route: false },
   redirect: <Redirect>{ type: InTypes.Redirect },
   tproxy: <TProxy>{ type: InTypes.TProxy },
+  'dokodemo-door': <DokodemoDoor>{
+    type: InTypes.DokodemoDoor,
+    network: 'tcp,udp',
+    follow_redirect: true,
+    sniffing: { enabled: true, destOverride: ['http', 'tls', 'quic'], routeOnly: true },
+  },
 }
 
 export function createInbound<T extends Inbound>(type: InType,json?: Partial<T>): Inbound {
   const defaultObject: Inbound = { ...defaultValues[type] ?? {}, ...(json ?? {}) }
   defaultObject.core_type = defaultObject.core_type || CoreTypes.SingBox
-  if (defaultObject.core_type == CoreTypes.Xray && [InTypes.VLESS, InTypes.VMess, InTypes.Trojan].includes(type)) {
+  if (defaultObject.core_type == CoreTypes.Xray && [InTypes.VLESS, InTypes.VMess, InTypes.Trojan, InTypes.Hysteria2].includes(type)) {
     const inbound = <any>defaultObject
     if (!inbound.transport || Object.keys(inbound.transport).length == 0) {
-      inbound.transport = type == InTypes.VLESS
-        ? { type: 'xhttp', path: '/xhttp', mode: 'auto' }
-        : { type: 'ws', path: '/', host: location.hostname }
+      if (type == InTypes.VLESS) inbound.transport = { type: 'xhttp', path: '/xhttp', mode: 'auto' }
+      else if (type == InTypes.Hysteria2) inbound.transport = { type: 'hysteria', udp_idle_timeout: 60 }
+      else inbound.transport = { type: 'ws', path: '/', host: location.hostname }
     }
   }
   if (type == InTypes.Shadowsocks && !(<Shadowsocks>defaultObject).password) {

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Hhz0823/1s-ui/config"
 	"github.com/Hhz0823/1s-ui/database"
 	"github.com/Hhz0823/1s-ui/logger"
 	"github.com/Hhz0823/1s-ui/service"
@@ -37,6 +38,72 @@ type ApiService struct {
 	service.PanelService
 	service.StatsService
 	service.ServerService
+	service.AgentService
+}
+
+type createAgentRequest struct {
+	Name string `json:"name"`
+}
+
+func (a *ApiService) GetAgents(c *gin.Context) {
+	nodes, err := a.AgentService.List()
+	jsonObj(c, nodes, err)
+}
+
+func (a *ApiService) CreateAgent(c *gin.Context) {
+	var request createAgentRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	enrollment, err := a.AgentService.Create(request.Name)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	jsonObj(c, a.agentEnrollmentResponse(c, enrollment), nil)
+}
+
+func (a *ApiService) RotateAgent(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || id == 0 {
+		jsonObj(c, nil, common.NewError("invalid agent node id"))
+		return
+	}
+	enrollment, err := a.AgentService.Rotate(uint(id))
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	jsonObj(c, a.agentEnrollmentResponse(c, enrollment), nil)
+}
+
+func (a *ApiService) DeleteAgent(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || id == 0 {
+		jsonObj(c, nil, common.NewError("invalid agent node id"))
+		return
+	}
+	jsonMsg(c, "agents", a.AgentService.Delete(uint(id)))
+}
+
+func (a *ApiService) agentEnrollmentResponse(c *gin.Context, enrollment *service.AgentEnrollment) map[string]interface{} {
+	webPath, _ := a.SettingService.GetWebPath()
+	scheme := "http"
+	if requestIsHTTPS(c) {
+		scheme = "https"
+	}
+	panelURL := scheme + "://" + c.Request.Host + webPath
+	command := "bash <(curl -fsSL https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install-agent.sh) --panel " +
+		shellQuote(panelURL) + " --token " + shellQuote(enrollment.Token) + " --version " + shellQuote(config.GetVersion())
+	return map[string]interface{}{
+		"node": enrollment.Node, "token": enrollment.Token,
+		"panel_url": panelURL, "command": command,
+	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func (a *ApiService) LoadData(c *gin.Context) {
@@ -436,6 +503,10 @@ func (a *ApiService) GetXrayConfig(c *gin.Context) {
 	c.Header("Content-Type", "application/json")
 	c.Header("Content-Disposition", "attachment; filename=xray_config_"+time.Now().Format("20060102-150405")+".json")
 	c.Writer.Write(*rawConfig)
+}
+
+func (a *ApiService) GetCheckXray(c *gin.Context) {
+	jsonObj(c, a.ConfigService.CheckXray(), nil)
 }
 
 func (a *ApiService) GetCheckOutbound(c *gin.Context) {

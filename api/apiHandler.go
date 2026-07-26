@@ -31,6 +31,10 @@ func (a *APIHandler) initRouter(g *gin.RouterGroup) {
 	g.POST("/relay/:id/delete", func(c *gin.Context) { a.ApiService.DeleteRelay(c, GetLoginUser(c)) })
 	g.POST("/relay/create", func(c *gin.Context) { a.ApiService.CreateRelay(c, GetLoginUser(c)) })
 	g.GET("/relay/:id/bitbrowser.xlsx", a.ApiService.ExportRelayBitBrowser)
+	g.GET("/agents", a.ApiService.GetAgents)
+	g.POST("/agents", a.ApiService.CreateAgent)
+	g.POST("/agents/:id/rotate", a.ApiService.RotateAgent)
+	g.POST("/agents/:id/delete", a.ApiService.DeleteAgent)
 	g.GET("/:getAction", a.getHandler)
 }
 
@@ -112,6 +116,8 @@ func (a *APIHandler) getHandler(c *gin.Context) {
 		a.ApiService.GetSingboxConfig(c)
 	case "xray-config":
 		a.ApiService.GetXrayConfig(c)
+	case "checkXray":
+		a.ApiService.GetCheckXray(c)
 	case "checkOutbound":
 		a.ApiService.GetCheckOutbound(c)
 	case "checkWarp":

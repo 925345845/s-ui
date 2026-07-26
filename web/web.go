@@ -109,6 +109,9 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	group_apiv2 := engine.Group(base_url + "apiv2")
 	apiv2 := api.NewAPIv2Handler(group_apiv2)
 
+	group_agent := engine.Group(base_url + "agent/v1")
+	api.NewAgentHandler(group_agent)
+
 	group_api := engine.Group(base_url + "api")
 	api.NewAPIHandler(group_api, apiv2)
 

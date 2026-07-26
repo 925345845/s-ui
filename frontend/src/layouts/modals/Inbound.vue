@@ -52,14 +52,16 @@
               <Direct v-if="inbound.type == inTypes.Direct" :data="inbound" />
               <Shadowsocks v-if="inbound.type == inTypes.Shadowsocks" direction="in" :data="inbound" />
               <Hysteria v-if="inbound.type == inTypes.Hysteria" direction="in" :data="inbound" />
-              <Hysteria2 v-if="inbound.type == inTypes.Hysteria2" direction="in" :data="inbound" />
+              <Hysteria2 v-if="inbound.type == inTypes.Hysteria2 && !isXray" direction="in" :data="inbound" />
+              <XrayHysteria2 v-if="inbound.type == inTypes.Hysteria2 && isXray" :data="inbound" />
               <Naive v-if="inbound.type == inTypes.Naive" direction="in" :data="inbound" />
               <ShadowTls v-if="inbound.type == inTypes.ShadowTLS" direction="in" :data="inbound" />
               <Tuic v-if="inbound.type == inTypes.TUIC" direction="in" :data="inbound" />
               <Tun v-if="inbound.type == inTypes.Tun" :data="inbound" />
               <AnyTls v-if="inbound.type == inTypes.AnyTls" :data="inbound" direction="in" />
               <TProxy v-if="inbound.type == inTypes.TProxy" :inbound="inbound" />
-              <XrayTransport v-if="isXray && Object.hasOwn(inbound,'transport')" :data="inbound" />
+              <DokodemoDoor v-if="inbound.type == inTypes.DokodemoDoor" :data="inbound" />
+              <XrayTransport v-if="isXray && inbound.type != inTypes.Hysteria2 && Object.hasOwn(inbound,'transport')" :data="inbound" />
               <Transport v-else-if="Object.hasOwn(inbound,'transport')" :data="inbound" />
               <Users v-if="hasUser" :clients="clients" :data="initUsers" />
               <InTls v-if="hasTlsPanel"  :inbound="inbound" :tlsConfigs="tlsConfigs" :tls_id="inbound.tls_id" />
@@ -124,6 +126,8 @@ import Tun from '@/components/protocols/Tun.vue'
 import AnyTls from '@/components/protocols/AnyTls.vue'
 import InTls from '@/components/tls/InTLS.vue'
 import TProxy from '@/components/protocols/TProxy.vue'
+import DokodemoDoor from '@/components/protocols/DokodemoDoor.vue'
+import XrayHysteria2 from '@/components/protocols/XrayHysteria2.vue'
 import Multiplex from '@/components/Multiplex.vue'
 import Transport from '@/components/Transport.vue'
 import XrayTransport from '@/components/XrayTransport.vue'
@@ -194,6 +198,9 @@ export default {
         { title: 'Shadowsocks', value: InTypes.Shadowsocks },
         { title: 'SOCKS', value: InTypes.SOCKS },
         { title: 'HTTP', value: InTypes.HTTP },
+        { title: 'Mixed', value: InTypes.Mixed },
+        { title: 'Hysteria2', value: InTypes.Hysteria2 },
+        { title: 'Dokodemo-door', value: InTypes.DokodemoDoor },
       ],
       OnlyTLS: [InTypes.Hysteria, InTypes.Hysteria2, InTypes.TUIC, InTypes.Naive, InTypes.AnyTls ],
     }
@@ -303,11 +310,13 @@ export default {
       if (this.isXray) {
         return this.xrayTypeItems
       }
-      return Object.keys(this.inTypes).map((key,index) => ({title: key, value: Object.values(this.inTypes)[index]}))
+      return Object.keys(this.inTypes)
+        .map((key,index) => ({title: key, value: Object.values(this.inTypes)[index]}))
+        .filter((item) => item.value != InTypes.DokodemoDoor)
     },
     hasTlsPanel() {
       if (this.isXray) {
-        return [InTypes.VLESS, InTypes.VMess, InTypes.Trojan].includes(this.inbound.type)
+        return [InTypes.VLESS, InTypes.VMess, InTypes.Trojan, InTypes.Hysteria2].includes(this.inbound.type)
       }
       return this.HasTls.includes(this.inbound.type)
     },
@@ -332,7 +341,7 @@ export default {
   components: {
     Listen, InTls, Hysteria2, Naive, Direct, Shadowsocks,
     Users, Hysteria, ShadowTls, TProxy, Multiplex, Tuic, Tun,
-    AnyTls, Transport, XrayTransport, AddrVue, OutJsonVue, Dial
+    AnyTls, Transport, XrayTransport, AddrVue, OutJsonVue, Dial, DokodemoDoor, XrayHysteria2
   }
 }
 </script>

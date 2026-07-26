@@ -133,6 +133,7 @@ const menuGroups = [
   {
     label: 'menu.group.admin',
     items: [
+      { title: 'pages.agents', icon: 'mdi-server-network', path: '/agents' },
       { title: 'pages.admins', icon: 'mdi-account-tie-outline', path: '/admins' },
       { title: 'pages.settings', icon: 'mdi-cog-outline', path: '/settings' },
     ],
