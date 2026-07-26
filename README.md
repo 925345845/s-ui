@@ -57,6 +57,7 @@ The screenshots use local demo data and do not contain real server secrets.
 - 一键中转节点：导入上游 SOCKS5，或按本机公网 IPv6 前缀批量生成 SOCKS5、HTTP、Mixed、Shadowsocks、VLESS、VMess、Trojan、Hysteria2、TUIC、Naive、AnyTLS
 - 内置安全集成 [help660vip/auto-add-ipv6](https://github.com/help660vip/auto-add-ipv6)：一键生成 IPv6 出口 SOCKS5；面板以 Go 实现地址生成流程，不下载或执行上游脚本
 - 中转批次自动创建独立账号、入站、出站和路由规则；SOCKS5/Mixed 导出 `IPv6:端口:账号:密码`，其它协议导出标准分享链接
+- 中转批次可直接导出 BitBrowser 官方批量导入 Excel；IPv6 代理自动使用 `ipv6:[IPv6]:端口:账号:密码`
 - IPv6 地址由面板内置 `ip -6 addr add` 管理，等待 DAD 就绪并在失败时回滚；不修改系统默认路由，避免影响 SSH 和面板连通性
 - 首页仪表卡、运行状态、日志、备份恢复、使用量统计
 - 响应式 Vue 3 + Vuetify 页面，支持顶部菜单、侧边栏、暗色模式和背景设置
@@ -73,7 +74,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 安装指定版本：
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.9
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.10
 ```
 
 默认配置通常为：
@@ -196,7 +197,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 Install a specific version:
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.9
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.10
 ```
 
 Common commands:
@@ -262,7 +263,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 バージョン指定：
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.9
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.10
 ```
 
 ### Docker
@@ -319,7 +320,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 특정 버전 설치:
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.9
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.10
 ```
 
 ### Docker

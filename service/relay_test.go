@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"net/netip"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/Hhz0823/1s-ui/database"
 	"github.com/Hhz0823/1s-ui/database/model"
+	"github.com/xuri/excelize/v2"
 )
 
 func TestParseRelayUpstreamLine(t *testing.T) {
@@ -115,6 +117,80 @@ func TestRelaySOCKSExportUsesBrowserFormat(t *testing.T) {
 				t.Fatalf("export = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestRelayBitBrowserProxyInfo(t *testing.T) {
+	tests := []struct {
+		name string
+		pool model.RelayPool
+		item model.RelayItem
+		want string
+	}{
+		{
+			name: "ipv4",
+			pool: model.RelayPool{Mode: relayModeUpstream, Protocol: "socks", ListenHost: "88.214.24.57"},
+			item: model.RelayItem{ListenPort: 1020, Username: "proxy-user", Password: "proxy-pass"},
+			want: "88.214.24.57:1020:proxy-user:proxy-pass",
+		},
+		{
+			name: "ipv6",
+			pool: model.RelayPool{Mode: relayModeIPv6, Protocol: "socks", ListenHost: "88.214.24.57"},
+			item: model.RelayItem{ListenPort: 30005, Username: "proxy-user", Password: "proxy-pass", IPv6: "2a05:f480:3400:282d:a75c:71ba:1e76:7c1b"},
+			want: "ipv6:[2a05:f480:3400:282d:a75c:71ba:1e76:7c1b]:30005:proxy-user:proxy-pass",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := relayBitBrowserProxyInfo(test.pool, test.item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("proxy info = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildRelayBitBrowserWorkbook(t *testing.T) {
+	pool := model.RelayPool{
+		Name:       "IPv6 pool",
+		Mode:       relayModeIPv6,
+		Protocol:   "socks",
+		ListenHost: "88.214.24.57",
+		Items: mustJSON([]model.RelayItem{
+			{ListenPort: 30005, Username: "user-1", Password: "pass-1", IPv6: "2001:db8::10"},
+			{ListenPort: 30006, Username: "user-2", Password: "pass-2", IPv6: "2001:db8::11"},
+		}),
+	}
+	data, err := buildRelayBitBrowserWorkbook(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workbook, err := excelize.OpenReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workbook.Close()
+	const sheet = "批量导入窗口"
+	checks := map[string]string{
+		"A1": "窗口名称",
+		"E1": "代理类型",
+		"F1": "代理信息",
+		"A4": "IPv6 pool-001",
+		"E4": "socks5",
+		"F4": "ipv6:[2001:db8::10]:30005:user-1:pass-1",
+		"F5": "ipv6:[2001:db8::11]:30006:user-2:pass-2",
+	}
+	for cell, want := range checks {
+		got, err := workbook.GetCellValue(sheet, cell)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("%s = %q, want %q", cell, got, want)
+		}
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 	"github.com/Hhz0823/1s-ui/util"
 	"github.com/Hhz0823/1s-ui/util/common"
 	"github.com/gofrs/uuid/v5"
+	"github.com/xuri/excelize/v2"
 
 	"gorm.io/gorm"
 )
@@ -135,6 +136,138 @@ func (s *ConfigService) GetRelayData() (*RelayData, error) {
 		return nil, err
 	}
 	return &RelayData{Pools: pools, IPv6: ipv6, Capabilities: getRelayCapabilities()}, nil
+}
+
+func (s *ConfigService) GetRelayBitBrowserExport(id uint) ([]byte, error) {
+	var pool model.RelayPool
+	if err := database.GetDB().First(&pool, id).Error; err != nil {
+		return nil, err
+	}
+	return buildRelayBitBrowserWorkbook(pool)
+}
+
+func buildRelayBitBrowserWorkbook(pool model.RelayPool) ([]byte, error) {
+	var items []model.RelayItem
+	if err := json.Unmarshal(pool.Items, &items); err != nil {
+		return nil, common.NewError("invalid relay pool items: ", err.Error())
+	}
+	if len(items) == 0 {
+		return nil, common.NewError("relay pool has no items")
+	}
+
+	file := excelize.NewFile()
+	defer file.Close()
+	const sheet = "批量导入窗口"
+	if err := file.SetSheetName("Sheet1", sheet); err != nil {
+		return nil, err
+	}
+	file.SetActiveSheet(0)
+
+	headers := []string{
+		"窗口名称", "用户名", "密码", "cookie", "代理类型", "代理信息",
+		"国家/地区（针对动态IP）", "州/省（针对动态IP）", "城市（针对动态IP）",
+		"窗口备注", "User Agent", "窗口尺寸",
+	}
+	descriptions := []string{
+		"必填；用于区分浏览器窗口", "网站登录用户名（可选）", "网站登录密码（可选）",
+		"支持 JSON/Netscape/Name=Value 格式（可选）", "填写 socks5",
+		"代理主机:代理端口:代理用户名:代理密码；IPv6 在最前增加 ipv6:",
+		"动态代理可选", "动态代理可选", "动态代理可选", "可选", "可选", "例如 1920*1030（可选）",
+	}
+	for column := 1; column <= len(headers); column++ {
+		cell, _ := excelize.CoordinatesToCellName(column, 1)
+		file.SetCellStr(sheet, cell, headers[column-1])
+		cell, _ = excelize.CoordinatesToCellName(column, 2)
+		file.SetCellStr(sheet, cell, descriptions[column-1])
+	}
+	file.SetCellStr(sheet, "A3", "说明：数据从第4行开始导入；代理账号和密码必须写在“代理信息”列。")
+
+	poolName := sanitizeBitBrowserCell(pool.Name)
+	if poolName == "" {
+		poolName = "1S-UI Relay"
+	}
+	for itemIndex, item := range items {
+		proxyInfo, err := relayBitBrowserProxyInfo(pool, item)
+		if err != nil {
+			return nil, common.NewErrorf("relay item %d: %v", itemIndex+1, err)
+		}
+		row := itemIndex + 4
+		windowName := fmt.Sprintf("%s-%03d", poolName, itemIndex+1)
+		values := []string{windowName, "", "", "", "socks5", proxyInfo, "", "", "", "1S-UI " + poolName, "", ""}
+		for column, value := range values {
+			cell, _ := excelize.CoordinatesToCellName(column+1, row)
+			file.SetCellStr(sheet, cell, value)
+		}
+	}
+
+	headerStyle, err := file.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Color: "#102A43"},
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"#A9D6F5"}, Pattern: 1},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center", WrapText: true},
+		Border:    []excelize.Border{{Type: "left", Color: "#7A8A99", Style: 1}, {Type: "top", Color: "#7A8A99", Style: 1}, {Type: "right", Color: "#7A8A99", Style: 1}, {Type: "bottom", Color: "#7A8A99", Style: 1}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	instructionStyle, err := file.NewStyle(&excelize.Style{
+		Alignment: &excelize.Alignment{Vertical: "top", WrapText: true},
+		Border:    []excelize.Border{{Type: "left", Color: "#B8C2CC", Style: 1}, {Type: "top", Color: "#B8C2CC", Style: 1}, {Type: "right", Color: "#B8C2CC", Style: 1}, {Type: "bottom", Color: "#B8C2CC", Style: 1}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	warningStyle, err := file.NewStyle(&excelize.Style{Font: &excelize.Font{Color: "#E53935", Bold: true}})
+	if err != nil {
+		return nil, err
+	}
+	file.SetCellStyle(sheet, "A1", "L1", headerStyle)
+	file.SetCellStyle(sheet, "A2", "L2", instructionStyle)
+	file.SetCellStyle(sheet, "A3", "A3", warningStyle)
+	file.SetRowHeight(sheet, 1, 24)
+	file.SetRowHeight(sheet, 2, 72)
+	file.SetRowHeight(sheet, 3, 22)
+	file.SetColWidth(sheet, "A", "A", 24)
+	file.SetColWidth(sheet, "B", "D", 18)
+	file.SetColWidth(sheet, "E", "E", 14)
+	file.SetColWidth(sheet, "F", "F", 54)
+	file.SetColWidth(sheet, "G", "J", 22)
+	file.SetColWidth(sheet, "K", "L", 22)
+	if err := file.SetPanes(sheet, &excelize.Panes{Freeze: true, YSplit: 3, TopLeftCell: "A4", ActivePane: "bottomLeft"}); err != nil {
+		return nil, err
+	}
+
+	buffer, err := file.WriteToBuffer()
+	if err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
+}
+
+func relayBitBrowserProxyInfo(pool model.RelayPool, item model.RelayItem) (string, error) {
+	protocol := item.Protocol
+	if protocol == "" {
+		protocol = pool.Protocol
+	}
+	if protocol == "" {
+		protocol = "socks"
+	}
+	if protocol != "socks" && protocol != "mixed" {
+		return "", common.NewErrorf("BitBrowser export only supports SOCKS5 or Mixed, got %q", protocol)
+	}
+	host := relayItemHost(pool.Mode, pool.ListenHost, item.IPv6)
+	proxyInfo := relaySOCKSExport(pool.Mode, pool.ListenHost, item.IPv6, item.ListenPort, item.Username, item.Password)
+	if address, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil && address.Is6() {
+		return "ipv6:" + proxyInfo, nil
+	}
+	return proxyInfo, nil
+}
+
+func sanitizeBitBrowserCell(value string) string {
+	value = strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(value))
+	if len([]rune(value)) > 60 {
+		value = string([]rune(value)[:60])
+	}
+	return value
 }
 
 func getRelayCapabilities() RelayCapabilities {

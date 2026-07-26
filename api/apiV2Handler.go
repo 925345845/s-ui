@@ -37,6 +37,7 @@ func (a *APIv2Handler) initRouter(g *gin.RouterGroup) {
 	g.POST("/:postAction", a.postHandler)
 	g.POST("/relay/:id/delete", func(c *gin.Context) { a.ApiService.DeleteRelay(c, a.findUsername(c)) })
 	g.POST("/relay/create", func(c *gin.Context) { a.ApiService.CreateRelay(c, a.findUsername(c)) })
+	g.GET("/relay/:id/bitbrowser.xlsx", a.ApiService.ExportRelayBitBrowser)
 	g.GET("/:getAction", a.getHandler)
 }
 

@@ -457,6 +457,21 @@ func (a *ApiService) GetRelayData(c *gin.Context) {
 	jsonObj(c, data, err)
 }
 
+func (a *ApiService) ExportRelayBitBrowser(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || id == 0 {
+		c.String(http.StatusBadRequest, "invalid relay pool id")
+		return
+	}
+	data, err := a.ConfigService.GetRelayBitBrowserExport(uint(id))
+	if err != nil {
+		c.String(http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	c.Header("Content-Disposition", "attachment; filename=1s-ui-bitbrowser-relay-"+strconv.FormatUint(id, 10)+".xlsx")
+	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", data)
+}
+
 func (a *ApiService) CreateRelay(c *gin.Context, loginUser string) {
 	var req service.RelayCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

@@ -171,10 +171,26 @@
                     <div class="relay-pool-meta" dir="ltr">{{ poolAddressSummary(pool) }} / {{ pool.count }} {{ $t('relay.items') }}</div>
                     <v-textarea :model-value="exportText(pool)" rows="4" readonly dir="ltr" hide-details />
                   </v-card-text>
-                  <v-card-actions>
+                  <v-card-actions class="relay-pool-actions">
                     <v-btn variant="tonal" prepend-icon="mdi-content-copy" @click="copy(exportText(pool))">{{ $t('relay.copy') }}</v-btn>
-                    <v-spacer />
-                    <v-btn color="error" variant="text" prepend-icon="mdi-delete-outline" :loading="deleting === pool.id" @click="remove(pool.id)">{{ $t('actions.del') }}</v-btn>
+                    <v-btn
+                      v-if="supportsBitBrowser(pool)"
+                      variant="tonal"
+                      color="primary"
+                      prepend-icon="mdi-microsoft-excel"
+                      :loading="downloading === pool.id"
+                      @click="downloadBitBrowser(pool)"
+                    >{{ $t('relay.exportBitBrowser') }}</v-btn>
+                    <v-btn
+                      class="relay-delete-button"
+                      color="error"
+                      variant="text"
+                      icon="mdi-delete-outline"
+                      :aria-label="$t('actions.del')"
+                      :title="$t('actions.del')"
+                      :loading="deleting === pool.id"
+                      @click="remove(pool.id)"
+                    />
                   </v-card-actions>
                 </v-card>
               </v-col>
@@ -213,6 +229,7 @@ const advancedPanel = ref<string>()
 const loading = ref(false)
 const refreshing = ref(false)
 const deleting = ref(0)
+const downloading = ref(0)
 const ipv6 = ref<IPv6Item[]>([])
 const pools = ref<RelayPool[]>([])
 const capabilities = ref<RelayCapabilities | null>(null)
@@ -338,6 +355,37 @@ const exportText = (pool: RelayPool) => pool.items.map((item) => {
   return `${host}:${item.listen_port}:${item.username}:${item.password}`
 }).join('\n')
 
+const supportsBitBrowser = (pool: RelayPool) => {
+  const protocol = pool.protocol || pool.items.find((item) => item.protocol)?.protocol || 'socks'
+  return ['socks', 'mixed'].includes(protocol)
+}
+
+const downloadBitBrowser = async (pool: RelayPool) => {
+  downloading.value = pool.id
+  try {
+    const response = await fetch(`api/relay/${pool.id}/bitbrowser.xlsx`, {
+      credentials: 'include',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    })
+    if (!response.ok) throw new Error((await response.text()).trim() || i18n.global.t('relay.exportBitBrowserFailed'))
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const safeName = (pool.name || `relay-${pool.id}`).replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || `relay-${pool.id}`
+    link.href = url
+    link.download = `1s-ui-bitbrowser-${safeName}.xlsx`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    push.success({ message: i18n.global.t('relay.exportBitBrowserReady') })
+  } catch (error: any) {
+    push.error({ message: error?.message || i18n.global.t('relay.exportBitBrowserFailed') })
+  } finally {
+    downloading.value = 0
+  }
+}
+
 const copy = async (value: string) => {
   try {
     await navigator.clipboard.writeText(value)
@@ -378,6 +426,15 @@ watch(() => props.visible, (visible) => { if (visible) loadData() })
 .relay-dialog-body { min-height: 0; overflow-y: auto !important; }
 .relay-list { border: 1px solid rgba(var(--v-theme-on-surface), 0.08); border-radius: 10px; }
 .relay-quick-section { padding: 14px; border: 1px solid rgba(var(--v-theme-primary), 0.2); border-radius: 8px; background: rgba(var(--v-theme-primary), 0.045); }
+.relay-pool-actions { display: grid !important; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 40px; gap: 8px; }
+.relay-pool-actions :deep(.v-btn) { margin: 0 !important; }
+.relay-pool-actions :deep(.v-btn:not(.relay-delete-button)) { min-width: 0; }
+.relay-delete-button { width: 40px; height: 40px; align-self: center; }
+@media (max-width: 520px) {
+  .relay-pool-actions { grid-template-columns: minmax(0, 1fr) 40px; }
+  .relay-pool-actions :deep(.v-btn:not(.relay-delete-button)) { grid-column: 1; }
+  .relay-delete-button { grid-column: 2; grid-row: 1 / span 2; }
+}
 .relay-quick-heading { display: flex; justify-content: center; text-align: center; }
 .relay-source-link { color: rgb(var(--v-theme-primary)); font-size: 12px; text-decoration: none; }
 .relay-source-link:hover { text-decoration: underline; }
