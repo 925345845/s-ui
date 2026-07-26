@@ -108,7 +108,7 @@ func TestRelaySOCKSExportUsesBrowserFormat(t *testing.T) {
 		want string
 	}{
 		{name: "ipv4", mode: relayModeUpstream, host: "88.214.24.57", port: 1020, user: "proxy_xbhwi8qipf", pass: "ohNuE5VXWeta6jb@xn", want: "88.214.24.57:1020:proxy_xbhwi8qipf:ohNuE5VXWeta6jb@xn"},
-		{name: "ipv6", mode: relayModeIPv6, host: "88.214.24.57", ipv6: "2001:db8::10", port: 1021, user: "user", pass: "pass", want: "[2001:db8::10]:1021:user:pass"},
+		{name: "ipv6", mode: relayModeIPv6, host: "88.214.24.57", ipv6: "2001:db8::10", port: 1021, user: "user", pass: "pass", want: "2001:db8::10:1021:user:pass"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -137,7 +137,7 @@ func TestRelayBitBrowserProxyInfo(t *testing.T) {
 			name: "ipv6",
 			pool: model.RelayPool{Mode: relayModeIPv6, Protocol: "socks", ListenHost: "88.214.24.57"},
 			item: model.RelayItem{ListenPort: 30005, Username: "proxy-user", Password: "proxy-pass", IPv6: "2a05:f480:3400:282d:a75c:71ba:1e76:7c1b"},
-			want: "ipv6:[2a05:f480:3400:282d:a75c:71ba:1e76:7c1b]:30005:proxy-user:proxy-pass",
+			want: "ipv6:2a05:f480:3400:282d:a75c:71ba:1e76:7c1b:30005:proxy-user:proxy-pass",
 		},
 	}
 	for _, test := range tests {
@@ -180,8 +180,8 @@ func TestBuildRelayBitBrowserWorkbook(t *testing.T) {
 		"F1": "代理信息",
 		"A4": "IPv6 pool-001",
 		"E4": "socks5",
-		"F4": "ipv6:[2001:db8::10]:30005:user-1:pass-1",
-		"F5": "ipv6:[2001:db8::11]:30006:user-2:pass-2",
+		"F4": "ipv6:2001:db8::10:30005:user-1:pass-1",
+		"F5": "ipv6:2001:db8::11:30006:user-2:pass-2",
 	}
 	for cell, want := range checks {
 		got, err := workbook.GetCellValue(sheet, cell)

@@ -1525,7 +1525,7 @@ func relaySOCKSURI(host string, port int, username, password string) string {
 
 func relaySOCKSExport(mode, publicHost, ipv6 string, port int, username, password string) string {
 	host := relayItemHost(mode, publicHost, ipv6)
-	host = formatRelayHost(host)
+	host = strings.Trim(host, "[]")
 	return fmt.Sprintf("%s:%d:%s:%s", host, port, username, password)
 }
 
