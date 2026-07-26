@@ -71,7 +71,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 安装指定版本：
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.8
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.9
 ```
 
 默认配置通常为：
@@ -133,7 +133,7 @@ OpenWrt Lite 面向路由器和低内存设备，只保留 sing-box 核心，不
 从 [Releases](https://github.com/Hhz0823/1s-ui/releases/latest) 下载对应架构的 `s-ui-lite_*.ipk` 后安装：
 
 ```bash
-opkg install ./s-ui-lite_1.4.8-1_x86_64.ipk
+opkg install ./s-ui-lite_1.4.9-1_x86_64.ipk
 /etc/init.d/s-ui-lite enable
 /etc/init.d/s-ui-lite start
 ```
@@ -192,7 +192,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 Install a specific version:
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.8
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.9
 ```
 
 Common commands:
@@ -221,7 +221,7 @@ docker run -itd \
 OpenWrt Lite targets routers and low-memory devices. It only ships the sing-box runtime and leaves Xray-core out to reduce package size and memory usage.
 
 ```bash
-opkg install ./s-ui-lite_1.4.8-1_x86_64.ipk
+opkg install ./s-ui-lite_1.4.9-1_x86_64.ipk
 /etc/init.d/s-ui-lite enable
 /etc/init.d/s-ui-lite start
 ```
@@ -256,7 +256,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 バージョン指定：
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.8
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.9
 ```
 
 ### Docker
@@ -276,7 +276,7 @@ docker run -itd \
 OpenWrt Lite はルーターや低メモリ環境向けの軽量版です。sing-box のみを含み、Xray-core ランタイムは含まれません。
 
 ```bash
-opkg install ./s-ui-lite_1.4.8-1_x86_64.ipk
+opkg install ./s-ui-lite_1.4.9-1_x86_64.ipk
 /etc/init.d/s-ui-lite enable
 /etc/init.d/s-ui-lite start
 ```
@@ -311,7 +311,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 특정 버전 설치:
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.8
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.4.9
 ```
 
 ### Docker
@@ -331,7 +331,7 @@ docker run -itd \
 OpenWrt Lite는 라우터와 저메모리 장치를 위한 경량 버전입니다. 패키지 크기와 메모리 사용량을 줄이기 위해 sing-box만 포함하며 Xray-core 런타임은 포함하지 않습니다.
 
 ```bash
-opkg install ./s-ui-lite_1.4.8-1_x86_64.ipk
+opkg install ./s-ui-lite_1.4.9-1_x86_64.ipk
 /etc/init.d/s-ui-lite enable
 /etc/init.d/s-ui-lite start
 ```
