@@ -61,7 +61,7 @@
               <AnyTls v-if="inbound.type == inTypes.AnyTls" :data="inbound" direction="in" />
               <TProxy v-if="inbound.type == inTypes.TProxy" :inbound="inbound" />
               <DokodemoDoor v-if="inbound.type == inTypes.DokodemoDoor" :data="inbound" />
-              <WireGuard v-if="inbound.type == inTypes.WireGuard" :data="inbound" />
+              <Wireguard v-if="inbound.type == inTypes.WireGuard" :data="inbound" />
               <XrayTransport v-if="isXray && inbound.type != inTypes.Hysteria2 && inbound.type != inTypes.WireGuard && inbound.type != inTypes.DokodemoDoor && Object.hasOwn(inbound,'transport')" :data="inbound" />
               <Transport v-else-if="Object.hasOwn(inbound,'transport')" :data="inbound" />
               <Users v-if="hasUser" :clients="clients" :data="initUsers" />
@@ -128,7 +128,7 @@ import AnyTls from '@/components/protocols/AnyTls.vue'
 import InTls from '@/components/tls/InTLS.vue'
 import TProxy from '@/components/protocols/TProxy.vue'
 import DokodemoDoor from '@/components/protocols/DokodemoDoor.vue'
-import WireGuard from '@/components/protocols/WireGuard.vue'
+import Wireguard from '@/components/protocols/Wireguard.vue'
 import XrayHysteria2 from '@/components/protocols/XrayHysteria2.vue'
 import Multiplex from '@/components/Multiplex.vue'
 import Transport from '@/components/Transport.vue'
@@ -345,7 +345,7 @@ export default {
   components: {
     Listen, InTls, Hysteria2, Naive, Direct, Shadowsocks,
     Users, Hysteria, ShadowTls, TProxy, Multiplex, Tuic, Tun,
-    AnyTls, Transport, XrayTransport, AddrVue, OutJsonVue, Dial, DokodemoDoor, WireGuard, XrayHysteria2
+    AnyTls, Transport, XrayTransport, AddrVue, OutJsonVue, Dial, DokodemoDoor, Wireguard, XrayHysteria2
   }
 }
 </script>

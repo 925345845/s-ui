@@ -30,7 +30,7 @@
 
     <v-card v-for="(peer, index) in data.peers" :key="index" variant="outlined" class="mb-3 pa-3">
       <div class="d-flex justify-space-between align-center mb-2">
-        <span>Peer #{{ index + 1 }}</span>
+        <span>Peer #{{ Number(index) + 1 }}</span>
         <v-btn icon="mdi-delete" size="small" color="error" variant="text" :disabled="data.peers.length <= 1" @click="data.peers.splice(index, 1)" />
       </div>
       <v-row>
