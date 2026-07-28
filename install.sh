@@ -11,7 +11,7 @@ cur_dir=$(pwd)
 # Decision flags (set by analyze_vps)
 INSTALL_PANEL=1
 INSTALL_XRAY=1
-INSTALL_PROXY=0               # reverse proxy in front of panel
+INSTALL_PROXY=0               # reverse proxy in front of panel (default off)
 PROXY_ENGINE=""               # caddy | nginx | ""
 PROXY_DOMAIN=""
 PROXY_EMAIL=""
@@ -26,6 +26,8 @@ FORCE_INSTALL=0
 AUTO_YES=0
 FORCE_XRAY=""                 # "" | 1 | 0
 FORCE_PROXY=""                # "" | 1 | 0
+SKIP_CORE=1                   # default: panel only, cores on-demand (safer)
+START_SERVICE=1               # start systemd unit after install
 REQUESTED_VERSION=""
 PORT80_FREE=1
 PORT443_FREE=1
@@ -41,16 +43,18 @@ usage() {
   -y, --yes             非交互：接受推荐方案并安装
   --with-xray           强制安装 Xray-core
   --no-xray             跳过 Xray-core（仅 sing-box）
-  --with-proxy          强制安装反代（Caddy/Nginx）
+  --with-proxy          安装反代（Caddy/Nginx，默认不装）
   --no-proxy            不安装反代
   --domain DOMAIN       反代域名（启用 HTTPS）
   --email EMAIL         ACME 邮箱（Caddy 可选）
+  --start-core          安装后自动启动 sing-box 内核（默认不启动，更安全）
+  --no-start            只安装文件，不 systemctl start
   --force               内存不足时仍允许安装面板
   -h, --help            显示帮助
 
 示例:
   bash install.sh
-  bash install.sh v1.5.1 -y --no-xray
+  bash install.sh v1.5.2 -y --no-xray --no-proxy
   bash install.sh -y --with-proxy --domain panel.example.com --email a@b.com
 EOF
 }
@@ -86,6 +90,14 @@ parse_args() {
         --email)
             PROXY_EMAIL="${2:-}"
             shift 2
+            ;;
+        --start-core)
+            SKIP_CORE=0
+            shift
+            ;;
+        --no-start)
+            START_SERVICE=0
+            shift
             ;;
         --force)
             FORCE_INSTALL=1
@@ -274,57 +286,47 @@ analyze_vps() {
         xray_reason="用户指定 --no-xray"
     fi
 
-    # Reverse proxy decision
+    # Reverse proxy: OFF by default (installing Caddy/Nginx has caused instability on some VPS).
     INSTALL_PROXY=0
     PROXY_ENGINE=""
-    local proxy_reason="默认不装反代"
-    if [[ "$PROFILE" == "tiny" ]]; then
-        INSTALL_PROXY=0
-        proxy_reason="内存过小，跳过反代"
-    elif [[ "$PORT80_FREE" -ne 1 ]]; then
-        INSTALL_PROXY=0
-        proxy_reason="80 端口占用，跳过反代"
-    elif [[ "$PROFILE" == "high" || "$PROFILE" == "standard" ]]; then
-        INSTALL_PROXY=1
-        PROXY_ENGINE="caddy"
-        proxy_reason="资源充足，推荐 Caddy 反代（自动 HTTPS）"
-    elif [[ "$PROFILE" == "low" && "$MEM_AVAIL_MB" -ge 350 ]]; then
-        INSTALL_PROXY=1
-        PROXY_ENGINE="nginx"
-        proxy_reason="中低内存，推荐轻量 Nginx 反代"
+    local proxy_reason="默认不装反代（避免安装期额外服务拖垮机器）"
+    if [[ "$FORCE_PROXY" == "1" || -n "$PROXY_DOMAIN" ]]; then
+        if [[ "$PORT80_FREE" -ne 1 && ! systemctl is-active --quiet nginx 2>/dev/null && ! systemctl is-active --quiet caddy 2>/dev/null ]]; then
+            INSTALL_PROXY=0
+            proxy_reason="80 端口占用且无现成反代，跳过"
+        else
+            INSTALL_PROXY=1
+            if [[ "$PROFILE" == "tiny" || "$PROFILE" == "low" ]]; then
+                PROXY_ENGINE="nginx"
+            else
+                PROXY_ENGINE="caddy"
+            fi
+            systemctl is-active --quiet nginx 2>/dev/null && PROXY_ENGINE="nginx"
+            systemctl is-active --quiet caddy 2>/dev/null && PROXY_ENGINE="caddy"
+            proxy_reason="用户要求启用反代（${PROXY_ENGINE}）"
+        fi
     fi
-
-    # Prefer nginx if caddy already missing but nginx running, or caddy port conflict on 443 only with domain
-    if systemctl is-active --quiet nginx 2>/dev/null && [[ "$INSTALL_PROXY" -eq 1 ]]; then
-        PROXY_ENGINE="nginx"
-        proxy_reason="检测到 Nginx 已运行，复用 Nginx 反代"
-    fi
-    if systemctl is-active --quiet caddy 2>/dev/null && [[ "$INSTALL_PROXY" -eq 1 ]]; then
-        PROXY_ENGINE="caddy"
-        proxy_reason="检测到 Caddy 已运行，复用 Caddy 反代"
-    fi
-
-    if [[ "$FORCE_PROXY" == "1" ]]; then
-        INSTALL_PROXY=1
-        [[ -z "$PROXY_ENGINE" ]] && PROXY_ENGINE="caddy"
-        [[ "$PROFILE" == "low" || "$PROFILE" == "tiny" ]] && PROXY_ENGINE="nginx"
-        proxy_reason="用户指定 --with-proxy"
-    elif [[ "$FORCE_PROXY" == "0" ]]; then
+    if [[ "$FORCE_PROXY" == "0" ]]; then
         INSTALL_PROXY=0
         PROXY_ENGINE=""
         proxy_reason="用户指定 --no-proxy"
     fi
 
-    # Domain implies wanting proxy unless explicitly disabled
-    if [[ -n "$PROXY_DOMAIN" && "$FORCE_PROXY" != "0" ]]; then
-        INSTALL_PROXY=1
-        [[ -z "$PROXY_ENGINE" ]] && PROXY_ENGINE="caddy"
-        proxy_reason="已指定域名 ${PROXY_DOMAIN}，启用反代+HTTPS"
+    # Core auto-start: default SKIP to prevent OOM power-offs on small VPS.
+    # High-memory hosts may enable cores with --start-core.
+    if [[ "$SKIP_CORE" -eq 0 ]]; then
+        :
+    elif [[ "$PROFILE" == "high" && "$MEM_AVAIL_MB" -ge 1500 ]]; then
+        # Still default skip unless --start-core; keep safe.
+        SKIP_CORE=1
+    else
+        SKIP_CORE=1
     fi
 
-    echo -e "推荐：服务端=${green}${INSTALL_PANEL}${plain}  Xray=${green}${INSTALL_XRAY}${plain}  反代=${green}${INSTALL_PROXY}${plain}$([ "$INSTALL_PROXY" -eq 1 ] && echo "(${PROXY_ENGINE})" || true)"
+    echo -e "推荐：服务端=${green}${INSTALL_PANEL}${plain}  Xray=${green}${INSTALL_XRAY}${plain}  反代=${green}${INSTALL_PROXY}${plain}$([ "$INSTALL_PROXY" -eq 1 ] && echo "(${PROXY_ENGINE})" || true)  自动启内核=${green}$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是)${plain}"
     echo -e "Xray 原因：${xray_reason}"
     echo -e "反代 原因：${proxy_reason}"
+    echo -e "内核策略：${yellow}默认不自动启动 sing-box/Xray，仅启动面板 Web，避免 OOM 关机${plain}"
     echo -e "${blue}=================================${plain}"
 
     if [[ "$INSTALL_PANEL" -ne 1 ]]; then
@@ -340,25 +342,26 @@ analyze_vps() {
             exit 0
         fi
         if [[ "$INSTALL_XRAY" -eq 0 && "$FORCE_XRAY" == "" && "$PROFILE" != "tiny" ]]; then
-            read -r -p "是否仍安装 Xray-core？[y/N]: " xans
+            read -r -p "是否仍安装 Xray-core 二进制？[y/N]: " xans
             if [[ "${xans}" == "y" || "${xans}" == "Y" ]]; then
                 INSTALL_XRAY=1
             fi
         fi
-        if [[ "$INSTALL_PROXY" -eq 0 && "$FORCE_PROXY" == "" && "$PROFILE" != "tiny" && "$PORT80_FREE" -eq 1 ]]; then
-            read -r -p "是否安装反向代理（Caddy/Nginx，可隐藏面板端口）？[y/N]: " pans
+        if [[ "$INSTALL_PROXY" -eq 0 && "$FORCE_PROXY" == "" && "$PORT80_FREE" -eq 1 ]]; then
+            read -r -p "是否安装反向代理（可能增加内存占用，默认不建议）？[y/N]: " pans
             if [[ "${pans}" == "y" || "${pans}" == "Y" ]]; then
                 INSTALL_PROXY=1
-                [[ "$PROFILE" == "low" ]] && PROXY_ENGINE="nginx" || PROXY_ENGINE="caddy"
-                read -r -p "反代域名（可留空仅用 80 端口 HTTP）：" PROXY_DOMAIN
+                [[ "$PROFILE" == "low" || "$PROFILE" == "tiny" ]] && PROXY_ENGINE="nginx" || PROXY_ENGINE="caddy"
+                read -r -p "反代域名（可留空）：" PROXY_DOMAIN
                 if [[ -n "$PROXY_DOMAIN" ]]; then
                     read -r -p "ACME 邮箱（可留空）：" PROXY_EMAIL
                 fi
             fi
-        elif [[ "$INSTALL_PROXY" -eq 1 && -z "$PROXY_DOMAIN" ]]; then
-            read -r -p "反代域名（可留空仅用 80 端口 HTTP）：" PROXY_DOMAIN
-            if [[ -n "$PROXY_DOMAIN" ]]; then
-                read -r -p "ACME 邮箱（可留空）：" PROXY_EMAIL
+        fi
+        if [[ "$SKIP_CORE" -eq 1 ]]; then
+            read -r -p "是否在安装后自动启动代理内核？(小内存请选 n) [y/N]: " cans
+            if [[ "${cans}" == "y" || "${cans}" == "Y" ]]; then
+                SKIP_CORE=0
             fi
         fi
     fi
@@ -368,86 +371,35 @@ apply_systemd_optimize() {
     local unit="/etc/systemd/system/s-ui.service"
     [[ -f "$unit" ]] || return 0
 
-    local mem_high mem_max oom_score
-    case "$PROFILE" in
-    tiny)
-        mem_high=256M
-        mem_max=450M
-        oom_score=600
-        ;;
-    low)
-        mem_high=384M
-        mem_max=700M
-        oom_score=450
-        ;;
-    high)
-        mem_high=1G
-        mem_max=3G
-        oom_score=200
-        ;;
-    *)
-        mem_high=768M
-        mem_max=1536M
-        oom_score=300
-        ;;
-    esac
+    # Strip dangerous hard memory caps if present (from older installs).
+    sed -i '/^MemoryMax=/d;/^MemoryHigh=/d' "$unit" 2>/dev/null || true
 
-    # Rewrite memory guidance in place if keys exist; otherwise append under [Service].
-    if grep -q '^MemoryHigh=' "$unit"; then
-        sed -i "s/^MemoryHigh=.*/MemoryHigh=${mem_high}/" "$unit"
-    else
-        sed -i "/^\[Service\]/a MemoryHigh=${mem_high}" "$unit"
-    fi
-    if grep -q '^MemoryMax=' "$unit"; then
-        sed -i "s/^MemoryMax=.*/MemoryMax=${mem_max}/" "$unit"
-    else
-        sed -i "/^\[Service\]/a MemoryMax=${mem_max}" "$unit"
-    fi
-    if grep -q '^OOMScoreAdjust=' "$unit"; then
-        sed -i "s/^OOMScoreAdjust=.*/OOMScoreAdjust=${oom_score}/" "$unit"
-    else
-        sed -i "/^\[Service\]/a OOMScoreAdjust=${oom_score}" "$unit"
-    fi
-
-    # Low-memory environments: prefer fewer FDs only if tiny
-    if [[ "$PROFILE" == "tiny" ]]; then
-        if grep -q '^LimitNOFILE=' "$unit"; then
-            sed -i "s/^LimitNOFILE=.*/LimitNOFILE=65535/" "$unit"
-        fi
-    fi
-
-    # Drop-in env for GOGC on tiny/low hosts to reduce heap pressure a bit.
     mkdir -p /etc/systemd/system/s-ui.service.d
-    case "$PROFILE" in
-    tiny)
-        cat >/etc/systemd/system/s-ui.service.d/optimize.conf <<EOF
-[Service]
-Environment=GOGC=40
-Environment=GOMEMLIMIT=350MiB
-EOF
-        ;;
-    low)
-        cat >/etc/systemd/system/s-ui.service.d/optimize.conf <<EOF
-[Service]
-Environment=GOGC=50
-Environment=GOMEMLIMIT=550MiB
-EOF
-        ;;
-    high)
-        cat >/etc/systemd/system/s-ui.service.d/optimize.conf <<EOF
-[Service]
-Environment=GOGC=100
-EOF
-        ;;
-    *)
-        cat >/etc/systemd/system/s-ui.service.d/optimize.conf <<EOF
-[Service]
-Environment=GOGC=75
-EOF
-        ;;
-    esac
+    local skip_line=""
+    if [[ "$SKIP_CORE" -eq 1 ]]; then
+        skip_line="Environment=SUI_SKIP_CORE=true"
+        # Marker file as backup if env is lost
+        mkdir -p /usr/local/s-ui/db
+        touch /usr/local/s-ui/db/.skip_core
+        chmod 644 /usr/local/s-ui/db/.skip_core
+    else
+        rm -f /usr/local/s-ui/db/.skip_core
+    fi
 
-    echo -e "${green}已按档位 ${PROFILE} 优化 systemd：MemoryHigh=${mem_high} MemoryMax=${mem_max}${plain}"
+    cat >/etc/systemd/system/s-ui.service.d/optimize.conf <<EOF
+[Service]
+# Prefer killing the panel, not the whole VPS, under memory pressure.
+OOMScoreAdjust=500
+Nice=5
+${skip_line}
+EOF
+
+    if [[ "$SKIP_CORE" -eq 1 ]]; then
+        echo -e "${green}已启用安全模式：面板启动时不自动加载 sing-box/Xray（防 OOM 关机）${plain}"
+        echo -e "${yellow}需要代理时在面板保存入站/点重启内核，或：rm -f /usr/local/s-ui/db/.skip_core && systemctl edit 去掉 SUI_SKIP_CORE 后重启 s-ui${plain}"
+    else
+        echo -e "${yellow}已配置为自动启动代理内核（--start-core）${plain}"
+    fi
 }
 
 suggest_swap() {
@@ -614,7 +566,7 @@ bind_panel_localhost() {
     else
         /usr/local/s-ui/sui setting -listen 127.0.0.1 >/dev/null 2>&1 || true
     fi
-    systemctl restart s-ui 2>/dev/null || true
+    # Avoid restart storm; caller restarts once if needed.
 }
 
 install_reverse_proxy() {
@@ -632,6 +584,8 @@ install_reverse_proxy() {
 
     echo -e "${yellow}正在配置反向代理（引擎: ${PROXY_ENGINE}）...${plain}"
     bind_panel_localhost "$PROXY_DOMAIN"
+    systemctl try-restart s-ui 2>/dev/null || true
+    sleep 1
 
     if [[ "$PROXY_ENGINE" == "caddy" ]]; then
         if ! install_caddy_pkg; then
@@ -640,8 +594,7 @@ install_reverse_proxy() {
         else
             write_caddy_config "$PROXY_DOMAIN" "$PROXY_EMAIL" "$panel_port"
             systemctl enable caddy >/dev/null 2>&1 || true
-            systemctl restart caddy
-            if systemctl is-active --quiet caddy; then
+            if systemctl restart caddy && systemctl is-active --quiet caddy; then
                 echo -e "${green}Caddy 反代已启动${plain}"
                 if [[ -n "$PROXY_DOMAIN" ]]; then
                     echo -e "面板地址：${green}https://${PROXY_DOMAIN}/app/${plain}"
@@ -659,14 +612,13 @@ install_reverse_proxy() {
         if ! install_package nginx; then
             echo -e "${red}Nginx 安装失败，跳过反代${plain}"
             /usr/local/s-ui/sui setting -listen - >/dev/null 2>&1 || true
-            systemctl restart s-ui 2>/dev/null || true
+            systemctl try-restart s-ui 2>/dev/null || true
             return 1
         fi
         write_nginx_config "$PROXY_DOMAIN" "$panel_port"
         nginx -t 2>/dev/null || true
         systemctl enable nginx >/dev/null 2>&1 || true
-        systemctl restart nginx
-        if systemctl is-active --quiet nginx; then
+        if systemctl restart nginx && systemctl is-active --quiet nginx; then
             echo -e "${green}Nginx 反代已启动${plain}"
             if [[ -n "$PROXY_DOMAIN" ]]; then
                 echo -e "HTTP：${green}http://${PROXY_DOMAIN}/app/${plain}"
@@ -678,7 +630,7 @@ install_reverse_proxy() {
         fi
         echo -e "${red}Nginx 启动失败，已恢复面板监听全部网卡${plain}"
         /usr/local/s-ui/sui setting -listen - >/dev/null 2>&1 || true
-        systemctl restart s-ui 2>/dev/null || true
+        systemctl try-restart s-ui 2>/dev/null || true
         return 1
     fi
 }
@@ -862,33 +814,48 @@ install_s-ui() {
     apply_systemd_optimize
     config_after_install
     prepare_services
+    # Xray binary only if decided — never auto-run it at boot when SKIP_CORE=1
     install_xray || echo -e "${yellow}Xray-core 未安装；Sing-Box 功能不受影响${plain}"
 
     systemctl daemon-reload
     systemctl enable s-ui
-    if ! systemctl start s-ui; then
-        echo -e "${red}s-ui 服务启动失败，最近日志：${plain}"
-        journalctl -u s-ui -n 50 --no-pager || true
-        echo -e "${yellow}可执行: systemctl status s-ui -l  与  journalctl -u s-ui -xe${plain}"
-        exit 1
-    fi
-    sleep 1
-    if ! systemctl is-active --quiet s-ui; then
-        echo -e "${red}s-ui 未能保持运行状态，最近日志：${plain}"
-        journalctl -u s-ui -n 50 --no-pager || true
-        exit 1
+
+    if [[ "$START_SERVICE" -eq 1 ]]; then
+        # Start panel only (cores skipped when SUI_SKIP_CORE=true)
+        if ! systemctl start s-ui; then
+            echo -e "${red}s-ui 服务启动失败，最近日志：${plain}"
+            journalctl -u s-ui -n 80 --no-pager || true
+            echo -e "${yellow}机器若曾关机，请用 VPS 控制台登录后执行上述 journalctl / dmesg 检查 OOM${plain}"
+            exit 1
+        fi
+        sleep 2
+        if ! systemctl is-active --quiet s-ui; then
+            echo -e "${red}s-ui 未能保持运行状态，最近日志：${plain}"
+            journalctl -u s-ui -n 80 --no-pager || true
+            exit 1
+        fi
+        # Reverse proxy only after panel is confirmed running (optional, off by default)
+        install_reverse_proxy || true
+    else
+        echo -e "${yellow}已按 --no-start 跳过启动。稍后执行: systemctl start s-ui${plain}"
     fi
 
-    install_reverse_proxy || true
-
-    echo -e "${green}s-ui ${last_version}${plain} 安装完成，现已启动并运行..."
-    echo -e "安装摘要：模式=${INSTALL_MODE} 档位=${PROFILE} 面板=是 Xray=$([ "$INSTALL_XRAY" -eq 1 ] && echo 是 || echo 否) 反代=$([ "$INSTALL_PROXY" -eq 1 ] && echo "是(${PROXY_ENGINE})" || echo 否)"
-    echo -e "你可以通过以下 URL 访问面板：${green}"
-    /usr/local/s-ui/sui uri 2>/dev/null || true
-    echo -e "${plain}"
+    echo -e "${green}s-ui ${last_version}${plain} 安装完成"
+    echo -e "安装摘要：模式=${INSTALL_MODE} 档位=${PROFILE} 面板=是 Xray=$([ "$INSTALL_XRAY" -eq 1 ] && echo 是 || echo 否) 反代=$([ "$INSTALL_PROXY" -eq 1 ] && echo "是(${PROXY_ENGINE})" || echo 否) 自动启内核=$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是)"
+    if systemctl is-active --quiet s-ui 2>/dev/null; then
+        echo -e "面板访问地址：${green}"
+        /usr/local/s-ui/sui uri 2>/dev/null || true
+        echo -e "${plain}"
+    fi
+    if [[ "$SKIP_CORE" -eq 1 ]]; then
+        echo -e "${yellow}安全模式：代理内核未自动启动。打开面板配置入站后，在面板中重启内核，或：${plain}"
+        echo -e "  rm -f /usr/local/s-ui/db/.skip_core"
+        echo -e "  rm -f /etc/systemd/system/s-ui.service.d/optimize.conf"
+        echo -e "  systemctl daemon-reload && systemctl restart s-ui"
+    fi
     suggest_swap
     echo -e ""
-    echo -e "${yellow}若 SSH 断开或机器异常，请查 OOM： dmesg | grep -i oom | tail${plain}"
+    echo -e "${yellow}若仍出现关机/断连，请提供： free -h; dmesg | grep -iE 'oom|kill' | tail; journalctl -u s-ui -n 50${plain}"
     s-ui help 2>/dev/null || true
 }
 

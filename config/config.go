@@ -47,6 +47,24 @@ func IsDebug() bool {
 	return os.Getenv("SUI_DEBUG") == "true"
 }
 
+// IsSkipCore reports whether proxy cores should not be started at process boot.
+// Useful on low-memory VPS so the panel web UI can come up without loading
+// sing-box/Xray into RAM. Cores can still be started later from the panel API.
+//
+// Set with environment variable SUI_SKIP_CORE=true|1|yes
+// or create an empty marker file next to the DB: <db-folder>/.skip_core
+func IsSkipCore() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("SUI_SKIP_CORE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	marker := filepath.Join(GetDBFolderPath(), ".skip_core")
+	if _, err := os.Stat(marker); err == nil {
+		return true
+	}
+	return false
+}
+
 func GetDBFolderPath() string {
 	dbFolderPath := os.Getenv("SUI_DB_FOLDER")
 	if dbFolderPath == "" {

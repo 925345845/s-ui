@@ -89,6 +89,12 @@ func (a *APP) Start() error {
 		return err
 	}
 
+	// Low-memory / safe install path: keep panel UI up without loading cores.
+	if config.IsSkipCore() {
+		logger.Warning("SUI_SKIP_CORE is enabled: sing-box/Xray will not auto-start. Start cores from the panel when ready.")
+		return nil
+	}
+
 	if err := a.configService.RestoreRelayIPv6(); err != nil {
 		logger.Warning("restore relay IPv6 addresses failed: ", err)
 	}
