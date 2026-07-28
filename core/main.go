@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"sync"
 
 	"github.com/Hhz0823/1s-ui/logger"
 
@@ -17,6 +18,7 @@ import (
 
 var (
 	globalCtx        context.Context
+	globalCtxOnce    sync.Once
 	inbound_manager  adapter.InboundManager
 	outbound_manager adapter.OutboundManager
 	service_manager  adapter.ServiceManager
@@ -30,16 +32,24 @@ type Core struct {
 	instance  *Box
 }
 
+// NewCore creates a lightweight handle. Full sing-box protocol registries are
+// initialized lazily on first Start/GetCtx so safe-mode panel boots use less RAM.
 func NewCore() *Core {
-	globalCtx = context.Background()
-	globalCtx = sb.Context(globalCtx, InboundRegistry(), OutboundRegistry(), EndpointRegistry(), DNSTransportRegistry(), ServiceRegistry())
 	return &Core{
 		isRunning: false,
 		instance:  nil,
 	}
 }
 
+func ensureGlobalCtx() {
+	globalCtxOnce.Do(func() {
+		ctx := context.Background()
+		globalCtx = sb.Context(ctx, InboundRegistry(), OutboundRegistry(), EndpointRegistry(), DNSTransportRegistry(), ServiceRegistry())
+	})
+}
+
 func (c *Core) GetCtx() context.Context {
+	ensureGlobalCtx()
 	return globalCtx
 }
 
@@ -48,6 +58,8 @@ func (c *Core) GetInstance() *Box {
 }
 
 func (c *Core) Start(sbConfig []byte) error {
+	ensureGlobalCtx()
+
 	var opt option.Options
 	err := opt.UnmarshalJSONContext(globalCtx, sbConfig)
 	if err != nil {
