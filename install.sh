@@ -180,10 +180,10 @@ analyze_vps() {
     echo -e "内存：总计 ${MEM_TOTAL_MB}MB / 可用 ${MEM_AVAIL_MB}MB / Swap ${SWAP_MB}MB"
     echo -e "磁盘：/usr/local 可用约 ${DISK_FREE_MB}MB"
 
-    # Profile by total RAM
+    # Profile by total RAM + free RAM + swap (1GB/0 swap is NOT "standard")
     if [[ "$MEM_TOTAL_MB" -lt 450 ]]; then
         PROFILE="tiny"
-    elif [[ "$MEM_TOTAL_MB" -lt 900 ]]; then
+    elif [[ "$MEM_TOTAL_MB" -lt 1200 || "$MEM_AVAIL_MB" -lt 500 || ( "$MEM_TOTAL_MB" -lt 1600 && "$SWAP_MB" -lt 256 ) ]]; then
         PROFILE="low"
     elif [[ "$MEM_TOTAL_MB" -lt 2800 ]]; then
         PROFILE="standard"
@@ -191,6 +191,9 @@ analyze_vps() {
         PROFILE="high"
     fi
     echo -e "资源档位：${green}${PROFILE}${plain}"
+    if [[ "$SWAP_MB" -lt 256 && "$MEM_TOTAL_MB" -lt 2048 ]]; then
+        echo -e "${yellow}警告：无有效 Swap 且内存不大，极易 OOM 导致 SSH 断开/整机重启${plain}"
+    fi
 
     # Existing installation
     if [[ -x /usr/local/s-ui/sui ]] || systemctl list-unit-files 2>/dev/null | grep -q '^s-ui\.service'; then
@@ -248,33 +251,18 @@ analyze_vps() {
         fi
     fi
 
-    # Xray decision
-    INSTALL_XRAY=1
-    local xray_reason=""
+    # Xray decision — conservative: only auto on high profile with headroom
+    INSTALL_XRAY=0
+    local xray_reason="默认不装 Xray，降低安装期内存峰值（可用 --with-xray 强制）"
     if [[ -z "$(xray_asset)" ]]; then
         INSTALL_XRAY=0
         xray_reason="当前架构无自动 Xray 包"
-    elif [[ "$PROFILE" == "tiny" ]]; then
-        INSTALL_XRAY=0
-        xray_reason="内存过小，优先保证 sing-box 面板稳定"
-    elif [[ "$PROFILE" == "low" ]]; then
-        INSTALL_XRAY=0
-        xray_reason="内存 <1GB，默认跳过 Xray，可稍后手动装"
-        if [[ "$MEM_AVAIL_MB" -ge 450 && "$SWAP_MB" -ge 256 ]]; then
-            INSTALL_XRAY=1
-            xray_reason="可用内存与 Swap 尚可，建议安装 Xray"
-        fi
-    elif [[ "$PROFILE" == "standard" || "$PROFILE" == "high" ]]; then
+    elif [[ "$PROFILE" == "high" && "$MEM_AVAIL_MB" -ge 1200 ]]; then
         INSTALL_XRAY=1
-        xray_reason="资源充足，建议安装 Xray 以支持双内核"
-    fi
-
-    if [[ -x /usr/local/s-ui/bin/xray ]] || command -v xray >/dev/null 2>&1; then
-        echo -e "Xray：${green}系统中已存在 xray 二进制${plain}"
-        if [[ "$FORCE_XRAY" != "0" ]]; then
-            INSTALL_XRAY=1
-            xray_reason="已有 Xray，将刷新/保留"
-        fi
+        xray_reason="高内存机器，可安装 Xray 双内核"
+    elif [[ "$PROFILE" == "standard" && "$MEM_AVAIL_MB" -ge 900 && "$SWAP_MB" -ge 512 ]]; then
+        INSTALL_XRAY=1
+        xray_reason="标准档且有 Swap，可安装 Xray"
     fi
 
     # Explicit overrides
@@ -773,8 +761,53 @@ prepare_services() {
     systemctl daemon-reload
 }
 
+ensure_swap_if_needed() {
+    # Auto-create 1G swap on small VPS with no swap — major OOM mitigator.
+    if [[ "$SWAP_MB" -ge 256 ]]; then
+        return 0
+    fi
+    if [[ "$MEM_TOTAL_MB" -ge 2048 ]]; then
+        return 0
+    fi
+    if [[ -f /swapfile ]] && swapon --show 2>/dev/null | grep -q swapfile; then
+        return 0
+    fi
+    local do_swap=0
+    if [[ "$AUTO_YES" -eq 1 ]]; then
+        do_swap=1
+    else
+        read -r -p "检测到无 Swap，是否自动创建 1G Swap 防止关机？[Y/n]: " sans
+        if [[ "${sans}" != "n" && "${sans}" != "N" ]]; then
+            do_swap=1
+        fi
+    fi
+    if [[ "$do_swap" -ne 1 ]]; then
+        return 0
+    fi
+    echo -e "${yellow}正在创建 /swapfile (1G)...${plain}"
+    if fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none; then
+        chmod 600 /swapfile
+        mkswap /swapfile >/dev/null
+        swapon /swapfile
+        grep -q '/swapfile' /etc/fstab 2>/dev/null || echo '/swapfile none swap sw 0 0' >>/etc/fstab
+        SWAP_MB=1024
+        echo -e "${green}Swap 已启用${plain}"
+    else
+        echo -e "${yellow}创建 Swap 失败，继续安装但请留意 OOM${plain}"
+    fi
+}
+
 install_s-ui() {
     cd /tmp/ || exit 1
+
+    # Free RAM before large download / extract (critical on ~1GB VPS)
+    echo -e "${yellow}安装前停止旧服务以释放内存...${plain}"
+    systemctl stop s-ui 2>/dev/null || true
+    systemctl stop s-ui-agent 2>/dev/null || true
+    # Best-effort drop caches (safe, needs root)
+    sync 2>/dev/null || true
+    echo 3 >/proc/sys/vm/drop_caches 2>/dev/null || true
+    ensure_swap_if_needed
 
     local last_version
     if [[ -z "$REQUESTED_VERSION" ]]; then
@@ -784,7 +817,7 @@ install_s-ui() {
             exit 1
         fi
         echo -e "已获取 s-ui 最新版本：${last_version}，开始安装..."
-        wget -N --no-check-certificate -O /tmp/s-ui-linux-$(arch).tar.gz "https://github.com/Hhz0823/1s-ui/releases/download/${last_version}/s-ui-linux-$(arch).tar.gz"
+        wget --no-check-certificate -O /tmp/s-ui-linux-$(arch).tar.gz "https://github.com/Hhz0823/1s-ui/releases/download/${last_version}/s-ui-linux-$(arch).tar.gz"
         if [[ $? -ne 0 ]]; then
             echo -e "${red}下载 s-ui 失败，请确认服务器可以访问 Github ${plain}"
             exit 1
@@ -794,41 +827,55 @@ install_s-ui() {
         [[ "${last_version}" != v* ]] && last_version="v${last_version}"
         local url="https://github.com/Hhz0823/1s-ui/releases/download/${last_version}/s-ui-linux-$(arch).tar.gz"
         echo -e "开始安装 s-ui ${last_version}"
-        wget -N --no-check-certificate -O /tmp/s-ui-linux-$(arch).tar.gz "${url}"
+        wget --no-check-certificate -O /tmp/s-ui-linux-$(arch).tar.gz "${url}"
         if [[ $? -ne 0 ]]; then
             echo -e "${red}下载 s-ui ${last_version} 失败，请检查该版本是否存在${plain}"
             exit 1
         fi
     fi
 
-    if [[ -e /usr/local/s-ui/ ]]; then
-        systemctl stop s-ui 2>/dev/null || true
-    fi
-
-    tar zxvf "s-ui-linux-$(arch).tar.gz"
+    # Quiet extract to reduce IO; stop again in case something restarted
+    systemctl stop s-ui 2>/dev/null || true
+    rm -rf /tmp/s-ui-extract
+    mkdir -p /tmp/s-ui-extract
+    tar xzf "s-ui-linux-$(arch).tar.gz" -C /tmp/s-ui-extract
     rm -f "s-ui-linux-$(arch).tar.gz"
 
-    chmod +x s-ui/sui s-ui/s-ui.sh
-    cp s-ui/s-ui.sh /usr/bin/s-ui
-    cp -rf s-ui /usr/local/
-    cp -f s-ui/*.service /etc/systemd/system/
-    rm -rf s-ui
+    # Support both s-ui/ layout and flat extract
+    local src_dir="/tmp/s-ui-extract/s-ui"
+    [[ -d "$src_dir" ]] || src_dir="/tmp/s-ui-extract"
 
+    chmod +x "$src_dir/sui" "$src_dir/s-ui.sh" 2>/dev/null || true
+    cp "$src_dir/s-ui.sh" /usr/bin/s-ui
+    mkdir -p /usr/local/s-ui
+    # Preserve existing db/cert while replacing binaries
+    cp -f "$src_dir/sui" /usr/local/s-ui/sui
+    cp -f "$src_dir/s-ui.sh" /usr/local/s-ui/s-ui.sh 2>/dev/null || true
+    cp -f "$src_dir"/*.service /etc/systemd/system/ 2>/dev/null || true
+    # Copy remaining assets if present (html etc may be embedded)
+    if [[ -d "$src_dir/bin" ]]; then
+        mkdir -p /usr/local/s-ui/bin
+        cp -rf "$src_dir/bin/." /usr/local/s-ui/bin/ 2>/dev/null || true
+    fi
+    rm -rf /tmp/s-ui-extract
+    chmod +x /usr/local/s-ui/sui /usr/bin/s-ui
+
+    # ALWAYS enable safe core skip unless user passed --start-core
     apply_systemd_optimize
     config_after_install
     prepare_services
-    # Xray binary only if decided — never auto-run it at boot when SKIP_CORE=1
-    install_xray || echo -e "${yellow}Xray-core 未安装；Sing-Box 功能不受影响${plain}"
 
+    # Defer Xray binary install until after panel is up (reduces peak RAM during install)
     systemctl daemon-reload
     systemctl enable s-ui
 
     if [[ "$START_SERVICE" -eq 1 ]]; then
-        # Start panel only (cores skipped when SUI_SKIP_CORE=true)
+        sync 2>/dev/null || true
+        echo 3 >/proc/sys/vm/drop_caches 2>/dev/null || true
         if ! systemctl start s-ui; then
             echo -e "${red}s-ui 服务启动失败，最近日志：${plain}"
             journalctl -u s-ui -n 80 --no-pager || true
-            echo -e "${yellow}机器若曾关机，请用 VPS 控制台登录后执行上述 journalctl / dmesg 检查 OOM${plain}"
+            echo -e "${yellow}请查 OOM: dmesg | grep -iE 'oom|killed' | tail${plain}"
             exit 1
         fi
         sleep 2
@@ -837,10 +884,15 @@ install_s-ui() {
             journalctl -u s-ui -n 80 --no-pager || true
             exit 1
         fi
-        # Reverse proxy only after panel is confirmed running (optional, off by default)
+        echo -e "${green}面板进程已稳定运行（安全模式：未自动加载代理内核）${plain}"
+
+        # Install Xray binary only after panel is healthy (optional)
+        install_xray || echo -e "${yellow}Xray-core 未安装；Sing-Box 功能不受影响${plain}"
+        # Reverse proxy only if explicitly requested
         install_reverse_proxy || true
     else
         echo -e "${yellow}已按 --no-start 跳过启动。稍后执行: systemctl start s-ui${plain}"
+        install_xray || true
     fi
 
     echo -e "${green}s-ui ${last_version}${plain} 安装完成"
