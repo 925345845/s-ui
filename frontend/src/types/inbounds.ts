@@ -30,6 +30,7 @@ export const InTypes = {
   Redirect: 'redirect',
   TProxy: 'tproxy',
   DokodemoDoor: 'dokodemo-door',
+  WireGuard: 'wireguard',
 }
 
 type InType = typeof InTypes[keyof typeof InTypes]
@@ -221,6 +222,22 @@ export interface DokodemoDoor extends InboundBasics {
   }
 }
 
+export interface WireGuardPeer {
+  public_key: string
+  allowed_ips?: string[]
+  endpoint?: string
+  keep_alive?: number
+  pre_shared_key?: string
+}
+
+export interface WireGuardInbound extends InboundBasics {
+  secret_key: string
+  peers: WireGuardPeer[]
+  mtu?: number
+  workers?: number
+  domain_strategy?: string
+}
+
 // Create interfaces dynamically based on InTypes keys
 type InterfaceMap = {
   direct: Direct
@@ -241,6 +258,7 @@ type InterfaceMap = {
   redirect: Redirect
   tproxy: TProxy
   'dokodemo-door': DokodemoDoor
+  wireguard: WireGuardInbound
 }
 
 // Create union type from InterfaceMap
@@ -280,6 +298,12 @@ const defaultValues: Record<InType, Inbound> = {
     network: 'tcp,udp',
     follow_redirect: true,
     sniffing: { enabled: true, destOverride: ['http', 'tls', 'quic'], routeOnly: true },
+  },
+  wireguard: <WireGuardInbound>{
+    type: InTypes.WireGuard,
+    secret_key: '',
+    peers: [{ public_key: '', allowed_ips: ['0.0.0.0/0', '::/0'] }],
+    mtu: 1420,
   },
 }
 

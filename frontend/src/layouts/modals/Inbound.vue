@@ -61,7 +61,8 @@
               <AnyTls v-if="inbound.type == inTypes.AnyTls" :data="inbound" direction="in" />
               <TProxy v-if="inbound.type == inTypes.TProxy" :inbound="inbound" />
               <DokodemoDoor v-if="inbound.type == inTypes.DokodemoDoor" :data="inbound" />
-              <XrayTransport v-if="isXray && inbound.type != inTypes.Hysteria2 && Object.hasOwn(inbound,'transport')" :data="inbound" />
+              <WireGuard v-if="inbound.type == inTypes.WireGuard" :data="inbound" />
+              <XrayTransport v-if="isXray && inbound.type != inTypes.Hysteria2 && inbound.type != inTypes.WireGuard && inbound.type != inTypes.DokodemoDoor && Object.hasOwn(inbound,'transport')" :data="inbound" />
               <Transport v-else-if="Object.hasOwn(inbound,'transport')" :data="inbound" />
               <Users v-if="hasUser" :clients="clients" :data="initUsers" />
               <InTls v-if="hasTlsPanel"  :inbound="inbound" :tlsConfigs="tlsConfigs" :tls_id="inbound.tls_id" />
@@ -127,6 +128,7 @@ import AnyTls from '@/components/protocols/AnyTls.vue'
 import InTls from '@/components/tls/InTLS.vue'
 import TProxy from '@/components/protocols/TProxy.vue'
 import DokodemoDoor from '@/components/protocols/DokodemoDoor.vue'
+import WireGuard from '@/components/protocols/WireGuard.vue'
 import XrayHysteria2 from '@/components/protocols/XrayHysteria2.vue'
 import Multiplex from '@/components/Multiplex.vue'
 import Transport from '@/components/Transport.vue'
@@ -201,6 +203,7 @@ export default {
         { title: 'Mixed', value: InTypes.Mixed },
         { title: 'Hysteria2', value: InTypes.Hysteria2 },
         { title: 'Dokodemo-door', value: InTypes.DokodemoDoor },
+        { title: 'WireGuard', value: InTypes.WireGuard },
       ],
       OnlyTLS: [InTypes.Hysteria, InTypes.Hysteria2, InTypes.TUIC, InTypes.Naive, InTypes.AnyTls ],
     }
@@ -312,11 +315,12 @@ export default {
       }
       return Object.keys(this.inTypes)
         .map((key,index) => ({title: key, value: Object.values(this.inTypes)[index]}))
-        .filter((item) => item.value != InTypes.DokodemoDoor)
+        .filter((item) => item.value != InTypes.DokodemoDoor && item.value != InTypes.WireGuard)
     },
     hasTlsPanel() {
       if (this.isXray) {
-        return [InTypes.VLESS, InTypes.VMess, InTypes.Trojan, InTypes.Hysteria2].includes(this.inbound.type)
+        // Stream-level TLS/Reality for proxy inbounds; SOCKS/HTTP/Mixed optional.
+        return [InTypes.VLESS, InTypes.VMess, InTypes.Trojan, InTypes.Hysteria2, InTypes.SOCKS, InTypes.HTTP, InTypes.Mixed].includes(this.inbound.type)
       }
       return this.HasTls.includes(this.inbound.type)
     },
@@ -341,7 +345,7 @@ export default {
   components: {
     Listen, InTls, Hysteria2, Naive, Direct, Shadowsocks,
     Users, Hysteria, ShadowTls, TProxy, Multiplex, Tuic, Tun,
-    AnyTls, Transport, XrayTransport, AddrVue, OutJsonVue, Dial, DokodemoDoor, XrayHysteria2
+    AnyTls, Transport, XrayTransport, AddrVue, OutJsonVue, Dial, DokodemoDoor, WireGuard, XrayHysteria2
   }
 }
 </script>

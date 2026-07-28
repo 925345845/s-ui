@@ -156,8 +156,18 @@ func (s *InboundService) GetAllXrayConfig(db *gorm.DB) ([]map[string]interface{}
 				return nil, err
 			}
 			result = append(result, config)
+		case "wireguard":
+			config, err := s.buildXrayWireGuardInbound(inbound)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, config)
 		default:
 			return nil, common.NewErrorf("xray inbound type <%s> is not supported yet", inbound.Type)
+		}
+		// Apply optional sniffing from inbound options for all protocols.
+		if len(result) > 0 {
+			attachXraySniffing(result[len(result)-1], inbound)
 		}
 	}
 	return result, nil
@@ -194,21 +204,29 @@ func (s *InboundService) buildXrayVlessInbound(db *gorm.DB, inbound *model.Inbou
 		return nil, err
 	}
 
+	settings := map[string]interface{}{
+		"clients":    clients,
+		"decryption": stringValue((*full)["decryption"], "none"),
+	}
+	if encryption, _ := (*full)["encryption"].(string); encryption != "" {
+		settings["encryption"] = encryption
+	}
+	if fallbacks := xrayFallbacks((*full)["fallbacks"]); len(fallbacks) > 0 {
+		settings["fallbacks"] = fallbacks
+	}
+
 	return map[string]interface{}{
-		"tag":      inbound.Tag,
-		"listen":   listen,
-		"port":     port,
-		"protocol": "vless",
-		"settings": map[string]interface{}{
-			"clients":    clients,
-			"decryption": "none",
-		},
+		"tag":            inbound.Tag,
+		"listen":         listen,
+		"port":           port,
+		"protocol":       "vless",
+		"settings":       settings,
 		"streamSettings": streamSettings,
 	}, nil
 }
 
 func (s *InboundService) buildXrayVMessInbound(db *gorm.DB, inbound *model.Inbound) (map[string]interface{}, error) {
-	_, listen, port, transport, network, err := xrayInboundBasics(inbound, "ws")
+	full, listen, port, transport, network, err := xrayInboundBasics(inbound, "ws")
 	if err != nil {
 		return nil, err
 	}
@@ -223,20 +241,25 @@ func (s *InboundService) buildXrayVMessInbound(db *gorm.DB, inbound *model.Inbou
 		return nil, err
 	}
 
+	settings := map[string]interface{}{
+		"clients": clients,
+	}
+	if disableInsecure, ok := (*full)["disableInsecureEncryption"].(bool); ok {
+		settings["disableInsecureEncryption"] = disableInsecure
+	}
+
 	return map[string]interface{}{
-		"tag":      inbound.Tag,
-		"listen":   listen,
-		"port":     port,
-		"protocol": "vmess",
-		"settings": map[string]interface{}{
-			"clients": clients,
-		},
+		"tag":            inbound.Tag,
+		"listen":         listen,
+		"port":           port,
+		"protocol":       "vmess",
+		"settings":       settings,
 		"streamSettings": streamSettings,
 	}, nil
 }
 
 func (s *InboundService) buildXrayTrojanInbound(db *gorm.DB, inbound *model.Inbound) (map[string]interface{}, error) {
-	_, listen, port, transport, network, err := xrayInboundBasics(inbound, "ws")
+	full, listen, port, transport, network, err := xrayInboundBasics(inbound, "ws")
 	if err != nil {
 		return nil, err
 	}
@@ -251,14 +274,29 @@ func (s *InboundService) buildXrayTrojanInbound(db *gorm.DB, inbound *model.Inbo
 		return nil, err
 	}
 
+	settings := map[string]interface{}{
+		"clients": clients,
+	}
+	if fallbacks := xrayFallbacks((*full)["fallbacks"]); len(fallbacks) > 0 {
+		settings["fallbacks"] = fallbacks
+	} else if fallback, ok := (*full)["fallback"].(map[string]interface{}); ok {
+		// sing-box style single fallback → Xray fallbacks array
+		dest := stringValue(fallback["server"], "")
+		if dest != "" {
+			fb := map[string]interface{}{"dest": dest}
+			if p := toInt(fallback["server_port"]); p > 0 {
+				fb["dest"] = fmt.Sprintf("%s:%d", dest, p)
+			}
+			settings["fallbacks"] = []map[string]interface{}{fb}
+		}
+	}
+
 	return map[string]interface{}{
-		"tag":      inbound.Tag,
-		"listen":   listen,
-		"port":     port,
-		"protocol": "trojan",
-		"settings": map[string]interface{}{
-			"clients": clients,
-		},
+		"tag":            inbound.Tag,
+		"listen":         listen,
+		"port":           port,
+		"protocol":       "trojan",
+		"settings":       settings,
 		"streamSettings": streamSettings,
 	}, nil
 }
@@ -320,8 +358,15 @@ func (s *InboundService) buildXraySocksInbound(db *gorm.DB, inbound *model.Inbou
 	if err != nil {
 		return nil, err
 	}
+	// Mixed clients often store credentials under mixed; also accept that key.
+	if len(accounts) == 0 {
+		accounts, err = s.fetchXrayAccountClients(db, inbound.Id, "mixed")
+		if err != nil {
+			return nil, err
+		}
+	}
 	settings := map[string]interface{}{
-		"udp": true,
+		"udp": boolValueDefault((*full)["udp"], true),
 	}
 	if len(accounts) > 0 {
 		settings["auth"] = "password"
@@ -330,13 +375,17 @@ func (s *InboundService) buildXraySocksInbound(db *gorm.DB, inbound *model.Inbou
 		settings["auth"] = "noauth"
 	}
 
-	return map[string]interface{}{
+	config := map[string]interface{}{
 		"tag":      inbound.Tag,
 		"listen":   listen,
 		"port":     port,
 		"protocol": "socks",
 		"settings": settings,
-	}, nil
+	}
+	if err := attachOptionalXrayStream(config, inbound, full); err != nil {
+		return nil, err
+	}
+	return config, nil
 }
 
 func (s *InboundService) buildXrayHTTPInbound(db *gorm.DB, inbound *model.Inbound) (map[string]interface{}, error) {
@@ -353,18 +402,30 @@ func (s *InboundService) buildXrayHTTPInbound(db *gorm.DB, inbound *model.Inboun
 	if err != nil {
 		return nil, err
 	}
-	settings := map[string]interface{}{}
+	if len(accounts) == 0 {
+		accounts, err = s.fetchXrayAccountClients(db, inbound.Id, "mixed")
+		if err != nil {
+			return nil, err
+		}
+	}
+	settings := map[string]interface{}{
+		"allowTransparent": boolValue((*full)["allow_transparent"]),
+	}
 	if len(accounts) > 0 {
 		settings["accounts"] = accounts
 	}
 
-	return map[string]interface{}{
+	config := map[string]interface{}{
 		"tag":      inbound.Tag,
 		"listen":   listen,
 		"port":     port,
 		"protocol": "http",
 		"settings": settings,
-	}, nil
+	}
+	if err := attachOptionalXrayStream(config, inbound, full); err != nil {
+		return nil, err
+	}
+	return config, nil
 }
 
 func (s *InboundService) buildXrayMixedInbound(db *gorm.DB, inbound *model.Inbound) (map[string]interface{}, error) {
@@ -447,6 +508,167 @@ func (s *InboundService) buildXrayDokodemoInbound(inbound *model.Inbound) (map[s
 	return config, nil
 }
 
+func (s *InboundService) buildXrayWireGuardInbound(inbound *model.Inbound) (map[string]interface{}, error) {
+	full, err := inbound.MarshalFull()
+	if err != nil {
+		return nil, err
+	}
+	listen, port, err := xrayListenAndPort(full, inbound.Tag)
+	if err != nil {
+		return nil, err
+	}
+
+	secretKey := stringValue((*full)["secret_key"], stringValue((*full)["secretKey"], ""))
+	if secretKey == "" {
+		return nil, common.NewErrorf("xray wireguard inbound <%s> missing secret_key", inbound.Tag)
+	}
+
+	peersRaw, _ := (*full)["peers"].([]interface{})
+	if len(peersRaw) == 0 {
+		return nil, common.NewErrorf("xray wireguard inbound <%s> requires at least one peer", inbound.Tag)
+	}
+	peers := make([]map[string]interface{}, 0, len(peersRaw))
+	for _, item := range peersRaw {
+		peerMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		publicKey := stringValue(peerMap["public_key"], stringValue(peerMap["publicKey"], ""))
+		if publicKey == "" {
+			continue
+		}
+		peer := map[string]interface{}{
+			"publicKey": publicKey,
+		}
+		allowed := toStringSlice(peerMap["allowed_ips"])
+		if len(allowed) == 0 {
+			allowed = toStringSlice(peerMap["allowedIPs"])
+		}
+		if len(allowed) == 0 {
+			allowed = []string{"0.0.0.0/0", "::/0"}
+		}
+		peer["allowedIPs"] = allowed
+		if endpoint := stringValue(peerMap["endpoint"], ""); endpoint != "" {
+			peer["endpoint"] = endpoint
+		}
+		if keepAlive := toInt(peerMap["keep_alive"]); keepAlive > 0 {
+			peer["keepAlive"] = keepAlive
+		} else if keepAlive := toInt(peerMap["keepAlive"]); keepAlive > 0 {
+			peer["keepAlive"] = keepAlive
+		}
+		if preShared := stringValue(peerMap["pre_shared_key"], stringValue(peerMap["preSharedKey"], "")); preShared != "" {
+			peer["preSharedKey"] = preShared
+		}
+		peers = append(peers, peer)
+	}
+	if len(peers) == 0 {
+		return nil, common.NewErrorf("xray wireguard inbound <%s> has no valid peers", inbound.Tag)
+	}
+
+	settings := map[string]interface{}{
+		"secretKey": secretKey,
+		"peers":     peers,
+	}
+	if mtu := toInt((*full)["mtu"]); mtu > 0 {
+		settings["mtu"] = mtu
+	}
+	if workers := toInt((*full)["workers"]); workers > 0 {
+		settings["workers"] = workers
+	}
+	if domainStrategy := stringValue((*full)["domain_strategy"], stringValue((*full)["domainStrategy"], "")); domainStrategy != "" {
+		settings["domainStrategy"] = domainStrategy
+	}
+
+	return map[string]interface{}{
+		"tag":      inbound.Tag,
+		"listen":   listen,
+		"port":     port,
+		"protocol": "wireguard",
+		"settings": settings,
+	}, nil
+}
+
+func attachOptionalXrayStream(config map[string]interface{}, inbound *model.Inbound, full *map[string]interface{}) error {
+	if inbound.Tls == nil && (full == nil || (*full)["transport"] == nil) {
+		return nil
+	}
+	transport, _ := (*full)["transport"].(map[string]interface{})
+	network := "tcp"
+	if tp, ok := transport["type"].(string); ok && tp != "" {
+		network = tp
+	}
+	// SOCKS/HTTP without explicit transport still support TLS/Reality via stream settings.
+	if transport == nil {
+		transport = map[string]interface{}{}
+	}
+	if inbound.Tls == nil {
+		return nil
+	}
+	streamSettings, err := buildXrayStreamSettings(inbound, transport, network)
+	if err != nil {
+		return err
+	}
+	config["streamSettings"] = streamSettings
+	return nil
+}
+
+func attachXraySniffing(config map[string]interface{}, inbound *model.Inbound) {
+	if config == nil || inbound == nil {
+		return
+	}
+	if _, exists := config["sniffing"]; exists {
+		return
+	}
+	full, err := inbound.MarshalFull()
+	if err != nil || full == nil {
+		return
+	}
+	if sniffing, ok := (*full)["sniffing"].(map[string]interface{}); ok && len(sniffing) > 0 {
+		// Normalize sing-box-ish keys to Xray sniffing shape when needed.
+		out := map[string]interface{}{}
+		if enabled, ok := sniffing["enabled"].(bool); ok {
+			out["enabled"] = enabled
+		} else {
+			out["enabled"] = true
+		}
+		if dest := toStringSlice(sniffing["destOverride"]); len(dest) > 0 {
+			out["destOverride"] = dest
+		} else if dest := toStringSlice(sniffing["dest_override"]); len(dest) > 0 {
+			out["destOverride"] = dest
+		}
+		if routeOnly, ok := sniffing["routeOnly"].(bool); ok {
+			out["routeOnly"] = routeOnly
+		} else if routeOnly, ok := sniffing["route_only"].(bool); ok {
+			out["routeOnly"] = routeOnly
+		}
+		config["sniffing"] = out
+	}
+}
+
+func xrayFallbacks(value interface{}) []map[string]interface{} {
+	switch raw := value.(type) {
+	case []interface{}:
+		result := make([]map[string]interface{}, 0, len(raw))
+		for _, item := range raw {
+			if m, ok := item.(map[string]interface{}); ok && len(m) > 0 {
+				result = append(result, m)
+			}
+		}
+		return result
+	case []map[string]interface{}:
+		return raw
+	default:
+		return nil
+	}
+}
+
+func boolValueDefault(value interface{}, fallback bool) bool {
+	if b, ok := value.(bool); ok {
+		return b
+	}
+	return fallback
+}
+
 func (s *InboundService) fetchXrayVlessClients(db *gorm.DB, inboundId uint, network string) ([]map[string]interface{}, error) {
 	var users []struct {
 		Name   string
@@ -504,6 +726,14 @@ func (s *InboundService) fetchXrayVMessClients(db *gorm.DB, inboundId uint) ([]m
 		client := map[string]interface{}{
 			"id":    uuid,
 			"email": user.Name,
+		}
+		if security, _ := cfg["security"].(string); security != "" {
+			client["security"] = security
+		} else {
+			client["security"] = "auto"
+		}
+		if level := toInt(cfg["level"]); level > 0 {
+			client["level"] = level
 		}
 		clients = append(clients, client)
 	}

@@ -22,10 +22,33 @@
           </v-list-item>
         </v-list>
         <div v-if="xrayCheck.result" class="xray-capability-groups">
+          <div v-if="xrayCheck.result.checks?.length" class="mb-3">
+            <div class="xray-capability-title">{{ $t('xray.checks') }}</div>
+            <v-list density="compact" bg-color="transparent">
+              <v-list-item v-for="(line, idx) in xrayCheck.result.checks" :key="idx" :title="line" />
+            </v-list>
+          </div>
           <div>
             <div class="xray-capability-title">{{ $t('xray.protocols') }}</div>
             <div class="xray-capabilities">
-              <v-chip v-for="item in xrayCheck.result.protocols.filter((item: any) => item.supported)" :key="item.id" size="small" variant="tonal" color="primary">{{ item.name }}</v-chip>
+              <v-chip
+                v-for="item in xrayCheck.result.protocols.filter((item: any) => item.supported)"
+                :key="item.id"
+                size="small"
+                variant="tonal"
+                color="primary"
+                :title="item.reason || ''"
+              >{{ item.name }}</v-chip>
+            </div>
+            <div class="xray-capability-title mt-2">{{ $t('xray.unsupportedProtocols') }}</div>
+            <div class="xray-capabilities">
+              <v-chip
+                v-for="item in xrayCheck.result.protocols.filter((item: any) => !item.supported)"
+                :key="'u-'+item.id"
+                size="small"
+                variant="outlined"
+                :title="item.reason || ''"
+              >{{ item.name }}</v-chip>
             </div>
           </div>
           <div>
@@ -456,6 +479,7 @@ const xrayProtocolOptions = [
   { title: 'HTTP', value: 'http' },
   { title: 'Mixed', value: 'mixed' },
   { title: 'Hysteria2', value: 'hysteria2' },
+  { title: 'Dokodemo-door', value: 'dokodemo-door' },
 ]
 
 const protocolOptions = computed(() => {

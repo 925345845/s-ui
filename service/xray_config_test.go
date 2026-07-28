@@ -119,3 +119,36 @@ func TestXrayCapabilitiesDoNotAdvertiseRemovedTransports(t *testing.T) {
 		}
 	}
 }
+
+func TestXraySupportedProtocolsIncludeWireGuardAndDokodemo(t *testing.T) {
+	found := map[string]bool{}
+	for _, capability := range xrayProtocolCapabilities() {
+		if capability.Supported {
+			found[capability.ID] = true
+		}
+	}
+	for _, id := range []string{"vless", "vmess", "trojan", "shadowsocks", "socks", "http", "mixed", "hysteria2", "dokodemo-door", "wireguard"} {
+		if !found[id] {
+			t.Fatalf("expected supported protocol %s", id)
+		}
+	}
+}
+
+func TestBuildXrayWireGuardInbound(t *testing.T) {
+	inbound := &model.Inbound{Tag: "wg-in", Options: json.RawMessage(`{
+		"listen":"0.0.0.0","listen_port":51820,
+		"secret_key":"cOQHjI0u4m4r8n0Yh8rH0o2p3q4s5t6u7v8w9x0y1z2=",
+		"peers":[{"public_key":"abc","allowed_ips":["0.0.0.0/0"]}]
+	}`)}
+	config, err := (&InboundService{}).buildXrayWireGuardInbound(inbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config["protocol"] != "wireguard" {
+		t.Fatalf("unexpected protocol: %#v", config)
+	}
+	settings := config["settings"].(map[string]interface{})
+	if settings["secretKey"] == "" {
+		t.Fatalf("missing secretKey: %#v", settings)
+	}
+}

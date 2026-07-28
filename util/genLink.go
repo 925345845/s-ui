@@ -12,6 +12,7 @@ import (
 )
 
 var InboundTypeWithLink = []string{"socks", "http", "mixed", "shadowsocks", "naive", "hysteria", "hysteria2", "anytls", "tuic", "vless", "trojan", "vmess"}
+// Note: dokodemo-door and wireguard are operational inbounds without share-link clients.
 
 type LinkParam struct {
 	Key   string
@@ -33,6 +34,15 @@ func joinRemark(clientRemark, inboundRemark string) string {
 		return clientRemark + "-" + inboundRemark
 	}
 	return inboundRemark
+}
+
+func firstUserConfig(userConfig map[string]map[string]interface{}, keys ...string) map[string]interface{} {
+	for _, key := range keys {
+		if cfg, ok := userConfig[key]; ok && cfg != nil {
+			return cfg
+		}
+	}
+	return nil
 }
 
 func LinkGenerator(clientConfig json.RawMessage, i *model.Inbound, hostname string, clientRemark string) []string {
@@ -88,9 +98,14 @@ func LinkGenerator(clientConfig json.RawMessage, i *model.Inbound, hostname stri
 	if i.RuntimeCore() == model.CoreTypeXray {
 		switch i.Type {
 		case "socks":
-			return socksLink(userConfig["socks"], Addrs)
+			return socksLink(firstUserConfig(userConfig, "socks", "mixed"), Addrs)
 		case "http":
-			return httpLink(userConfig["http"], Addrs)
+			return httpLink(firstUserConfig(userConfig, "http", "mixed"), Addrs)
+		case "mixed":
+			return append(
+				socksLink(firstUserConfig(userConfig, "socks", "mixed"), Addrs),
+				httpLink(firstUserConfig(userConfig, "http", "mixed"), Addrs)...,
+			)
 		case "shadowsocks":
 			return shadowsocksLink(userConfig, *inbound, Addrs)
 		case "vless":

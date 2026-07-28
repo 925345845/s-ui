@@ -1,11 +1,15 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Hhz0823/1s-ui/agent"
+	"github.com/Hhz0823/1s-ui/logger"
 	"github.com/Hhz0823/1s-ui/service"
+	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 )
 
@@ -16,6 +20,7 @@ type AgentHandler struct {
 func NewAgentHandler(group *gin.RouterGroup) {
 	handler := &AgentHandler{}
 	group.POST("/heartbeat", handler.Heartbeat)
+	group.GET("/ws", handler.WebSocket)
 }
 
 func (h *AgentHandler) Heartbeat(c *gin.Context) {
@@ -30,9 +35,126 @@ func (h *AgentHandler) Heartbeat(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, Msg{Success: false, Msg: "invalid agent report"})
 		return
 	}
-	if err := h.AgentService.Heartbeat(strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer ")), getRemoteIp(c), report); err != nil {
+	if report.ConnMode == "" {
+		report.ConnMode = "http"
+	}
+	resp, err := h.AgentService.Heartbeat(strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer ")), getRemoteIp(c), report)
+	if err != nil {
 		c.JSON(http.StatusUnauthorized, Msg{Success: false, Msg: err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, Msg{Success: true})
+	c.JSON(http.StatusOK, Msg{Success: true, Obj: resp})
+}
+
+// WebSocket is the long-lived control + metrics channel (Nezha/Komari style).
+func (h *AgentHandler) WebSocket(c *gin.Context) {
+	token := extractAgentToken(c)
+	nodeID, err := h.AgentService.AuthenticateToken(token)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, Msg{Success: false, Msg: err.Error()})
+		return
+	}
+
+	conn, err := websocket.Accept(c.Writer, c.Request, &websocket.AcceptOptions{
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		logger.Warning("agent websocket accept failed: ", err)
+		return
+	}
+	conn.SetReadLimit(512 << 10)
+
+	sessionCtx, unregister := h.AgentService.RegisterSession(nodeID, conn)
+	defer func() {
+		unregister()
+		_ = conn.Close(websocket.StatusNormalClosure, "bye")
+	}()
+
+	remoteIP := getRemoteIp(c)
+	reqCtx := c.Request.Context()
+
+	write := func(v interface{}) error {
+		return h.AgentService.WriteToSession(sessionCtx, nodeID, v)
+	}
+
+	_ = write(map[string]interface{}{
+		"type":             agent.MsgTypeConfig,
+		"server_time":      time.Now().Unix(),
+		"interval_seconds": 15,
+	})
+
+	for {
+		msgType, data, err := conn.Read(reqCtx)
+		if err != nil {
+			return
+		}
+		if msgType != websocket.MessageText && msgType != websocket.MessageBinary {
+			continue
+		}
+		var envelope struct {
+			Type    string          `json:"type"`
+			Payload json.RawMessage `json:"payload"`
+			ID      string          `json:"id"`
+			Command string          `json:"command"`
+			OK      bool            `json:"ok"`
+			Output  string          `json:"output"`
+			Error   string          `json:"error"`
+			Code    int             `json:"code"`
+			Elapsed int64           `json:"elapsed_ms"`
+			Data    string          `json:"data"`
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			_ = write(map[string]interface{}{"type": agent.MsgTypeError, "error": "invalid message"})
+			continue
+		}
+		switch envelope.Type {
+		case agent.MsgTypeReport:
+			var report agent.Report
+			if len(envelope.Payload) == 0 {
+				_ = json.Unmarshal(data, &report)
+			} else if err := json.Unmarshal(envelope.Payload, &report); err != nil {
+				_ = write(map[string]interface{}{"type": agent.MsgTypeError, "error": "invalid report"})
+				continue
+			}
+			report.ConnMode = "ws"
+			if _, err := h.AgentService.Heartbeat(token, remoteIP, report); err != nil {
+				_ = write(map[string]interface{}{"type": agent.MsgTypeError, "error": err.Error()})
+				continue
+			}
+			_ = write(map[string]interface{}{
+				"type":             agent.MsgTypeAck,
+				"server_time":      time.Now().Unix(),
+				"interval_seconds": 15,
+			})
+		case agent.MsgTypeCommandResult:
+			h.AgentService.HandleCommandResult(agent.CommandResult{
+				ID:      envelope.ID,
+				Type:    envelope.Command,
+				OK:      envelope.OK,
+				Output:  envelope.Output,
+				Error:   envelope.Error,
+				Code:    envelope.Code,
+				Elapsed: envelope.Elapsed,
+			})
+		case agent.MsgTypeTerminalOpened, agent.MsgTypeTerminalOutput, agent.MsgTypeTerminalClosed:
+			h.AgentService.HandleTerminalFromAgent(nodeID, envelope.Type, envelope.ID, envelope.Data, envelope.Error)
+		case agent.MsgTypePing:
+			_ = write(map[string]interface{}{"type": agent.MsgTypePong, "server_time": time.Now().Unix()})
+		case agent.MsgTypePong:
+			// ignore
+		default:
+			_ = write(map[string]interface{}{"type": agent.MsgTypeError, "error": "unknown type"})
+		}
+	}
+}
+
+func extractAgentToken(c *gin.Context) string {
+	authorization := strings.TrimSpace(c.GetHeader("Authorization"))
+	if strings.HasPrefix(authorization, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
+	}
+	if q := strings.TrimSpace(c.Query("token")); q != "" {
+		return q
+	}
+	return ""
 }

@@ -50,6 +50,68 @@ func (a *ApiService) GetAgents(c *gin.Context) {
 	jsonObj(c, nodes, err)
 }
 
+func (a *ApiService) GetAgent(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || id == 0 {
+		jsonObj(c, nil, common.NewError("invalid agent node id"))
+		return
+	}
+	node, err := a.AgentService.Get(uint(id))
+	jsonObj(c, node, err)
+}
+
+type agentCommandRequest struct {
+	Type string                 `json:"type"`
+	Args map[string]interface{} `json:"args"`
+}
+
+func (a *ApiService) ControlAgent(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || id == 0 {
+		jsonObj(c, nil, common.NewError("invalid agent node id"))
+		return
+	}
+	var req agentCommandRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	if strings.TrimSpace(req.Type) == "" {
+		jsonObj(c, nil, common.NewError("command type is required"))
+		return
+	}
+	result, err := a.AgentService.DispatchCommand(uint(id), strings.TrimSpace(req.Type), req.Args, GetLoginUser(c))
+	jsonObj(c, result, err)
+}
+
+func (a *ApiService) ListAgentCommands(c *gin.Context) {
+	jsonObj(c, a.AgentService.ListCommands(), nil)
+}
+
+type agentBatchCommandRequest struct {
+	IDs  []uint                 `json:"ids"`
+	Type string                 `json:"type"`
+	Args map[string]interface{} `json:"args"`
+}
+
+func (a *ApiService) ControlAgentsBatch(c *gin.Context) {
+	var req agentBatchCommandRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	if strings.TrimSpace(req.Type) == "" {
+		jsonObj(c, nil, common.NewError("command type is required"))
+		return
+	}
+	if len(req.IDs) == 0 {
+		jsonObj(c, nil, common.NewError("ids is required"))
+		return
+	}
+	results := a.AgentService.DispatchBatch(req.IDs, strings.TrimSpace(req.Type), req.Args, GetLoginUser(c))
+	jsonObj(c, results, nil)
+}
+
 func (a *ApiService) CreateAgent(c *gin.Context) {
 	var request createAgentRequest
 	if err := c.ShouldBindJSON(&request); err != nil {

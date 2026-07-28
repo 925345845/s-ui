@@ -3,6 +3,7 @@ package service
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Hhz0823/1s-ui/agent"
 	"github.com/Hhz0823/1s-ui/database"
@@ -21,9 +22,13 @@ func TestAgentEnrollmentHeartbeatAndRotation(t *testing.T) {
 	if enrollment.Token == "" || enrollment.Node.Name != "edge-1" {
 		t.Fatalf("unexpected enrollment: %#v", enrollment)
 	}
-	report := agent.Report{Hostname: "vps-1", OS: "linux", Arch: "amd64", AgentVersion: "test", CPUPercent: 12.5}
-	if err := service.Heartbeat(enrollment.Token, "203.0.113.10", report); err != nil {
+	report := agent.Report{Hostname: "vps-1", OS: "linux", Arch: "amd64", AgentVersion: "test", CPUPercent: 12.5, ConnMode: "http"}
+	resp, err := service.Heartbeat(enrollment.Token, "203.0.113.10", report)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if resp == nil || resp.ServerTime == 0 {
+		t.Fatalf("expected heartbeat response, got %#v", resp)
 	}
 	nodes, err := service.List()
 	if err != nil {
@@ -31,6 +36,17 @@ func TestAgentEnrollmentHeartbeatAndRotation(t *testing.T) {
 	}
 	if len(nodes) != 1 || !nodes[0].Online || nodes[0].Report.Hostname != "vps-1" {
 		t.Fatalf("unexpected node status: %#v", nodes)
+	}
+	if nodes[0].ConnMode != "http" {
+		t.Fatalf("expected conn_mode http, got %#v", nodes[0])
+	}
+
+	detail, err := service.Get(nodes[0].Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.History) == 0 {
+		t.Fatal("expected metric history after heartbeat")
 	}
 
 	rotated, err := service.Rotate(enrollment.Node.Id)
@@ -40,11 +56,15 @@ func TestAgentEnrollmentHeartbeatAndRotation(t *testing.T) {
 	if rotated.Token == enrollment.Token {
 		t.Fatal("rotated token did not change")
 	}
-	if err := service.Heartbeat(enrollment.Token, "203.0.113.10", report); err == nil {
+	if _, err := service.Heartbeat(enrollment.Token, "203.0.113.10", report); err == nil {
 		t.Fatal("old agent token remained valid after rotation")
 	}
-	if err := service.Heartbeat(rotated.Token, "203.0.113.10", report); err != nil {
+	if _, err := service.Heartbeat(rotated.Token, "203.0.113.10", report); err != nil {
 		t.Fatalf("rotated token failed: %v", err)
+	}
+
+	if time.Since(time.Unix(detail.LastSeen, 0)) > agentOnlineWindow {
+		t.Fatal("last seen unexpectedly old")
 	}
 }
 
