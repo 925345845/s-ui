@@ -88,13 +88,28 @@ Agent **主动出站**连面板，节点上不开放控制端口。
 
 ### 快速安装
 
+安装脚本会**先分析 VPS**，再决定是否安装服务端、Xray、以及反向代理（Caddy/Nginx）。
+
 ```bash
-# 最新版
+# 最新版（交互预检）
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 
 # 指定版本
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.1
+
+# 非交互 + 不装 Xray + 启用反代（域名 HTTPS）
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --no-xray --with-proxy --domain panel.example.com --email a@b.com
 ```
+
+| 档位 | 服务端 | Xray | 反代 |
+| --- | --- | --- | --- |
+| tiny (&lt;450MB) | 需确认 | 默认否 | 否 |
+| low (&lt;1GB) | 是 | 默认否 | 可选 Nginx |
+| standard / high | 是 | 建议是 | 推荐 Caddy（可自动 HTTPS） |
+
+覆盖推荐：`--with-xray` / `--no-xray` / `--with-proxy` / `--no-proxy` / `--domain` / `--force`
+
+反代启用后，面板默认仅监听 `127.0.0.1`，通过 80/443 访问 `/app/`。
 
 | 配置 | 默认 |
 | --- | --- |
