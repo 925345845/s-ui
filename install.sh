@@ -31,6 +31,9 @@ START_SERVICE=1               # start systemd unit after install
 REQUESTED_VERSION=""
 PORT80_FREE=1
 PORT443_FREE=1
+# Hard minimum for panel server install
+MIN_CPU_CORES=2
+MIN_MEM_MB=2048
 
 # 检查 root 权限
 [[ $EUID -ne 0 ]] && echo -e "${red}致命错误：${plain}请使用 root 权限运行此脚本 \n " && exit 1
@@ -49,12 +52,14 @@ usage() {
   --email EMAIL         ACME 邮箱（Caddy 可选）
   --start-core          安装后自动启动 sing-box 内核（默认不启动，更安全）
   --no-start            只安装文件，不 systemctl start
-  --force               内存不足时仍允许安装面板
+  --force               强制安装（跳过 2核2G 最低配置检查，不推荐）
   -h, --help            显示帮助
+
+服务端最低配置: ${MIN_CPU_CORES:-2} 核 CPU + ${MIN_MEM_MB:-2048}MB 内存
 
 示例:
   bash install.sh
-  bash install.sh v1.5.2 -y --no-xray --no-proxy
+  bash install.sh v1.5.4 -y --no-xray --no-proxy
   bash install.sh -y --with-proxy --domain panel.example.com --email a@b.com
 EOF
 }
@@ -176,24 +181,17 @@ analyze_vps() {
     [[ -z "$DISK_FREE_MB" ]] && DISK_FREE_MB=$(df -Pm / 2>/dev/null | awk 'NR==2{print $4}')
     [[ -z "$DISK_FREE_MB" ]] && DISK_FREE_MB=0
 
-    echo -e "CPU：${CPU_CORES} 核"
-    echo -e "内存：总计 ${MEM_TOTAL_MB}MB / 可用 ${MEM_AVAIL_MB}MB / Swap ${SWAP_MB}MB"
+    echo -e "CPU：${CPU_CORES} 核（最低要求 ${MIN_CPU_CORES} 核）"
+    echo -e "内存：总计 ${MEM_TOTAL_MB}MB / 可用 ${MEM_AVAIL_MB}MB / Swap ${SWAP_MB}MB（最低要求 ${MIN_MEM_MB}MB）"
     echo -e "磁盘：/usr/local 可用约 ${DISK_FREE_MB}MB"
 
-    # Profile by total RAM + free RAM + swap (1GB/0 swap is NOT "standard")
-    if [[ "$MEM_TOTAL_MB" -lt 450 ]]; then
-        PROFILE="tiny"
-    elif [[ "$MEM_TOTAL_MB" -lt 1200 || "$MEM_AVAIL_MB" -lt 500 || ( "$MEM_TOTAL_MB" -lt 1600 && "$SWAP_MB" -lt 256 ) ]]; then
-        PROFILE="low"
-    elif [[ "$MEM_TOTAL_MB" -lt 2800 ]]; then
+    # Profile (only used after hard minimum is met)
+    if [[ "$MEM_TOTAL_MB" -lt 2800 || "$CPU_CORES" -lt 4 ]]; then
         PROFILE="standard"
     else
         PROFILE="high"
     fi
     echo -e "资源档位：${green}${PROFILE}${plain}"
-    if [[ "$SWAP_MB" -lt 256 && "$MEM_TOTAL_MB" -lt 2048 ]]; then
-        echo -e "${yellow}警告：无有效 Swap 且内存不大，极易 OOM 导致 SSH 断开/整机重启${plain}"
-    fi
 
     # Existing installation
     if [[ -x /usr/local/s-ui/sui ]] || systemctl list-unit-files 2>/dev/null | grep -q '^s-ui\.service'; then
@@ -224,45 +222,51 @@ analyze_vps() {
         fi
     done
 
-    # Disk guard
-    if [[ "$DISK_FREE_MB" -gt 0 && "$DISK_FREE_MB" -lt 250 ]]; then
-        echo -e "${red}磁盘空间过小（<250MB），不建议安装。${plain}"
-        if [[ "$FORCE_INSTALL" -ne 1 ]]; then
-            INSTALL_PANEL=0
-        fi
-    fi
-
-    # Panel decision
+    # ---- Hard minimum: 2 cores + 2GB RAM for panel server ----
     INSTALL_PANEL=1
-    if [[ "$PROFILE" == "tiny" && "$FORCE_INSTALL" -ne 1 ]]; then
-        echo -e "${yellow}内存 <450MB：安装服务端风险较高（可能 OOM）。${plain}"
-        if [[ "$AUTO_YES" -eq 1 ]]; then
-            if [[ "$SWAP_MB" -ge 512 || "$MEM_AVAIL_MB" -ge 280 ]]; then
-                echo -e "${yellow}自动模式：检测到可用内存/Swap 尚可，继续安装面板（不装 Xray）。${plain}"
-            else
-                echo -e "${red}自动模式：资源过紧，中止安装。请加 Swap 或使用 --force。${plain}"
-                INSTALL_PANEL=0
-            fi
-        else
-            read -r -p "仍要安装服务端？[y/N]: " ans
-            if [[ "${ans}" != "y" && "${ans}" != "Y" ]]; then
-                INSTALL_PANEL=0
-            fi
-        fi
+    local fail_reasons=()
+    if [[ "$CPU_CORES" -lt "$MIN_CPU_CORES" ]]; then
+        fail_reasons+=("CPU 仅 ${CPU_CORES} 核，需要至少 ${MIN_CPU_CORES} 核")
+    fi
+    if [[ "$MEM_TOTAL_MB" -lt "$MIN_MEM_MB" ]]; then
+        fail_reasons+=("内存仅 ${MEM_TOTAL_MB}MB，需要至少 ${MIN_MEM_MB}MB（2G）")
+    fi
+    if [[ "$DISK_FREE_MB" -gt 0 && "$DISK_FREE_MB" -lt 500 ]]; then
+        fail_reasons+=("磁盘可用约 ${DISK_FREE_MB}MB，建议至少 500MB")
     fi
 
-    # Xray decision — conservative: only auto on high profile with headroom
+    if [[ ${#fail_reasons[@]} -gt 0 ]]; then
+        echo -e "${red}不满足服务端最低配置（${MIN_CPU_CORES} 核 / ${MIN_MEM_MB}MB 内存）：${plain}"
+        local r
+        for r in "${fail_reasons[@]}"; do
+            echo -e "  - ${red}${r}${plain}"
+        done
+        if [[ "$FORCE_INSTALL" -eq 1 ]]; then
+            echo -e "${yellow}已使用 --force，强制继续安装（极易 OOM，不推荐）${plain}"
+            INSTALL_PANEL=1
+        else
+            INSTALL_PANEL=0
+            echo -e "${yellow}请升级到至少 2 核 2G 的 VPS 后再安装服务端。${plain}"
+            echo -e "${yellow}若坚持安装可加：--force（不保证稳定）${plain}"
+        fi
+    else
+        echo -e "最低配置检查：${green}通过（≥${MIN_CPU_CORES} 核 / ≥${MIN_MEM_MB}MB）${plain}"
+    fi
+
+    # Xray: only when minimum met; auto on high, optional on standard
     INSTALL_XRAY=0
-    local xray_reason="默认不装 Xray，降低安装期内存峰值（可用 --with-xray 强制）"
-    if [[ -z "$(xray_asset)" ]]; then
+    local xray_reason="默认不装 Xray（可用 --with-xray 安装）"
+    if [[ "$INSTALL_PANEL" -ne 1 ]]; then
+        xray_reason="服务端不安装，跳过 Xray"
+    elif [[ -z "$(xray_asset)" ]]; then
         INSTALL_XRAY=0
         xray_reason="当前架构无自动 Xray 包"
-    elif [[ "$PROFILE" == "high" && "$MEM_AVAIL_MB" -ge 1200 ]]; then
+    elif [[ "$PROFILE" == "high" ]]; then
         INSTALL_XRAY=1
-        xray_reason="高内存机器，可安装 Xray 双内核"
-    elif [[ "$PROFILE" == "standard" && "$MEM_AVAIL_MB" -ge 900 && "$SWAP_MB" -ge 512 ]]; then
+        xray_reason="≥4 核且内存较充足，建议安装 Xray 双内核"
+    elif [[ "$PROFILE" == "standard" && "$MEM_TOTAL_MB" -ge 2048 && "$SWAP_MB" -ge 512 ]]; then
         INSTALL_XRAY=1
-        xray_reason="标准档且有 Swap，可安装 Xray"
+        xray_reason="达到 2 核 2G 且有 Swap，可安装 Xray"
     fi
 
     # Explicit overrides
@@ -287,11 +291,8 @@ analyze_vps() {
             proxy_reason="80 端口占用且无现成反代，跳过"
         else
             INSTALL_PROXY=1
-            if [[ "$PROFILE" == "tiny" || "$PROFILE" == "low" ]]; then
-                PROXY_ENGINE="nginx"
-            else
-                PROXY_ENGINE="caddy"
-            fi
+            PROXY_ENGINE="caddy"
+            [[ "$PROFILE" == "standard" && "$MEM_TOTAL_MB" -lt 3000 ]] && PROXY_ENGINE="nginx"
             [[ "$has_nginx" -eq 1 ]] && PROXY_ENGINE="nginx"
             [[ "$has_caddy" -eq 1 ]] && PROXY_ENGINE="caddy"
             proxy_reason="用户要求启用反代（${PROXY_ENGINE}）"
@@ -321,7 +322,7 @@ analyze_vps() {
     echo -e "${blue}=================================${plain}"
 
     if [[ "$INSTALL_PANEL" -ne 1 ]]; then
-        echo -e "${red}根据预检结果不安装服务端。可加 Swap 后重试，或使用 --force。${plain}"
+        echo -e "${red}根据预检结果不安装服务端。最低配置：${MIN_CPU_CORES} 核 CPU + ${MIN_MEM_MB}MB 内存。${plain}"
         exit 1
     fi
 
@@ -332,17 +333,18 @@ analyze_vps() {
             echo "已取消。"
             exit 0
         fi
-        if [[ "$INSTALL_XRAY" -eq 0 && "$FORCE_XRAY" == "" && "$PROFILE" != "tiny" ]]; then
-            read -r -p "是否仍安装 Xray-core 二进制？[y/N]: " xans
+        if [[ "$INSTALL_XRAY" -eq 0 && "$FORCE_XRAY" == "" ]]; then
+            read -r -p "是否安装 Xray-core 二进制？[y/N]: " xans
             if [[ "${xans}" == "y" || "${xans}" == "Y" ]]; then
                 INSTALL_XRAY=1
             fi
         fi
         if [[ "$INSTALL_PROXY" -eq 0 && "$FORCE_PROXY" == "" && "$PORT80_FREE" -eq 1 ]]; then
-            read -r -p "是否安装反向代理（可能增加内存占用，默认不建议）？[y/N]: " pans
+            read -r -p "是否安装反向代理（Caddy/Nginx）？[y/N]: " pans
             if [[ "${pans}" == "y" || "${pans}" == "Y" ]]; then
                 INSTALL_PROXY=1
-                [[ "$PROFILE" == "low" || "$PROFILE" == "tiny" ]] && PROXY_ENGINE="nginx" || PROXY_ENGINE="caddy"
+                PROXY_ENGINE="caddy"
+                [[ "$PROFILE" == "standard" && "$MEM_TOTAL_MB" -lt 3000 ]] && PROXY_ENGINE="nginx"
                 read -r -p "反代域名（可留空）：" PROXY_DOMAIN
                 if [[ -n "$PROXY_DOMAIN" ]]; then
                     read -r -p "ACME 邮箱（可留空）：" PROXY_EMAIL
@@ -350,7 +352,7 @@ analyze_vps() {
             fi
         fi
         if [[ "$SKIP_CORE" -eq 1 ]]; then
-            read -r -p "是否在安装后自动启动代理内核？(小内存请选 n) [y/N]: " cans
+            read -r -p "是否在安装后自动启动代理内核？[y/N]: " cans
             if [[ "${cans}" == "y" || "${cans}" == "Y" ]]; then
                 SKIP_CORE=0
             fi
@@ -394,8 +396,8 @@ EOF
 }
 
 suggest_swap() {
-    if [[ "$SWAP_MB" -lt 256 && ( "$PROFILE" == "tiny" || "$PROFILE" == "low" ) ]]; then
-        echo -e "${yellow}建议添加 1G Swap 以降低 OOM 风险，例如：${plain}"
+    if [[ "$SWAP_MB" -lt 512 ]]; then
+        echo -e "${yellow}建议配置 ≥1G Swap 提升稳定性，例如：${plain}"
         echo -e "  fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile"
         echo -e "  echo '/swapfile none swap sw 0 0' >> /etc/fstab"
     fi
