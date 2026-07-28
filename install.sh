@@ -291,7 +291,10 @@ analyze_vps() {
     PROXY_ENGINE=""
     local proxy_reason="默认不装反代（避免安装期额外服务拖垮机器）"
     if [[ "$FORCE_PROXY" == "1" || -n "$PROXY_DOMAIN" ]]; then
-        if [[ "$PORT80_FREE" -ne 1 && ! systemctl is-active --quiet nginx 2>/dev/null && ! systemctl is-active --quiet caddy 2>/dev/null ]]; then
+        local has_nginx=0 has_caddy=0
+        systemctl is-active --quiet nginx 2>/dev/null && has_nginx=1
+        systemctl is-active --quiet caddy 2>/dev/null && has_caddy=1
+        if [[ "$PORT80_FREE" -ne 1 && "$has_nginx" -ne 1 && "$has_caddy" -ne 1 ]]; then
             INSTALL_PROXY=0
             proxy_reason="80 端口占用且无现成反代，跳过"
         else
@@ -301,8 +304,8 @@ analyze_vps() {
             else
                 PROXY_ENGINE="caddy"
             fi
-            systemctl is-active --quiet nginx 2>/dev/null && PROXY_ENGINE="nginx"
-            systemctl is-active --quiet caddy 2>/dev/null && PROXY_ENGINE="caddy"
+            [[ "$has_nginx" -eq 1 ]] && PROXY_ENGINE="nginx"
+            [[ "$has_caddy" -eq 1 ]] && PROXY_ENGINE="caddy"
             proxy_reason="用户要求启用反代（${PROXY_ENGINE}）"
         fi
     fi
