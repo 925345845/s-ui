@@ -199,6 +199,8 @@ func (a *ApiService) getData(c *gin.Context) (interface{}, error) {
 		return "", err
 	}
 	data["lastUpdate"] = serverTime
+	// Always expose host capacity check for the web UI banner.
+	data["hostRequirements"] = a.ServerService.GetHostRequirements()
 	if isUpdated {
 		config, err := a.SettingService.GetConfig()
 		if err != nil {

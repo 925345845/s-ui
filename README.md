@@ -39,7 +39,8 @@ A modern proxy panel forked from S-UI: sing-box first, optional Xray-core per in
 | 上游 | [alireza0/s-ui](https://github.com/alireza0/s-ui) |
 | 默认内核 | [sing-box](https://github.com/SagerNet/sing-box) |
 | 可选内核 | [Xray-core](https://github.com/XTLS/Xray-core)（按入站选择） |
-| **服务端最低配置** | **2 核 CPU + 2GB 内存**（安装脚本强制检查） |
+| 普通面板 | **无硬性最低配置**，任意规格可安装（低配会更保守：默认不启内核/不装反代） |
+| **集群服务端**（多服务器 Agent 控制面） | **建议 2 核 CPU + 2GB 内存**（有 Agent 时 Web 会告警） |
 | 推荐配置 | 2 核 4GB + 1GB Swap |
 | 主维护平台 | Linux：Ubuntu、Debian、Docker |
 | 暂停 / 实验 | Windows 暂停维护；OpenWrt Lite 实验版 |
@@ -103,13 +104,15 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --no-xray --with-proxy --domain panel.example.com --email a@b.com
 ```
 
-| 条件 | 服务端 | Xray | 反代 |
-| --- | --- | --- | --- |
-| &lt; 2 核 或 &lt; 2GB 内存 | **拒绝安装** | - | - |
-| ≥ 2 核 2GB（standard） | 是 | 有 Swap 时可装 | 可选（默认否） |
-| ≥ 4 核且内存充足（high） | 是 | 建议装 | 可选 Caddy HTTPS |
+| 条件 | 普通面板 | Xray | 反代 | 说明 |
+| --- | --- | --- | --- | --- |
+| 任意规格（含 1 核 / 1GB） | **可安装** | 默认否 | 默认否 | 低配更保守，默认不启内核 |
+| standard（约 2 核 2G+） | 是 | 有 Swap 时可装 | 可选（默认否） | 可作普通面板；作集群控制面更合适 |
+| high（≥4 核且内存充足） | 是 | 建议装 | 可选 Caddy HTTPS | 适合集群服务端 + 双内核 |
 
-覆盖推荐：`--with-xray` / `--no-xray` / `--with-proxy` / `--no-proxy` / `--domain` / `--force`（强制跳过最低配置，不推荐）
+**配置区分：** 普通代理面板无硬性最低配置；**集群服务端**（接入多服务器 Agent 时）建议 ≥2 核 2G。
+
+覆盖推荐：`--with-xray` / `--no-xray` / `--with-proxy` / `--no-proxy` / `--domain` / `--start-core`
 
 反代启用后，面板默认仅监听 `127.0.0.1`，通过 80/443 访问 `/app/`。
 
@@ -211,7 +214,8 @@ opkg install ./s-ui-lite_1.5.4-1_x86_64.ipk
 | Upstream | [alireza0/s-ui](https://github.com/alireza0/s-ui) |
 | Default core | [sing-box](https://github.com/SagerNet/sing-box) |
 | Optional core | [Xray-core](https://github.com/XTLS/Xray-core) (per inbound) |
-| **Minimum server** | **2 vCPU + 2GB RAM** (enforced by installer) |
+| Normal panel | **No hard minimum** — any VPS can install (low-spec uses safer defaults) |
+| **Cluster control plane** (Agent hub) | **Recommended 2 vCPU + 2GB RAM** (Web warns when agents exist and under-spec) |
 | Recommended | 2 vCPU + 4GB RAM + 1GB Swap |
 | Primary OS | Linux (Ubuntu, Debian), Docker |
 | Other | Windows maintenance paused; OpenWrt Lite experimental |

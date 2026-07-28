@@ -855,4 +855,13 @@
     s: "秒",
     ms: "毫秒",
   },
+  hostReq: {
+    title: "集群服务端配置不足",
+    hint: "多服务器 Agent 集群控制面建议至少 2 核 CPU + 2GB 内存。普通代理面板无此硬性要求。当前面板已接入 Agent，配置过低可能导致控制面卡顿、指令失败或 OOM。",
+    minLabel: "集群建议",
+    current: "当前",
+    cpuFail: "CPU 不足：当前 {current} 核，集群建议 ≥ {min} 核",
+    memFail: "内存不足：当前 {current} GB，集群建议 ≥ {min} GB",
+    genericFail: "当前主机未达到集群服务端建议配置",
+  },
 }

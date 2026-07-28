@@ -808,4 +808,13 @@
     s: "s",
     ms: "ms",
   },
+  hostReq: {
+    title: "Control plane cluster dưới khuyến nghị",
+    hint: "Control plane Agent khuyến nghị ≥2 CPU và ≥2GB RAM. Panel proxy thường không có cứng tối thiểu. Panel này đã có Agent.",
+    minLabel: "Khuyến nghị cluster",
+    current: "Hiện tại",
+    cpuFail: "CPU thấp: {current} nhân, cluster khuyến nghị ≥ {min}",
+    memFail: "RAM thấp: {current} GB, cluster khuyến nghị ≥ {min} GB",
+    genericFail: "Máy chủ dưới khuyến nghị control plane cluster",
+  },
 }

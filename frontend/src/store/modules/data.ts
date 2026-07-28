@@ -19,13 +19,26 @@ const Data = defineStore('Data', {
     endpoints: <any[]>[],
     clients: <any>[],
     tlsConfigs: <any[]>[],
+    hostRequirements: <any>null,
   }),
+  getters: {
+    hostMeetsRequirements(state): boolean {
+      // Normal panel: always OK. Cluster control plane: needs ok when applies.
+      const r = state.hostRequirements
+      if (!r) return true
+      if (r.applies !== true) return true
+      return r.ok !== false
+    },
+  },
   actions: {
     async loadData() {
       const msg = await HttpUtils.get('api/load', this.lastLoad >0 ? {lu: this.lastLoad} : {} )
       if(msg.success) {
         if (msg.obj.lastUpdate) this.lastLoad = msg.obj.lastUpdate
         this.onlines = msg.obj.onlines
+        if (msg.obj.hostRequirements) {
+          this.hostRequirements = msg.obj.hostRequirements
+        }
         if (msg.obj.lastLog) {
           push.error({
             title: i18n.global.t('error.core'),
@@ -40,6 +53,7 @@ const Data = defineStore('Data', {
       }
     },
     setNewData(data: any) {
+      if (data.hostRequirements) this.hostRequirements = data.hostRequirements
       if (data.subURI) this.subURI = data.subURI
       if (data.enableTraffic) this.enableTraffic = data.enableTraffic
       if (data.config) this.config = data.config

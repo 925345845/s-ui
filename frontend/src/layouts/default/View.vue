@@ -1,12 +1,62 @@
-﻿<template>
+<template>
   <v-main class="app-main">
     <div class="app-page">
+      <v-alert
+        v-if="showHostWarning"
+        type="error"
+        variant="tonal"
+        density="comfortable"
+        class="mb-4 host-req-alert"
+        border="start"
+        prominent
+        icon="mdi-server-off"
+      >
+        <div class="text-subtitle-1 font-weight-bold">{{ $t('hostReq.title') }}</div>
+        <div class="text-body-2 mt-1">{{ hostWarningText }}</div>
+        <div class="text-caption mt-2 opacity-90">{{ $t('hostReq.hint') }}</div>
+        <div class="text-caption mt-1">
+          {{ $t('hostReq.minLabel') }}:
+          {{ hostReq?.min_cpu_cores ?? 2 }} {{ $t('main.info.core') }} /
+          {{ hostReq?.min_mem_gb ?? 2 }} GB
+          ·
+          {{ $t('hostReq.current') }}:
+          {{ hostReq?.cpu_cores ?? '?' }} {{ $t('main.info.core') }} /
+          {{ currentMemGb }} GB
+        </div>
+      </v-alert>
       <router-view />
     </div>
   </v-main>
 </template>
 
 <script lang="ts" setup>
+import { computed } from 'vue'
+import Data from '@/store/modules/data'
+import { i18n } from '@/locales'
+
+const hostReq = computed(() => Data().hostRequirements)
+// Only warn when used as cluster control plane (has agents) and under 2c/2G.
+const showHostWarning = computed(() => {
+  const r = hostReq.value
+  return !!(r && r.applies === true && r.ok === false)
+})
+const currentMemGb = computed(() => {
+  const bytes = hostReq.value?.mem_total_bytes
+  if (!bytes) return '?'
+  return (bytes / (1024 ** 3)).toFixed(2)
+})
+const hostWarningText = computed(() => {
+  const r = hostReq.value
+  if (!r) return ''
+  const parts: string[] = []
+  if (r.ok_cpu === false) {
+    parts.push(i18n.global.t('hostReq.cpuFail', { current: r.cpu_cores, min: r.min_cpu_cores }))
+  }
+  if (r.ok_mem === false) {
+    parts.push(i18n.global.t('hostReq.memFail', { current: currentMemGb.value, min: r.min_mem_gb }))
+  }
+  return parts.join(' · ') || i18n.global.t('hostReq.genericFail')
+})
 </script>
 
 <style>
@@ -29,6 +79,15 @@
   width: 100%;
   max-width: none;
   padding: 0;
+}
+
+/* Keep host-requirement banner readable on full-bleed home page */
+.app-page:has(.home-dashboard) > .host-req-alert {
+  margin: 16px clamp(14px, 2.4vw, 32px) 0;
+}
+
+.host-req-alert {
+  border-radius: 12px;
 }
 
 .app-root--drawer-expanded .app-page {

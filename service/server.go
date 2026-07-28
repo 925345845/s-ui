@@ -175,6 +175,54 @@ func (s *ServerService) GetXrayInfo() map[string]interface{} {
 	return status
 }
 
+// Cluster control-plane (multi-server Agent hub) recommended minimum.
+// Normal proxy panel has no hard host requirement.
+const (
+	MinClusterCPUCores = 2
+	MinClusterMemBytes = 2 * 1024 * 1024 * 1024 // 2 GiB
+)
+
+// GetHostRequirements reports host capacity vs cluster-server recommendation.
+// applies=true only when this panel is used as a cluster control plane (has Agent nodes).
+// Normal panel installs are always allowed; the web UI only warns when applies && !ok.
+func (s *ServerService) GetHostRequirements() map[string]interface{} {
+	cpuCount := runtime.NumCPU()
+	var memTotal uint64
+	if memInfo, err := mem.VirtualMemory(); err == nil {
+		memTotal = memInfo.Total
+	}
+	okCPU := cpuCount >= MinClusterCPUCores
+	okMem := memTotal >= MinClusterMemBytes
+	agentCount := 0
+	if db := database.GetDB(); db != nil {
+		var n int64
+		if err := db.Model(&model.AgentNode{}).Count(&n).Error; err == nil {
+			agentCount = int(n)
+		}
+	}
+	// Cluster mode: panel manages remote agents as control plane.
+	applies := agentCount > 0
+	ok := true
+	if applies {
+		ok = okCPU && okMem
+	}
+	return map[string]interface{}{
+		"mode":            map[bool]string{true: "cluster", false: "panel"}[applies],
+		"applies":         applies,
+		"agent_count":     agentCount,
+		"min_cpu_cores":   MinClusterCPUCores,
+		"min_mem_bytes":   uint64(MinClusterMemBytes),
+		"min_mem_gb":      2,
+		"cpu_cores":       cpuCount,
+		"mem_total_bytes": memTotal,
+		"ok_cpu":          okCPU,
+		"ok_mem":          okMem,
+		"ok":              ok,
+		// Meets the cluster recommendation regardless of whether cluster is active.
+		"meets_cluster_rec": okCPU && okMem,
+	}
+}
+
 func (s *ServerService) GetSystemInfo() map[string]interface{} {
 	info := make(map[string]interface{}, 0)
 	var rtm runtime.MemStats
@@ -187,8 +235,13 @@ func (s *ServerService) GetSystemInfo() map[string]interface{} {
 		info["cpuType"] = cpuInfo[0].ModelName
 	}
 	info["cpuCount"] = runtime.NumCPU()
+	if memInfo, err := mem.VirtualMemory(); err == nil {
+		info["memTotal"] = memInfo.Total
+		info["memUsed"] = memInfo.Used
+	}
 	info["hostName"], _ = os.Hostname()
 	info["appVersion"] = config.GetVersion()
+	info["requirements"] = s.GetHostRequirements()
 	ipv4 := make([]string, 0)
 	ipv6 := make([]string, 0)
 	// get ip address

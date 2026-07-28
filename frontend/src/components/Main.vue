@@ -98,11 +98,20 @@
                   <v-col cols="9" style="text-wrap: nowrap; overflow: hidden">{{ tilesData.sys?.hostName }}</v-col>
                   <v-col cols="3">{{ $t('main.info.cpu') }}</v-col>
                   <v-col cols="9">
-                    <v-chip density="compact" variant="flat">
+                    <v-chip density="compact" variant="flat" :color="hostReqChipColor">
                       <v-tooltip activator="parent" location="top" style="direction: ltr;">
                         {{ tilesData.sys?.cpuType }}
+                        <template v-if="tilesData.sys?.requirements">
+                          <br />{{ $t('hostReq.minLabel') }}: {{ tilesData.sys.requirements.min_cpu_cores }} {{ $t('main.info.core') }} / {{ tilesData.sys.requirements.min_mem_gb }} GB
+                          <template v-if="tilesData.sys.requirements.applies">
+                            <br />mode: cluster (agents: {{ tilesData.sys.requirements.agent_count }})
+                          </template>
+                        </template>
                       </v-tooltip>
                      {{ tilesData.sys?.cpuCount }} {{ $t('main.info.core') }}
+                     <template v-if="tilesData.sys?.memTotal">
+                       · {{ (tilesData.sys.memTotal / (1024**3)).toFixed(1) }} GB
+                     </template>
                     </v-chip>
                   </v-col>
                   <v-col cols="3">IP</v-col>
@@ -381,6 +390,15 @@ const shortText = (text?: string) => {
   if (!text) return '-'
   return text.length > 28 ? text.substring(0, 28) + '...' : text
 }
+
+// CPU/mem chip: red only when this panel is cluster control plane and under 2c/2G.
+const hostReqChipColor = computed(() => {
+  const req = tilesData.value?.sys?.requirements ?? Data().hostRequirements
+  if (!req) return 'primary'
+  if (req.applies === true && req.ok === false) return 'error'
+  if (req.meets_cluster_rec === false) return 'warning'
+  return 'success'
+})
 </script>
 
 <style scoped>

@@ -857,4 +857,13 @@
     s: "s",
     ms: "ms",
   },
+  hostReq: {
+    title: "Cluster control plane under recommended specs",
+    hint: "Multi-server Agent control plane recommends at least 2 CPU cores and 2 GB RAM. A normal proxy panel has no hard minimum. This panel has agents enrolled; underspec hosts may lag, drop commands, or OOM.",
+    minLabel: "Cluster recommendation",
+    current: "Current",
+    cpuFail: "CPU too low: {current} cores, cluster recommends ≥ {min}",
+    memFail: "Memory too low: {current} GB, cluster recommends ≥ {min} GB",
+    genericFail: "This host is below the cluster control-plane recommendation",
+  },
 }

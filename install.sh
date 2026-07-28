@@ -31,9 +31,10 @@ START_SERVICE=1               # start systemd unit after install
 REQUESTED_VERSION=""
 PORT80_FREE=1
 PORT443_FREE=1
-# Hard minimum for panel server install
-MIN_CPU_CORES=2
-MIN_MEM_MB=2048
+# Cluster control-plane (multi-server Agent hub) recommendation only.
+# Normal proxy panel can install on any size VPS.
+CLUSTER_CPU_CORES=2
+CLUSTER_MEM_MB=2048
 
 # 检查 root 权限
 [[ $EUID -ne 0 ]] && echo -e "${red}致命错误：${plain}请使用 root 权限运行此脚本 \n " && exit 1
@@ -52,10 +53,12 @@ usage() {
   --email EMAIL         ACME 邮箱（Caddy 可选）
   --start-core          安装后自动启动 sing-box 内核（默认不启动，更安全）
   --no-start            只安装文件，不 systemctl start
-  --force               强制安装（跳过 2核2G 最低配置检查，不推荐）
+  --force               兼容旧参数（已无硬性拦截，可忽略）
   -h, --help            显示帮助
 
-服务端最低配置: ${MIN_CPU_CORES:-2} 核 CPU + ${MIN_MEM_MB:-2048}MB 内存
+配置说明:
+  - 普通面板：任意配置均可安装（低配会默认不启内核、不装反代等更稳妥策略）
+  - 集群服务端（多服务器 Agent 控制面）：建议 ≥${CLUSTER_CPU_CORES:-2} 核 CPU + ≥${CLUSTER_MEM_MB:-2048}MB 内存
 
 示例:
   bash install.sh
@@ -181,12 +184,14 @@ analyze_vps() {
     [[ -z "$DISK_FREE_MB" ]] && DISK_FREE_MB=$(df -Pm / 2>/dev/null | awk 'NR==2{print $4}')
     [[ -z "$DISK_FREE_MB" ]] && DISK_FREE_MB=0
 
-    echo -e "CPU：${CPU_CORES} 核（最低要求 ${MIN_CPU_CORES} 核）"
-    echo -e "内存：总计 ${MEM_TOTAL_MB}MB / 可用 ${MEM_AVAIL_MB}MB / Swap ${SWAP_MB}MB（最低要求 ${MIN_MEM_MB}MB）"
+    echo -e "CPU：${CPU_CORES} 核"
+    echo -e "内存：总计 ${MEM_TOTAL_MB}MB / 可用 ${MEM_AVAIL_MB}MB / Swap ${SWAP_MB}MB"
     echo -e "磁盘：/usr/local 可用约 ${DISK_FREE_MB}MB"
 
-    # Profile (only used after hard minimum is met)
-    if [[ "$MEM_TOTAL_MB" -lt 2800 || "$CPU_CORES" -lt 4 ]]; then
+    # Profile for install strategy (not a hard install gate)
+    if [[ "$MEM_TOTAL_MB" -lt 900 || ( "$MEM_TOTAL_MB" -lt 1200 && "$SWAP_MB" -eq 0 ) || "$CPU_CORES" -lt 2 ]]; then
+        PROFILE="low"
+    elif [[ "$MEM_TOTAL_MB" -lt 2800 || "$CPU_CORES" -lt 4 ]]; then
         PROFILE="standard"
     else
         PROFILE="high"
@@ -199,7 +204,7 @@ analyze_vps() {
         echo -e "面板：${yellow}检测到已安装 s-ui，将执行升级${plain}"
     else
         INSTALL_MODE="fresh"
-        echo -e "面板：${green}未检测到面板，将全新安装服务端${plain}"
+        echo -e "面板：${green}未检测到面板，将全新安装普通面板${plain}"
     fi
 
     # Port check
@@ -222,43 +227,28 @@ analyze_vps() {
         fi
     done
 
-    # ---- Hard minimum: 2 cores + 2GB RAM for panel server ----
+    # ---- Normal panel: always installable. Cluster hub: recommend 2c/2G only. ----
     INSTALL_PANEL=1
-    local fail_reasons=()
-    if [[ "$CPU_CORES" -lt "$MIN_CPU_CORES" ]]; then
-        fail_reasons+=("CPU 仅 ${CPU_CORES} 核，需要至少 ${MIN_CPU_CORES} 核")
-    fi
-    if [[ "$MEM_TOTAL_MB" -lt "$MIN_MEM_MB" ]]; then
-        fail_reasons+=("内存仅 ${MEM_TOTAL_MB}MB，需要至少 ${MIN_MEM_MB}MB（2G）")
-    fi
-    if [[ "$DISK_FREE_MB" -gt 0 && "$DISK_FREE_MB" -lt 500 ]]; then
-        fail_reasons+=("磁盘可用约 ${DISK_FREE_MB}MB，建议至少 500MB")
+    if [[ "$DISK_FREE_MB" -gt 0 && "$DISK_FREE_MB" -lt 300 ]]; then
+        echo -e "${yellow}警告：磁盘可用约 ${DISK_FREE_MB}MB，空间偏紧，建议至少 500MB${plain}"
     fi
 
-    if [[ ${#fail_reasons[@]} -gt 0 ]]; then
-        echo -e "${red}不满足服务端最低配置（${MIN_CPU_CORES} 核 / ${MIN_MEM_MB}MB 内存）：${plain}"
-        local r
-        for r in "${fail_reasons[@]}"; do
-            echo -e "  - ${red}${r}${plain}"
-        done
-        if [[ "$FORCE_INSTALL" -eq 1 ]]; then
-            echo -e "${yellow}已使用 --force，强制继续安装（极易 OOM，不推荐）${plain}"
-            INSTALL_PANEL=1
-        else
-            INSTALL_PANEL=0
-            echo -e "${yellow}请升级到至少 2 核 2G 的 VPS 后再安装服务端。${plain}"
-            echo -e "${yellow}若坚持安装可加：--force（不保证稳定）${plain}"
-        fi
+    if [[ "$CPU_CORES" -lt "$CLUSTER_CPU_CORES" || "$MEM_TOTAL_MB" -lt "$CLUSTER_MEM_MB" ]]; then
+        echo -e "普通面板：${green}可安装（无硬性最低配置）${plain}"
+        echo -e "集群服务端（多服务器 Agent 控制面）：${yellow}建议 ≥${CLUSTER_CPU_CORES} 核 / ≥${CLUSTER_MEM_MB}MB${plain}"
+        echo -e "  当前 ${CPU_CORES} 核 / ${MEM_TOTAL_MB}MB — 作普通代理面板即可；若要当集群控制端，请升级 VPS"
     else
-        echo -e "最低配置检查：${green}通过（≥${MIN_CPU_CORES} 核 / ≥${MIN_MEM_MB}MB）${plain}"
+        echo -e "配置检查：${green}满足普通面板，也满足集群服务端建议（≥${CLUSTER_CPU_CORES} 核 / ≥${CLUSTER_MEM_MB}MB）${plain}"
     fi
 
-    # Xray: only when minimum met; auto on high, optional on standard
+    if [[ "$PROFILE" == "low" ]]; then
+        echo -e "${yellow}低配策略：默认不启代理内核、不装反代/Xray，优先保证面板 Web 能装能跑${plain}"
+    fi
+
+    # Xray: auto only on healthier hosts; low always skip unless --with-xray
     INSTALL_XRAY=0
     local xray_reason="默认不装 Xray（可用 --with-xray 安装）"
-    if [[ "$INSTALL_PANEL" -ne 1 ]]; then
-        xray_reason="服务端不安装，跳过 Xray"
-    elif [[ -z "$(xray_asset)" ]]; then
+    if [[ -z "$(xray_asset)" ]]; then
         INSTALL_XRAY=0
         xray_reason="当前架构无自动 Xray 包"
     elif [[ "$PROFILE" == "high" ]]; then
@@ -266,7 +256,10 @@ analyze_vps() {
         xray_reason="≥4 核且内存较充足，建议安装 Xray 双内核"
     elif [[ "$PROFILE" == "standard" && "$MEM_TOTAL_MB" -ge 2048 && "$SWAP_MB" -ge 512 ]]; then
         INSTALL_XRAY=1
-        xray_reason="达到 2 核 2G 且有 Swap，可安装 Xray"
+        xray_reason="资源较充足且有 Swap，可安装 Xray"
+    elif [[ "$PROFILE" == "low" ]]; then
+        INSTALL_XRAY=0
+        xray_reason="低配机器默认不装 Xray（可用 --with-xray）"
     fi
 
     # Explicit overrides
@@ -315,16 +308,11 @@ analyze_vps() {
         SKIP_CORE=1
     fi
 
-    echo -e "推荐：服务端=${green}${INSTALL_PANEL}${plain}  Xray=${green}${INSTALL_XRAY}${plain}  反代=${green}${INSTALL_PROXY}${plain}$([ "$INSTALL_PROXY" -eq 1 ] && echo "(${PROXY_ENGINE})" || true)  自动启内核=${green}$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是)${plain}"
+    echo -e "推荐：普通面板=${green}${INSTALL_PANEL}${plain}  Xray=${green}${INSTALL_XRAY}${plain}  反代=${green}${INSTALL_PROXY}${plain}$([ "$INSTALL_PROXY" -eq 1 ] && echo "(${PROXY_ENGINE})" || true)  自动启内核=${green}$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是)${plain}"
     echo -e "Xray 原因：${xray_reason}"
     echo -e "反代 原因：${proxy_reason}"
     echo -e "内核策略：${yellow}默认不自动启动 sing-box/Xray，仅启动面板 Web，避免 OOM 关机${plain}"
     echo -e "${blue}=================================${plain}"
-
-    if [[ "$INSTALL_PANEL" -ne 1 ]]; then
-        echo -e "${red}根据预检结果不安装服务端。最低配置：${MIN_CPU_CORES} 核 CPU + ${MIN_MEM_MB}MB 内存。${plain}"
-        exit 1
-    fi
 
     if [[ "$AUTO_YES" -ne 1 ]]; then
         echo -e "将按以上方案安装（模式: ${INSTALL_MODE}, 档位: ${PROFILE}）。"
