@@ -39,23 +39,36 @@ arch() {
 echo "架构：$(arch)"
 
 install_base() {
+    # Only install missing tools. Never run a full system upgrade here —
+    # full upgrades can pull a new kernel and force a reboot mid-install.
     case "${release}" in
     centos | almalinux | rocky | oracle)
-        yum -y update && yum install -y -q wget curl tar unzip tzdata
+        yum install -y -q wget curl tar unzip tzdata ca-certificates
         ;;
     fedora)
-        dnf -y update && dnf install -y -q wget curl tar unzip tzdata
+        dnf install -y -q wget curl tar unzip tzdata ca-certificates
         ;;
     arch | manjaro | parch)
-        pacman -Syu && pacman -Syu --noconfirm wget curl tar unzip tzdata
+        pacman -Sy --noconfirm wget curl tar unzip tzdata ca-certificates
         ;;
     opensuse-tumbleweed)
-        zypper refresh && zypper -q install -y wget curl tar unzip timezone
+        zypper -q install -y wget curl tar unzip timezone ca-certificates
         ;;
     *)
-        apt-get update && apt-get install -y -q wget curl tar unzip tzdata
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -q wget curl tar unzip tzdata ca-certificates
         ;;
     esac
+}
+
+check_host_memory() {
+    # Rough guard: embedded sing-box + panel needs headroom on tiny VPS.
+    local mem_kb
+    mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    if [[ "$mem_kb" -gt 0 && "$mem_kb" -lt 450000 ]]; then
+        echo -e "${yellow}警告：当前内存约 $((mem_kb / 1024))MB，过小的 VPS 启动 s-ui 时可能触发 OOM，看起来像整机重启。${plain}"
+        echo -e "${yellow}建议至少 512MB–1GB 可用内存，或先关闭其它占内存服务。${plain}"
+    fi
 }
 
 xray_asset() {
@@ -231,13 +244,32 @@ install_s-ui() {
     prepare_services
     install_xray || echo -e "${yellow}Xray-core 未自动安装；Sing-Box 功能不受影响${plain}"
 
-    systemctl enable s-ui --now
+    check_host_memory
+    systemctl daemon-reload
+    systemctl enable s-ui
+    # Start carefully so a crash surfaces as a service failure, not a silent hang.
+    if ! systemctl start s-ui; then
+        echo -e "${red}s-ui 服务启动失败，最近日志：${plain}"
+        journalctl -u s-ui -n 50 --no-pager || true
+        echo -e "${yellow}可执行: systemctl status s-ui -l  与  journalctl -u s-ui -xe${plain}"
+        exit 1
+    fi
+    sleep 1
+    if ! systemctl is-active --quiet s-ui; then
+        echo -e "${red}s-ui 未能保持运行状态，最近日志：${plain}"
+        journalctl -u s-ui -n 50 --no-pager || true
+        exit 1
+    fi
 
     echo -e "${green}s-ui ${last_version}${plain} 安装完成，现已启动并运行..."
     echo -e "你可以通过以下 URL 访问面板：${green}"
-    /usr/local/s-ui/sui uri
+    /usr/local/s-ui/sui uri 2>/dev/null || true
     echo -e "${plain}"
     echo -e ""
+    echo -e "${yellow}若安装后 SSH 断开或机器重启，常见原因是内存不足(OOM)。请用控制台登录后执行：${plain}"
+    echo -e "  systemctl status s-ui -l"
+    echo -e "  journalctl -u s-ui -n 100 --no-pager"
+    echo -e "  dmesg | grep -iE 'oom|killed process|Out of memory' | tail"
     s-ui help
 }
 

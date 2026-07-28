@@ -1,14 +1,31 @@
 [Unit]
 Description=s-ui Service
-After=network.target
-Wants=network.target
+Documentation=https://github.com/Hhz0823/1s-ui
+After=network-online.target
+Wants=network-online.target
+# Avoid thrashing the whole machine if the panel crashes in a loop.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
 WorkingDirectory=/usr/local/s-ui/
 ExecStart=/usr/local/s-ui/sui
 Restart=on-failure
-RestartSec=10s
+RestartSec=5s
+
+# Prefer killing the panel under memory pressure instead of SSH/sshd/kernel OOM reboot.
+OOMScoreAdjust=300
+OOMPolicy=stop
+# Soft guidance only — raise if you run many high-traffic inbounds on a large host.
+MemoryHigh=768M
+MemoryMax=1536M
+
+# Reasonable FD limit for many concurrent proxy connections.
+LimitNOFILE=1048576
+# Do not restart forever after repeated failures.
+TimeoutStartSec=90
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target

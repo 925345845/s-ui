@@ -445,10 +445,10 @@ enable_bbr() {
         apt-get update && apt-get install -yqq --no-install-recommends ca-certificates
         ;;
     centos | almalinux | rocky | oracle)
-        yum -y update && yum -y install ca-certificates
+        yum -y install ca-certificates
         ;;
     fedora)
-        dnf -y update && dnf -y install ca-certificates
+        dnf -y install ca-certificates
         ;;
     arch | manjaro | parch)
         pacman -Sy --noconfirm ca-certificates
