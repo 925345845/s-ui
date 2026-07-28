@@ -199,6 +199,18 @@ func (s *SettingService) SetPort(port int) error {
 	return s.setInt("webPort", port)
 }
 
+func (s *SettingService) SetWebListen(listen string) error {
+	return s.setString("webListen", strings.TrimSpace(listen))
+}
+
+func (s *SettingService) SetWebDomain(domain string) error {
+	return s.setString("webDomain", strings.TrimSpace(domain))
+}
+
+func (s *SettingService) SetWebURI(uri string) error {
+	return s.setString("webURI", strings.TrimSpace(uri))
+}
+
 func (s *SettingService) GetCertFile() (string, error) {
 	return s.getString("webCertFile")
 }

@@ -11,6 +11,10 @@ cur_dir=$(pwd)
 # Decision flags (set by analyze_vps)
 INSTALL_PANEL=1
 INSTALL_XRAY=1
+INSTALL_PROXY=0               # reverse proxy in front of panel
+PROXY_ENGINE=""               # caddy | nginx | ""
+PROXY_DOMAIN=""
+PROXY_EMAIL=""
 INSTALL_MODE="fresh"          # fresh | upgrade
 PROFILE="standard"            # tiny | low | standard | high
 MEM_TOTAL_MB=0
@@ -21,7 +25,10 @@ DISK_FREE_MB=0
 FORCE_INSTALL=0
 AUTO_YES=0
 FORCE_XRAY=""                 # "" | 1 | 0
+FORCE_PROXY=""                # "" | 1 | 0
 REQUESTED_VERSION=""
+PORT80_FREE=1
+PORT443_FREE=1
 
 # 检查 root 权限
 [[ $EUID -ne 0 ]] && echo -e "${red}致命错误：${plain}请使用 root 权限运行此脚本 \n " && exit 1
@@ -31,16 +38,20 @@ usage() {
 用法: install.sh [版本号] [选项]
 
 选项:
-  -y, --yes           非交互：接受推荐方案并安装
-  --with-xray         强制安装 Xray-core
-  --no-xray           跳过 Xray-core（仅 sing-box）
-  --force             内存不足时仍允许安装面板
-  -h, --help          显示帮助
+  -y, --yes             非交互：接受推荐方案并安装
+  --with-xray           强制安装 Xray-core
+  --no-xray             跳过 Xray-core（仅 sing-box）
+  --with-proxy          强制安装反代（Caddy/Nginx）
+  --no-proxy            不安装反代
+  --domain DOMAIN       反代域名（启用 HTTPS）
+  --email EMAIL         ACME 邮箱（Caddy 可选）
+  --force               内存不足时仍允许安装面板
+  -h, --help            显示帮助
 
 示例:
   bash install.sh
-  bash install.sh v1.5.1
   bash install.sh v1.5.1 -y --no-xray
+  bash install.sh -y --with-proxy --domain panel.example.com --email a@b.com
 EOF
 }
 
@@ -59,6 +70,22 @@ parse_args() {
         --no-xray)
             FORCE_XRAY=0
             shift
+            ;;
+        --with-proxy)
+            FORCE_PROXY=1
+            shift
+            ;;
+        --no-proxy)
+            FORCE_PROXY=0
+            shift
+            ;;
+        --domain)
+            PROXY_DOMAIN="${2:-}"
+            shift 2
+            ;;
+        --email)
+            PROXY_EMAIL="${2:-}"
+            shift 2
             ;;
         --force)
             FORCE_INSTALL=1
@@ -163,13 +190,15 @@ analyze_vps() {
     fi
 
     # Port check
-    local p_busy=0
-    for p in 2095 2096; do
+    for p in 2095 2096 80 443; do
         if port_in_use "$p"; then
-            echo -e "端口 ${p}：${yellow}已被占用${plain}（安装后可在面板修改）"
-            p_busy=1
+            echo -e "端口 ${p}：${yellow}已被占用${plain}"
+            [[ "$p" == "80" ]] && PORT80_FREE=0
+            [[ "$p" == "443" ]] && PORT443_FREE=0
         else
             echo -e "端口 ${p}：空闲"
+            [[ "$p" == "80" ]] && PORT80_FREE=1
+            [[ "$p" == "443" ]] && PORT443_FREE=1
         fi
     done
 
@@ -245,8 +274,57 @@ analyze_vps() {
         xray_reason="用户指定 --no-xray"
     fi
 
-    echo -e "推荐：安装服务端=${green}${INSTALL_PANEL}${plain}  安装 Xray=${green}${INSTALL_XRAY}${plain}"
-    echo -e "原因：${xray_reason}"
+    # Reverse proxy decision
+    INSTALL_PROXY=0
+    PROXY_ENGINE=""
+    local proxy_reason="默认不装反代"
+    if [[ "$PROFILE" == "tiny" ]]; then
+        INSTALL_PROXY=0
+        proxy_reason="内存过小，跳过反代"
+    elif [[ "$PORT80_FREE" -ne 1 ]]; then
+        INSTALL_PROXY=0
+        proxy_reason="80 端口占用，跳过反代"
+    elif [[ "$PROFILE" == "high" || "$PROFILE" == "standard" ]]; then
+        INSTALL_PROXY=1
+        PROXY_ENGINE="caddy"
+        proxy_reason="资源充足，推荐 Caddy 反代（自动 HTTPS）"
+    elif [[ "$PROFILE" == "low" && "$MEM_AVAIL_MB" -ge 350 ]]; then
+        INSTALL_PROXY=1
+        PROXY_ENGINE="nginx"
+        proxy_reason="中低内存，推荐轻量 Nginx 反代"
+    fi
+
+    # Prefer nginx if caddy already missing but nginx running, or caddy port conflict on 443 only with domain
+    if systemctl is-active --quiet nginx 2>/dev/null && [[ "$INSTALL_PROXY" -eq 1 ]]; then
+        PROXY_ENGINE="nginx"
+        proxy_reason="检测到 Nginx 已运行，复用 Nginx 反代"
+    fi
+    if systemctl is-active --quiet caddy 2>/dev/null && [[ "$INSTALL_PROXY" -eq 1 ]]; then
+        PROXY_ENGINE="caddy"
+        proxy_reason="检测到 Caddy 已运行，复用 Caddy 反代"
+    fi
+
+    if [[ "$FORCE_PROXY" == "1" ]]; then
+        INSTALL_PROXY=1
+        [[ -z "$PROXY_ENGINE" ]] && PROXY_ENGINE="caddy"
+        [[ "$PROFILE" == "low" || "$PROFILE" == "tiny" ]] && PROXY_ENGINE="nginx"
+        proxy_reason="用户指定 --with-proxy"
+    elif [[ "$FORCE_PROXY" == "0" ]]; then
+        INSTALL_PROXY=0
+        PROXY_ENGINE=""
+        proxy_reason="用户指定 --no-proxy"
+    fi
+
+    # Domain implies wanting proxy unless explicitly disabled
+    if [[ -n "$PROXY_DOMAIN" && "$FORCE_PROXY" != "0" ]]; then
+        INSTALL_PROXY=1
+        [[ -z "$PROXY_ENGINE" ]] && PROXY_ENGINE="caddy"
+        proxy_reason="已指定域名 ${PROXY_DOMAIN}，启用反代+HTTPS"
+    fi
+
+    echo -e "推荐：服务端=${green}${INSTALL_PANEL}${plain}  Xray=${green}${INSTALL_XRAY}${plain}  反代=${green}${INSTALL_PROXY}${plain}$([ "$INSTALL_PROXY" -eq 1 ] && echo "(${PROXY_ENGINE})" || true)"
+    echo -e "Xray 原因：${xray_reason}"
+    echo -e "反代 原因：${proxy_reason}"
     echo -e "${blue}=================================${plain}"
 
     if [[ "$INSTALL_PANEL" -ne 1 ]]; then
@@ -265,6 +343,22 @@ analyze_vps() {
             read -r -p "是否仍安装 Xray-core？[y/N]: " xans
             if [[ "${xans}" == "y" || "${xans}" == "Y" ]]; then
                 INSTALL_XRAY=1
+            fi
+        fi
+        if [[ "$INSTALL_PROXY" -eq 0 && "$FORCE_PROXY" == "" && "$PROFILE" != "tiny" && "$PORT80_FREE" -eq 1 ]]; then
+            read -r -p "是否安装反向代理（Caddy/Nginx，可隐藏面板端口）？[y/N]: " pans
+            if [[ "${pans}" == "y" || "${pans}" == "Y" ]]; then
+                INSTALL_PROXY=1
+                [[ "$PROFILE" == "low" ]] && PROXY_ENGINE="nginx" || PROXY_ENGINE="caddy"
+                read -r -p "反代域名（可留空仅用 80 端口 HTTP）：" PROXY_DOMAIN
+                if [[ -n "$PROXY_DOMAIN" ]]; then
+                    read -r -p "ACME 邮箱（可留空）：" PROXY_EMAIL
+                fi
+            fi
+        elif [[ "$INSTALL_PROXY" -eq 1 && -z "$PROXY_DOMAIN" ]]; then
+            read -r -p "反代域名（可留空仅用 80 端口 HTTP）：" PROXY_DOMAIN
+            if [[ -n "$PROXY_DOMAIN" ]]; then
+                read -r -p "ACME 邮箱（可留空）：" PROXY_EMAIL
             fi
         fi
     fi
@@ -397,6 +491,196 @@ xray_asset() {
     s390x) echo 'Xray-linux-s390x.zip' ;;
     *) echo '' ;;
     esac
+}
+
+install_package() {
+    local pkg="$1"
+    case "${release}" in
+    centos | almalinux | rocky | oracle)
+        yum install -y -q "$pkg"
+        ;;
+    fedora)
+        dnf install -y -q "$pkg"
+        ;;
+    arch | manjaro | parch)
+        pacman -Sy --noconfirm "$pkg"
+        ;;
+    opensuse-tumbleweed)
+        zypper -q install -y "$pkg"
+        ;;
+    *)
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -q "$pkg"
+        ;;
+    esac
+}
+
+install_caddy_pkg() {
+    if command -v caddy >/dev/null 2>&1; then
+        return 0
+    fi
+    case "${release}" in
+    ubuntu | debian | armbian)
+        apt-get update -qq
+        # Official Caddy repo when available; fall back to distro package.
+        if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -q caddy 2>/dev/null; then
+            apt-get install -y -q debian-keyring debian-archive-keyring apt-transport-https 2>/dev/null || true
+            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' 2>/dev/null | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null || true
+            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' 2>/dev/null | tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null 2>&1 || true
+            apt-get update -qq 2>/dev/null || true
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -q caddy || return 1
+        fi
+        ;;
+    *)
+        install_package caddy || return 1
+        ;;
+    esac
+    command -v caddy >/dev/null 2>&1
+}
+
+write_caddy_config() {
+    local domain="$1"
+    local email="$2"
+    local panel_port="${3:-2095}"
+    mkdir -p /etc/caddy
+    {
+        if [[ -n "$domain" && -n "$email" ]]; then
+            echo "{"
+            echo "	email ${email}"
+            echo "}"
+        fi
+        if [[ -n "$domain" ]]; then
+            echo "${domain} {"
+        else
+            echo ":80 {"
+        fi
+        cat <<EOF
+	encode gzip
+	reverse_proxy 127.0.0.1:${panel_port} {
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
+EOF
+    } >/etc/caddy/Caddyfile
+}
+
+write_nginx_config() {
+    local domain="$1"
+    local panel_port="${2:-2095}"
+    local conf_dir="/etc/nginx/conf.d"
+    mkdir -p "$conf_dir" /etc/nginx/sites-available /etc/nginx/sites-enabled 2>/dev/null || true
+    local conf_file="${conf_dir}/s-ui.conf"
+    # Prefer sites-available when present (Debian style)
+    if [[ -d /etc/nginx/sites-available ]]; then
+        conf_file="/etc/nginx/sites-available/s-ui.conf"
+    fi
+    local server_name="_"
+    [[ -n "$domain" ]] && server_name="$domain"
+
+    cat >"$conf_file" <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${server_name};
+
+    client_max_body_size 32m;
+
+    location / {
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_pass http://127.0.0.1:${panel_port};
+    }
+}
+EOF
+    if [[ -d /etc/nginx/sites-enabled ]]; then
+        ln -sfn "$conf_file" /etc/nginx/sites-enabled/s-ui.conf
+        # Disable default site if it would catch all traffic
+        rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+    fi
+}
+
+bind_panel_localhost() {
+    local domain="$1"
+    local uri=""
+    if [[ -n "$domain" ]]; then
+        uri="https://${domain}/app/"
+        /usr/local/s-ui/sui setting -listen 127.0.0.1 -domain "$domain" -uri "$uri" >/dev/null 2>&1 || true
+    else
+        /usr/local/s-ui/sui setting -listen 127.0.0.1 >/dev/null 2>&1 || true
+    fi
+    systemctl restart s-ui 2>/dev/null || true
+}
+
+install_reverse_proxy() {
+    if [[ "$INSTALL_PROXY" -ne 1 ]]; then
+        echo -e "${yellow}按预检结果跳过反代安装。${plain}"
+        return 0
+    fi
+
+    local panel_port=2095
+    if [[ -x /usr/local/s-ui/sui ]]; then
+        local p
+        p=$(/usr/local/s-ui/sui setting -show 2>/dev/null | awk -F'\t' '/Panel port/ {print $NF}' | tr -d ' ')
+        [[ "$p" =~ ^[0-9]+$ ]] && panel_port="$p"
+    fi
+
+    echo -e "${yellow}正在配置反向代理（引擎: ${PROXY_ENGINE}）...${plain}"
+    bind_panel_localhost "$PROXY_DOMAIN"
+
+    if [[ "$PROXY_ENGINE" == "caddy" ]]; then
+        if ! install_caddy_pkg; then
+            echo -e "${yellow}Caddy 安装失败，回退 Nginx${plain}"
+            PROXY_ENGINE="nginx"
+        else
+            write_caddy_config "$PROXY_DOMAIN" "$PROXY_EMAIL" "$panel_port"
+            systemctl enable caddy >/dev/null 2>&1 || true
+            systemctl restart caddy
+            if systemctl is-active --quiet caddy; then
+                echo -e "${green}Caddy 反代已启动${plain}"
+                if [[ -n "$PROXY_DOMAIN" ]]; then
+                    echo -e "面板地址：${green}https://${PROXY_DOMAIN}/app/${plain}"
+                else
+                    echo -e "面板地址：${green}http://服务器IP/app/${plain}（80 端口）"
+                fi
+                return 0
+            fi
+            echo -e "${yellow}Caddy 启动失败，回退 Nginx${plain}"
+            PROXY_ENGINE="nginx"
+        fi
+    fi
+
+    if [[ "$PROXY_ENGINE" == "nginx" ]]; then
+        if ! install_package nginx; then
+            echo -e "${red}Nginx 安装失败，跳过反代${plain}"
+            /usr/local/s-ui/sui setting -listen - >/dev/null 2>&1 || true
+            systemctl restart s-ui 2>/dev/null || true
+            return 1
+        fi
+        write_nginx_config "$PROXY_DOMAIN" "$panel_port"
+        nginx -t 2>/dev/null || true
+        systemctl enable nginx >/dev/null 2>&1 || true
+        systemctl restart nginx
+        if systemctl is-active --quiet nginx; then
+            echo -e "${green}Nginx 反代已启动${plain}"
+            if [[ -n "$PROXY_DOMAIN" ]]; then
+                echo -e "HTTP：${green}http://${PROXY_DOMAIN}/app/${plain}"
+                echo -e "${yellow}提示：可用 certbot --nginx -d ${PROXY_DOMAIN} 配置 HTTPS${plain}"
+            else
+                echo -e "面板地址：${green}http://服务器IP/app/${plain}（80 端口）"
+            fi
+            return 0
+        fi
+        echo -e "${red}Nginx 启动失败，已恢复面板监听全部网卡${plain}"
+        /usr/local/s-ui/sui setting -listen - >/dev/null 2>&1 || true
+        systemctl restart s-ui 2>/dev/null || true
+        return 1
+    fi
 }
 
 install_xray() {
@@ -595,8 +879,10 @@ install_s-ui() {
         exit 1
     fi
 
+    install_reverse_proxy || true
+
     echo -e "${green}s-ui ${last_version}${plain} 安装完成，现已启动并运行..."
-    echo -e "安装摘要：模式=${INSTALL_MODE} 档位=${PROFILE} 面板=是 Xray=$([ "$INSTALL_XRAY" -eq 1 ] && echo 是 || echo 否)"
+    echo -e "安装摘要：模式=${INSTALL_MODE} 档位=${PROFILE} 面板=是 Xray=$([ "$INSTALL_XRAY" -eq 1 ] && echo 是 || echo 否) 反代=$([ "$INSTALL_PROXY" -eq 1 ] && echo "是(${PROXY_ENGINE})" || echo 否)"
     echo -e "你可以通过以下 URL 访问面板：${green}"
     /usr/local/s-ui/sui uri 2>/dev/null || true
     echo -e "${plain}"

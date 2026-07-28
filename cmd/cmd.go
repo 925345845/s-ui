@@ -25,6 +25,9 @@ func ParseCmd() {
 	var path string
 	var subPort int
 	var subPath string
+	var listen string
+	var domain string
+	var webURI string
 	var reset bool
 	var show bool
 	var agentPanel string
@@ -38,6 +41,9 @@ func ParseCmd() {
 	settingCmd.StringVar(&path, "path", "", "set panel path")
 	settingCmd.IntVar(&subPort, "subPort", 0, "set sub port")
 	settingCmd.StringVar(&subPath, "subPath", "", "set sub path")
+	settingCmd.StringVar(&listen, "listen", "", "set panel listen IP (127.0.0.1 for reverse proxy; - to clear)")
+	settingCmd.StringVar(&domain, "domain", "", "set panel domain (- to clear)")
+	settingCmd.StringVar(&webURI, "uri", "", "set public panel URI (- to clear)")
 
 	adminCmd.BoolVar(&show, "show", false, "show first admin credentials")
 	adminCmd.BoolVar(&reset, "reset", false, "reset first admin credentials")
@@ -117,7 +123,7 @@ func ParseCmd() {
 		case reset:
 			resetSetting()
 		default:
-			updateSetting(port, path, subPort, subPath)
+			updateSetting(port, path, subPort, subPath, listen, domain, webURI)
 			showSetting()
 		}
 	case "agent":

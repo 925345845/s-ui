@@ -31,7 +31,7 @@ func resetSetting() {
 	}
 }
 
-func updateSetting(port int, path string, subPort int, subPath string) {
+func updateSetting(port int, path string, subPort int, subPath string, listen string, domain string, uri string) {
 	err := database.InitDB(config.GetDBPath())
 	if err != nil {
 		fmt.Println(err)
@@ -70,6 +70,43 @@ func updateSetting(port int, path string, subPort int, subPath string) {
 			fmt.Println("set sub path failed:", err)
 		} else {
 			fmt.Println("set sub path success")
+		}
+	}
+	if listen != "" {
+		// Use "-" to clear listen (bind all interfaces).
+		value := listen
+		if listen == "-" {
+			value = ""
+		}
+		err := settingService.SetWebListen(value)
+		if err != nil {
+			fmt.Println("set listen failed:", err)
+		} else {
+			fmt.Println("set listen success:", value)
+		}
+	}
+	if domain != "" {
+		value := domain
+		if domain == "-" {
+			value = ""
+		}
+		err := settingService.SetWebDomain(value)
+		if err != nil {
+			fmt.Println("set domain failed:", err)
+		} else {
+			fmt.Println("set domain success:", value)
+		}
+	}
+	if uri != "" {
+		value := uri
+		if uri == "-" {
+			value = ""
+		}
+		err := settingService.SetWebURI(value)
+		if err != nil {
+			fmt.Println("set uri failed:", err)
+		} else {
+			fmt.Println("set uri success:", value)
 		}
 	}
 }
