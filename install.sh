@@ -10,7 +10,7 @@ cur_dir=$(pwd)
 
 # Decision flags (set by analyze_vps)
 INSTALL_PANEL=1
-INSTALL_XRAY=1
+INSTALL_XRAY=0               # never auto-install during panel setup (OOM risk)
 INSTALL_PROXY=0               # reverse proxy in front of panel (default off)
 PROXY_ENGINE=""               # caddy | nginx | ""
 PROXY_DOMAIN=""
@@ -747,6 +747,32 @@ free_page_cache() {
     echo 1 >/proc/sys/vm/drop_caches 2>/dev/null || true
 }
 
+# Reclaimable + swap free, in MB (best-effort).
+mem_budget_mb() {
+    local avail_kb swap_free_kb
+    avail_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    swap_free_kb=$(awk '/SwapFree/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    echo $(((avail_kb + swap_free_kb) / 1024))
+}
+
+# Refuse to launch the ~90MB binary if remaining budget is too low.
+require_mem_budget() {
+    local need="${1:-280}"
+    local have
+    have=$(mem_budget_mb)
+    echo -e "可用内存预算（MemAvailable+SwapFree）：${have}MB（启动面板建议 ≥${need}MB）"
+    if [[ "$have" -lt "$need" && "$FORCE_INSTALL" -ne 1 ]]; then
+        echo -e "${red}内存预算不足，强行启动 90MB 面板进程极易 OOM 整机重启。${plain}"
+        echo -e "${yellow}请：1) 确认 Swap 已启用  2) 关闭其它占内存进程  3) 或换 ≥2G 机器${plain}"
+        echo -e "${yellow}排查： free -h; swapon --show; dmesg | grep -i oom | tail${plain}"
+        return 1
+    fi
+    if [[ "$have" -lt "$need" ]]; then
+        echo -e "${yellow}--force：内存预算不足仍继续（高风险）${plain}"
+    fi
+    return 0
+}
+
 ensure_swap_if_needed() {
     # Critical: create swap BEFORE download/extract. 90MB binary + Go RSS
     # easily OOMs 1GB machines with 0 swap (looks like a hard reboot).
@@ -834,24 +860,30 @@ download_release() {
 install_s-ui() {
     cd /tmp/ || exit 1
 
+    # ------------------------------------------------------------------
+    # OOM root-cause controls (see docs/oom-reboot-analysis.md):
+    #  - Panel binary ~90MB; each `sui` CLI invocation is a full process.
+    #  - Fresh install: migrate is a no-op (no DB) but still costs full RSS.
+    #  - Critical path must launch the 90MB binary AT MOST ONCE (systemd start).
+    # ------------------------------------------------------------------
+
     echo -e "${yellow}安装前停止旧服务并准备 Swap（防 OOM 重启）...${plain}"
     systemctl stop s-ui 2>/dev/null || true
     systemctl stop s-ui-agent 2>/dev/null || true
     free_page_cache
-    # Swap MUST exist before download/extract of ~90MB binary
     if ! ensure_swap_if_needed; then
         if [[ "$MEM_TOTAL_MB" -lt 1500 && "$FORCE_INSTALL" -ne 1 ]]; then
-            echo -e "${red}内存 ${MEM_TOTAL_MB}MB 且无法创建 Swap，安装极易导致机器重启。${plain}"
-            echo -e "${yellow}请先手动创建 Swap 后重试，或加 --force 强行继续（不推荐）。${plain}"
+            echo -e "${red}内存 ${MEM_TOTAL_MB}MB 且无法创建 Swap：1G 级机器上 90MB 面板极易 OOM 整机重启。${plain}"
+            echo -e "${yellow}请先手动创建 Swap 后重试，或加 --force（不推荐）。${plain}"
             exit 1
         fi
         echo -e "${yellow}Swap 未就绪，继续安装（风险高）${plain}"
     fi
     free -h 2>/dev/null || true
+    swapon --show 2>/dev/null || true
 
     local last_version
     if [[ -z "$REQUESTED_VERSION" ]]; then
-        # Prefer newest tag with linux assets (GitHub "latest" can lag behind).
         last_version=$(curl -Ls "https://api.github.com/repos/Hhz0823/1s-ui/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         if [[ ! -n "$last_version" ]]; then
             last_version=$(curl -Ls "https://api.github.com/repos/Hhz0823/1s-ui/releases?per_page=5" | grep '"tag_name":' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
@@ -876,84 +908,103 @@ install_s-ui() {
     systemctl stop s-ui 2>/dev/null || true
     rm -rf /tmp/s-ui-extract
     mkdir -p /tmp/s-ui-extract
-    echo -e "${yellow}解压中（约 90MB 二进制，请勿并行重任务）...${plain}"
-    if ! tar xzf "$tarball" -C /tmp/s-ui-extract; then
-        echo -e "${red}解压失败${plain}"
-        rm -f "$tarball"
-        exit 1
+
+    # Selective extract: only panel binary + unit + helper. Skip sui-agent (~6.6MB)
+    # and anything else so peak disk/page-cache is one 90MB file, not two.
+    echo -e "${yellow}选择性解压（仅 sui + service，跳过 agent）...${plain}"
+    local extract_ok=0
+    if tar xzf "$tarball" -C /tmp/s-ui-extract s-ui/sui s-ui/s-ui.service s-ui/s-ui.sh 2>/dev/null; then
+        extract_ok=1
+    elif tar xzf "$tarball" -C /tmp/s-ui-extract sui s-ui.service s-ui.sh 2>/dev/null; then
+        extract_ok=1
+    else
+        # Fallback: full extract (older layouts)
+        echo -e "${yellow}选择性解压失败，回退完整解压${plain}"
+        tar xzf "$tarball" -C /tmp/s-ui-extract || extract_ok=0
+        [[ -f /tmp/s-ui-extract/s-ui/sui || -f /tmp/s-ui-extract/sui ]] && extract_ok=1
     fi
-    # Free ~36MB compressed copy immediately
     rm -f "$tarball"
     free_page_cache
+    if [[ "$extract_ok" -ne 1 ]]; then
+        echo -e "${red}解压失败${plain}"
+        rm -rf /tmp/s-ui-extract
+        exit 1
+    fi
 
     local src_dir="/tmp/s-ui-extract/s-ui"
     [[ -d "$src_dir" ]] || src_dir="/tmp/s-ui-extract"
     if [[ ! -f "$src_dir/sui" ]]; then
         echo -e "${red}包内未找到 sui 二进制${plain}"
-        ls -la "$src_dir" || true
+        ls -la "$src_dir" /tmp/s-ui-extract 2>/dev/null || true
         rm -rf /tmp/s-ui-extract
         exit 1
     fi
 
-    chmod +x "$src_dir/sui" "$src_dir/s-ui.sh" 2>/dev/null || true
-    mkdir -p /usr/local/s-ui /usr/local/s-ui/db
-    # Install panel binary first; skip agent binary on low RAM (another ~tens of MB).
+    mkdir -p /usr/local/s-ui /usr/local/s-ui/db /usr/local/s-ui/bin
+    # Single copy of the heavy binary into place, then delete extract tree immediately.
     cp -f "$src_dir/sui" /usr/local/s-ui/sui
+    chmod +x /usr/local/s-ui/sui
     if [[ -f "$src_dir/s-ui.sh" ]]; then
         cp -f "$src_dir/s-ui.sh" /usr/local/s-ui/s-ui.sh
         cp -f "$src_dir/s-ui.sh" /usr/bin/s-ui
-        chmod +x /usr/bin/s-ui
+        chmod +x /usr/bin/s-ui /usr/local/s-ui/s-ui.sh
     fi
-    cp -f "$src_dir"/s-ui.service /etc/systemd/system/ 2>/dev/null || true
-    if [[ "$MEM_TOTAL_MB" -ge 1500 && -f "$src_dir/sui-agent" ]]; then
-        cp -f "$src_dir/sui-agent" /usr/local/s-ui/sui-agent 2>/dev/null || true
-        cp -f "$src_dir"/s-ui-agent.service /etc/systemd/system/ 2>/dev/null || true
-        chmod +x /usr/local/s-ui/sui-agent 2>/dev/null || true
-    else
-        echo -e "${yellow}低内存：跳过复制 sui-agent（不需要可稍后手动安装）${plain}"
+    if [[ -f "$src_dir/s-ui.service" ]]; then
+        cp -f "$src_dir/s-ui.service" /etc/systemd/system/s-ui.service
+    elif [[ -f /tmp/s-ui-extract/s-ui.service ]]; then
+        cp -f /tmp/s-ui-extract/s-ui.service /etc/systemd/system/s-ui.service
     fi
-    if [[ -d "$src_dir/bin" ]]; then
-        mkdir -p /usr/local/s-ui/bin
-        cp -rf "$src_dir/bin/." /usr/local/s-ui/bin/ 2>/dev/null || true
+    # Never install agent binary during low-memory panel install (optional later).
+    if [[ "$MEM_TOTAL_MB" -ge 2048 && -f "$src_dir/sui-agent" ]]; then
+        cp -f "$src_dir/sui-agent" /usr/local/s-ui/sui-agent
+        chmod +x /usr/local/s-ui/sui-agent
+        [[ -f "$src_dir/s-ui-agent.service" ]] && cp -f "$src_dir/s-ui-agent.service" /etc/systemd/system/
     fi
-    # Drop extract tree ASAP to free disk cache of the second 90MB copy
     rm -rf /tmp/s-ui-extract
-    chmod +x /usr/local/s-ui/sui
     free_page_cache
 
-    # Safe mode + GOMEMLIMIT before first start
+    # systemd: SUI_SKIP_CORE + GOMEMLIMIT before first start
     apply_systemd_optimize
+    prepare_services
 
-    # Minimize CLI invocations of the 90MB binary (each is a full process load).
-    echo -e "${yellow}初始化数据库（单次 migrate）...${plain}"
-    GOMEMLIMIT=200MiB GOGC=40 /usr/local/s-ui/sui migrate || {
-        echo -e "${yellow}migrate 返回非零，继续尝试启动${plain}"
-    }
-    free_page_cache
+    local has_db=0
+    [[ -f /usr/local/s-ui/db/s-ui.db ]] && has_db=1
 
-    if [[ "$AUTO_YES" -eq 1 ]]; then
-        if [[ ! -f "/usr/local/s-ui/db/s-ui.db" ]]; then
-            local usernameTemp passwordTemp
-            usernameTemp=$(head -c 6 /dev/urandom | base64 | tr -d '/+=' | head -c 8)
-            passwordTemp=$(head -c 9 /dev/urandom | base64 | tr -d '/+=' | head -c 12)
-            echo -e "自动安装：生成随机管理员"
-            echo -e "###############################################"
-            echo -e "${green}用户名：${usernameTemp}${plain}"
-            echo -e "${green}密码：${passwordTemp}${plain}"
-            echo -e "###############################################"
-            GOMEMLIMIT=200MiB GOGC=40 /usr/local/s-ui/sui admin -username "${usernameTemp}" -password "${passwordTemp}" || true
+    # ---- CLI policy (critical) ----
+    # Fresh install: DO NOT run `sui migrate` or `sui admin`.
+    #   migrate() exits immediately when DB missing, but still loads ~90MB RSS.
+    #   InitDB on first service start creates admin/admin.
+    # Upgrade: run migrate ONCE only if DB already exists.
+    if [[ "$has_db" -eq 1 ]]; then
+        echo -e "${yellow}检测到已有数据库：升级路径，执行一次 migrate...${plain}"
+        if require_mem_budget 300; then
+            GOMEMLIMIT=200MiB GOGC=40 /usr/local/s-ui/sui migrate || \
+                echo -e "${yellow}migrate 非零退出，继续启动服务${plain}"
+            free_page_cache
+        else
+            echo -e "${red}内存不足，跳过 migrate；请空闲时手动： /usr/local/s-ui/sui migrate${plain}"
         fi
     else
-        config_after_install
+        echo -e "${green}全新安装：跳过 migrate/admin CLI（避免无意义的 90MB 进程峰值）${plain}"
+        echo -e "${yellow}默认登录：admin / admin（登录后请立即修改）${plain}"
     fi
-    prepare_services
+
+    # Interactive settings only when user is present AND memory allows an extra CLI.
+    # Skip on -y / low RAM to keep critical path = single service start.
+    if [[ "$AUTO_YES" -ne 1 && "$MEM_TOTAL_MB" -ge 1500 ]]; then
+        config_after_install
+    elif [[ "$AUTO_YES" -ne 1 ]]; then
+        echo -e "${yellow}低内存：跳过交互式 setting CLI；可用面板 Web 或稍后 s-ui 菜单修改${plain}"
+    fi
 
     systemctl daemon-reload
     systemctl enable s-ui >/dev/null 2>&1 || true
 
     if [[ "$START_SERVICE" -eq 1 ]]; then
         free_page_cache
-        echo -e "${yellow}启动面板（安全模式，不加载内核）...${plain}"
+        # This should be the ONLY full binary launch on a fresh install.
+        require_mem_budget 280 || exit 1
+        echo -e "${yellow}启动面板（唯一一次加载 90MB 进程；安全模式不启内核）...${plain}"
         if ! systemctl start s-ui; then
             echo -e "${red}s-ui 服务启动失败，最近日志：${plain}"
             journalctl -u s-ui -n 80 --no-pager || true
@@ -969,13 +1020,17 @@ install_s-ui() {
         fi
         echo -e "${green}面板已运行（未自动加载代理内核）${plain}"
 
-        # Xray / reverse proxy only if explicitly requested, and never on tiny hosts unless forced
+        # Never install Xray/proxy in the same critical window on tiny hosts.
         if [[ "$INSTALL_XRAY" -eq 1 ]]; then
-            install_xray || echo -e "${yellow}Xray-core 未安装${plain}"
+            if [[ "$MEM_TOTAL_MB" -lt 1500 ]]; then
+                echo -e "${yellow}内存 <1.5G：拒绝安装期装 Xray（面板稳定后用 --with-xray）${plain}"
+            else
+                install_xray || echo -e "${yellow}Xray-core 未安装${plain}"
+            fi
         fi
         if [[ "$INSTALL_PROXY" -eq 1 ]]; then
             if [[ "$MEM_TOTAL_MB" -lt 1500 ]]; then
-                echo -e "${yellow}内存 <1.5G：跳过安装期反代（请面板稳定后再装 Nginx/Caddy）${plain}"
+                echo -e "${yellow}内存 <1.5G：跳过安装期反代${plain}"
             else
                 install_reverse_proxy || true
             fi
@@ -986,16 +1041,13 @@ install_s-ui() {
 
     echo -e "${green}s-ui ${last_version}${plain} 安装完成"
     echo -e "安装摘要：模式=${INSTALL_MODE} 档位=${PROFILE} Xray=$([ "$INSTALL_XRAY" -eq 1 ] && echo 是 || echo 否) 反代=$([ "$INSTALL_PROXY" -eq 1 ] && echo "是(${PROXY_ENGINE})" || echo 否) 自动启内核=$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是) Swap=${SWAP_MB}MB"
-    if systemctl is-active --quiet s-ui 2>/dev/null; then
-        echo -e "面板地址：${green}"
-        GOMEMLIMIT=200MiB GOGC=40 /usr/local/s-ui/sui uri 2>/dev/null || true
-        echo -e "${plain}"
-    fi
+    echo -e "访问：浏览器打开 http://服务器IP:2095/app/  （默认 admin/admin）"
     if [[ "$SKIP_CORE" -eq 1 ]]; then
-        echo -e "${yellow}安全模式：请在面板配置入站后手动重启内核再启用代理。${plain}"
+        echo -e "${yellow}安全模式：配置入站后在面板内重启内核再启用代理。${plain}"
     fi
     echo -e ""
-    echo -e "${yellow}若仍关机/断连，请提供： free -h; swapon --show; dmesg | grep -iE 'oom|kill' | tail -30; journalctl -u s-ui -n 80 --no-pager${plain}"
+    echo -e "${yellow}若仍关机： free -h; swapon --show; dmesg | grep -iE 'oom|kill' | tail -30; journalctl -u s-ui -n 80 --no-pager${plain}"
+    echo -e "${blue}分析文档：https://github.com/Hhz0823/1s-ui/blob/main/docs/oom-reboot-analysis.md${plain}"
 }
 
 # ---- main ----
