@@ -8,15 +8,17 @@ plain='\033[0m'
 
 cur_dir=$(pwd)
 
-# Decision flags (set by analyze_vps)
+# Decision flags
+INSTALL_KIND=""              # minimal | full  （极简 | 全面服务端）
 INSTALL_PANEL=1
-INSTALL_XRAY=0               # never auto-install during panel setup (OOM risk)
-INSTALL_PROXY=0               # reverse proxy in front of panel (default off)
-PROXY_ENGINE=""               # caddy | nginx | ""
+INSTALL_XRAY=0
+INSTALL_PROXY=0
+INSTALL_AGENT=0              # copy sui-agent binary + unit
+PROXY_ENGINE=""              # caddy | nginx | ""
 PROXY_DOMAIN=""
 PROXY_EMAIL=""
-INSTALL_MODE="fresh"          # fresh | upgrade
-PROFILE="standard"            # tiny | low | standard | high
+INSTALL_MODE="fresh"         # fresh | upgrade
+PROFILE="standard"           # low | standard | high
 MEM_TOTAL_MB=0
 MEM_AVAIL_MB=0
 SWAP_MB=0
@@ -24,46 +26,55 @@ CPU_CORES=1
 DISK_FREE_MB=0
 FORCE_INSTALL=0
 AUTO_YES=0
-FORCE_XRAY=""                 # "" | 1 | 0
-FORCE_PROXY=""                # "" | 1 | 0
-SKIP_CORE=1                   # default: panel only, cores on-demand (safer)
-START_SERVICE=1               # start systemd unit after install
+FORCE_XRAY=""                # "" | 1 | 0
+FORCE_PROXY=""               # "" | 1 | 0
+SKIP_CORE=1                  # 1 = SUI_SKIP_CORE (panel web only)
+START_SERVICE=1
 REQUESTED_VERSION=""
 PORT80_FREE=1
 PORT443_FREE=1
-# Cluster control-plane (multi-server Agent hub) recommendation only.
-# Normal proxy panel can install on any size VPS.
+# Full/cluster recommendation
 CLUSTER_CPU_CORES=2
 CLUSTER_MEM_MB=2048
-
-# 检查 root 权限
-[[ $EUID -ne 0 ]] && echo -e "${red}致命错误：${plain}请使用 root 权限运行此脚本 \n " && exit 1
 
 usage() {
     cat <<EOF
 用法: install.sh [版本号] [选项]
 
-选项:
-  -y, --yes             非交互：接受推荐方案并安装
-  --with-xray           强制安装 Xray-core
-  --no-xray             跳过 Xray-core（仅 sing-box）
-  --with-proxy          安装反代（Caddy/Nginx，默认不装）
+安装模式（二选一，推荐显式指定）:
+  --minimal, --simple, -m   极简安装（类似 1.4.10：仅面板 + sing-box，无 Xray/反代/Agent）
+  --full, --complete, --server
+                            全面服务端（面板 + Xray + 反代 + Agent + 自动启内核）
+
+通用选项:
+  -y, --yes             非交互（未指定模式时默认 --minimal）
+  --with-xray           额外安装 Xray-core（可叠在极简上）
+  --no-xray             跳过 Xray-core
+  --with-proxy          安装反代（Caddy/Nginx）
   --no-proxy            不安装反代
-  --domain DOMAIN       反代域名（启用 HTTPS）
+  --domain DOMAIN       反代域名（HTTPS，多用于全面安装）
   --email EMAIL         ACME 邮箱（Caddy 可选）
-  --start-core          安装后自动启动 sing-box 内核（默认不启动，更安全）
-  --no-start            只安装文件，不 systemctl start
-  --force               兼容旧参数（已无硬性拦截，可忽略）
+  --start-core          安装后自动启动代理内核
+  --skip-core           仅面板 Web，不自动启内核（更安全）
+  --no-start            只装文件，不 systemctl start
+  --force               全面安装时跳过 2核2G 建议拦截
   -h, --help            显示帮助
 
-配置说明:
-  - 普通面板：任意配置均可安装（低配会默认不启内核、不装反代等更稳妥策略）
-  - 集群服务端（多服务器 Agent 控制面）：建议 ≥${CLUSTER_CPU_CORES:-2} 核 CPU + ≥${CLUSTER_MEM_MB:-2048}MB 内存
+对比:
+  极简  = 下载面板 → 解压 → 启动（像 1.4.10，低配友好）
+  全面  = 面板 + Xray + 反代 + Agent 二进制 + 自动启内核
+          建议 ≥${CLUSTER_CPU_CORES} 核 / ≥${CLUSTER_MEM_MB}MB（集群控制面）
 
 示例:
+  # 极简（推荐日常/小机器）
+  bash install.sh -y --minimal
+  bash install.sh v1.5.5 -y -m
+
+  # 全面服务端（生产/多节点控制面）
+  bash install.sh -y --full --domain panel.example.com --email a@b.com
+
+  # 交互选择模式
   bash install.sh
-  bash install.sh v1.5.4 -y --no-xray --no-proxy
-  bash install.sh -y --with-proxy --domain panel.example.com --email a@b.com
 EOF
 }
 
@@ -73,6 +84,14 @@ parse_args() {
         case "$1" in
         -y | --yes)
             AUTO_YES=1
+            shift
+            ;;
+        --minimal | --simple | -m)
+            INSTALL_KIND="minimal"
+            shift
+            ;;
+        --full | --complete | --server)
+            INSTALL_KIND="full"
             shift
             ;;
         --with-xray)
@@ -101,6 +120,14 @@ parse_args() {
             ;;
         --start-core)
             SKIP_CORE=0
+            FORCE_START_CORE=1
+            FORCE_SKIP_CORE=0
+            shift
+            ;;
+        --skip-core)
+            SKIP_CORE=1
+            FORCE_SKIP_CORE=1
+            FORCE_START_CORE=0
             shift
             ;;
         --no-start)
@@ -131,17 +158,25 @@ parse_args() {
     fi
 }
 
-# 检查系统并设置 release 变量
-if [[ -f /etc/os-release ]]; then
-    source /etc/os-release
-    release=$ID
-elif [[ -f /usr/lib/os-release ]]; then
-    source /usr/lib/os-release
-    release=$ID
-else
-    echo "检测系统失败，请联系作者！" >&2
-    exit 1
-fi
+FORCE_SKIP_CORE=0
+FORCE_START_CORE=0
+
+release=""
+
+detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        # shellcheck source=/dev/null
+        source /etc/os-release
+        release=$ID
+    elif [[ -f /usr/lib/os-release ]]; then
+        # shellcheck source=/dev/null
+        source /usr/lib/os-release
+        release=$ID
+    else
+        echo "检测系统失败，请联系作者！" >&2
+        exit 1
+    fi
+}
 
 arch() {
     case "$(uname -m)" in
@@ -166,12 +201,7 @@ port_in_use() {
     return 1
 }
 
-analyze_vps() {
-    echo -e "${blue}========== VPS 预检分析 ==========${plain}"
-    echo -e "系统：${green}${PRETTY_NAME:-$release}${plain}"
-    echo -e "内核：$(uname -r)"
-    echo -e "架构：$(arch) ($(uname -m))"
-
+detect_resources() {
     local mem_kb avail_kb swap_kb
     mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
     avail_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
@@ -184,11 +214,6 @@ analyze_vps() {
     [[ -z "$DISK_FREE_MB" ]] && DISK_FREE_MB=$(df -Pm / 2>/dev/null | awk 'NR==2{print $4}')
     [[ -z "$DISK_FREE_MB" ]] && DISK_FREE_MB=0
 
-    echo -e "CPU：${CPU_CORES} 核"
-    echo -e "内存：总计 ${MEM_TOTAL_MB}MB / 可用 ${MEM_AVAIL_MB}MB / Swap ${SWAP_MB}MB"
-    echo -e "磁盘：/usr/local 可用约 ${DISK_FREE_MB}MB"
-
-    # Profile for install strategy (not a hard install gate)
     if [[ "$MEM_TOTAL_MB" -lt 900 || ( "$MEM_TOTAL_MB" -lt 1200 && "$SWAP_MB" -eq 0 ) || "$CPU_CORES" -lt 2 ]]; then
         PROFILE="low"
     elif [[ "$MEM_TOTAL_MB" -lt 2800 || "$CPU_CORES" -lt 4 ]]; then
@@ -196,95 +221,144 @@ analyze_vps() {
     else
         PROFILE="high"
     fi
-    echo -e "资源档位：${green}${PROFILE}${plain}"
 
-    # Existing installation
     if [[ -x /usr/local/s-ui/sui ]] || systemctl list-unit-files 2>/dev/null | grep -q '^s-ui\.service'; then
         INSTALL_MODE="upgrade"
-        echo -e "面板：${yellow}检测到已安装 s-ui，将执行升级${plain}"
     else
         INSTALL_MODE="fresh"
-        echo -e "面板：${green}未检测到面板，将全新安装普通面板${plain}"
     fi
 
-    # Port check
-    for p in 2095 2096 80 443; do
+    for p in 80 443; do
         if port_in_use "$p"; then
-            echo -e "端口 ${p}：${yellow}已被占用${plain}"
             [[ "$p" == "80" ]] && PORT80_FREE=0
             [[ "$p" == "443" ]] && PORT443_FREE=0
         else
-            echo -e "端口 ${p}：空闲"
             [[ "$p" == "80" ]] && PORT80_FREE=1
             [[ "$p" == "443" ]] && PORT443_FREE=1
         fi
     done
+}
 
-    # Conflicting proxies (informational)
-    for svc in x-ui 3x-ui v2ray xray sing-box nginx caddy; do
-        if systemctl is-active --quiet "$svc" 2>/dev/null; then
-            echo -e "运行中服务：${yellow}${svc}${plain}"
-        fi
-    done
-
-    # ---- Normal panel: always installable. Cluster hub: recommend 2c/2G only. ----
-    INSTALL_PANEL=1
-    if [[ "$DISK_FREE_MB" -gt 0 && "$DISK_FREE_MB" -lt 300 ]]; then
-        echo -e "${yellow}警告：磁盘可用约 ${DISK_FREE_MB}MB，空间偏紧，建议至少 500MB${plain}"
+choose_install_kind() {
+    if [[ -n "$INSTALL_KIND" ]]; then
+        return 0
     fi
+    if [[ "$AUTO_YES" -eq 1 ]]; then
+        INSTALL_KIND="minimal"
+        echo -e "${yellow}未指定模式且 -y：默认 ${green}极简安装 (--minimal)${plain}"
+        return 0
+    fi
+    echo -e "${blue}========== 选择安装模式 ==========${plain}"
+    echo -e "  ${green}1) 极简安装${plain}  —— 类似 1.4.10：只装面板 + sing-box"
+    echo -e "                 不装 Xray / 反代 / Agent，流程短、低配友好"
+    echo -e "  ${green}2) 全面服务端${plain} —— 面板 + Xray + 反代 + Agent + 自动启内核"
+    echo -e "                 适合生产 / 多节点集群控制面（建议 ≥2核2G）"
+    echo -e "${blue}=================================${plain}"
+    read -r -p "请选择 [1/2]，默认 1: " kind_ans
+    case "${kind_ans}" in
+    2 | full | Full | FULL | f | F)
+        INSTALL_KIND="full"
+        ;;
+    *)
+        INSTALL_KIND="minimal"
+        ;;
+    esac
+}
 
-    if [[ "$CPU_CORES" -lt "$CLUSTER_CPU_CORES" || "$MEM_TOTAL_MB" -lt "$CLUSTER_MEM_MB" ]]; then
-        echo -e "普通面板：${green}可安装（无硬性最低配置）${plain}"
-        echo -e "集群服务端（多服务器 Agent 控制面）：${yellow}建议 ≥${CLUSTER_CPU_CORES} 核 / ≥${CLUSTER_MEM_MB}MB${plain}"
-        echo -e "  当前 ${CPU_CORES} 核 / ${MEM_TOTAL_MB}MB — 作普通代理面板即可；若要当集群控制端，请升级 VPS"
+# Apply component defaults from INSTALL_KIND, then honor FORCE_* overrides.
+apply_kind_defaults() {
+    local xray_reason="" proxy_reason="" core_reason=""
+
+    if [[ "$INSTALL_KIND" == "full" ]]; then
+        INSTALL_XRAY=1
+        INSTALL_PROXY=1
+        INSTALL_AGENT=1
+        SKIP_CORE=0
+        xray_reason="全面服务端：安装 Xray-core"
+        proxy_reason="全面服务端：安装反代"
+        core_reason="全面服务端：自动启动代理内核"
+        # 2c2G soft gate for full/cluster-style install
+        if [[ "$CPU_CORES" -lt "$CLUSTER_CPU_CORES" || "$MEM_TOTAL_MB" -lt "$CLUSTER_MEM_MB" ]]; then
+            echo -e "${yellow}全面服务端建议 ≥${CLUSTER_CPU_CORES} 核 / ≥${CLUSTER_MEM_MB}MB，当前 ${CPU_CORES} 核 / ${MEM_TOTAL_MB}MB${plain}"
+            if [[ "$FORCE_INSTALL" -eq 1 ]]; then
+                echo -e "${yellow}已 --force，继续全面安装（OOM 风险高）${plain}"
+            elif [[ "$AUTO_YES" -eq 1 ]]; then
+                echo -e "${red}非交互全面安装且配置不足：请加 --force，或改用 --minimal${plain}"
+                exit 1
+            else
+                read -r -p "配置偏低，仍要全面安装？[y/N]: " low_ok
+                if [[ "${low_ok}" != "y" && "${low_ok}" != "Y" ]]; then
+                    echo -e "${yellow}已取消。可改用： bash install.sh -y --minimal${plain}"
+                    exit 0
+                fi
+            fi
+        fi
     else
-        echo -e "配置检查：${green}满足普通面板，也满足集群服务端建议（≥${CLUSTER_CPU_CORES} 核 / ≥${CLUSTER_MEM_MB}MB）${plain}"
-    fi
-
-    if [[ "$PROFILE" == "low" ]]; then
-        echo -e "${yellow}低配策略：默认不启代理内核、不装反代/Xray，优先保证面板 Web 能装能跑${plain}"
-    fi
-
-    # Xray: NEVER auto-install during panel install (zip + geo files spike RAM).
-    # Install later with --with-xray when the panel is already stable.
-    INSTALL_XRAY=0
-    local xray_reason="默认不装 Xray（安装期下载/解压易 OOM；稳定后可用 --with-xray）"
-    if [[ -z "$(xray_asset)" ]]; then
-        xray_reason="当前架构无自动 Xray 包"
-    fi
-
-    # Explicit overrides
-    if [[ "$FORCE_XRAY" == "1" ]]; then
-        if [[ "$MEM_TOTAL_MB" -lt 1500 && "$FORCE_INSTALL" -ne 1 ]]; then
-            INSTALL_XRAY=0
-            xray_reason="内存 <1.5G，拒绝安装期装 Xray（加 --force 可强行）"
+        # minimal — 1.4.10-style: panel + sing-box only
+        INSTALL_KIND="minimal"
+        INSTALL_XRAY=0
+        INSTALL_PROXY=0
+        INSTALL_AGENT=0
+        # Like 1.4.10: start cores with panel. On very low RAM keep safe skip.
+        if [[ "$PROFILE" == "low" ]]; then
+            SKIP_CORE=1
+            core_reason="极简+低配：默认不启内核（防 OOM；可用 --start-core）"
         else
-            INSTALL_XRAY=1
-            xray_reason="用户指定 --with-xray"
+            SKIP_CORE=0
+            core_reason="极简：启动面板时加载 sing-box（同 1.4.10）"
         fi
+        xray_reason="极简：不装 Xray（可用 --with-xray）"
+        proxy_reason="极简：不装反代（可用 --with-proxy --domain ...）"
+    fi
+
+    # Explicit core flags win over kind defaults
+    if [[ "$FORCE_SKIP_CORE" -eq 1 ]]; then
+        SKIP_CORE=1
+        core_reason="用户指定 --skip-core"
+    elif [[ "$FORCE_START_CORE" -eq 1 ]]; then
+        SKIP_CORE=0
+        core_reason="用户指定 --start-core"
+    fi
+
+    # Explicit component overrides
+    if [[ "$FORCE_XRAY" == "1" ]]; then
+        INSTALL_XRAY=1
+        xray_reason="用户指定 --with-xray"
     elif [[ "$FORCE_XRAY" == "0" ]]; then
         INSTALL_XRAY=0
         xray_reason="用户指定 --no-xray"
     fi
+    if [[ -z "$(xray_asset)" && "$INSTALL_XRAY" -eq 1 ]]; then
+        INSTALL_XRAY=0
+        xray_reason="当前架构无自动 Xray 包"
+    fi
 
-    # Reverse proxy: OFF by default (installing Caddy/Nginx has caused instability on some VPS).
-    INSTALL_PROXY=0
-    PROXY_ENGINE=""
-    local proxy_reason="默认不装反代（避免安装期额外服务拖垮机器）"
-    if [[ "$FORCE_PROXY" == "1" || -n "$PROXY_DOMAIN" ]]; then
-        local has_nginx=0 has_caddy=0
-        systemctl is-active --quiet nginx 2>/dev/null && has_nginx=1
-        systemctl is-active --quiet caddy 2>/dev/null && has_caddy=1
-        if [[ "$PORT80_FREE" -ne 1 && "$has_nginx" -ne 1 && "$has_caddy" -ne 1 ]]; then
+    if [[ "$FORCE_PROXY" == "1" || ( "$INSTALL_KIND" == "full" && "$FORCE_PROXY" != "0" ) || -n "$PROXY_DOMAIN" ]]; then
+        if [[ "$FORCE_PROXY" == "0" ]]; then
             INSTALL_PROXY=0
-            proxy_reason="80 端口占用且无现成反代，跳过"
+            PROXY_ENGINE=""
+            proxy_reason="用户指定 --no-proxy"
         else
-            INSTALL_PROXY=1
-            PROXY_ENGINE="caddy"
-            [[ "$PROFILE" == "standard" && "$MEM_TOTAL_MB" -lt 3000 ]] && PROXY_ENGINE="nginx"
-            [[ "$has_nginx" -eq 1 ]] && PROXY_ENGINE="nginx"
-            [[ "$has_caddy" -eq 1 ]] && PROXY_ENGINE="caddy"
-            proxy_reason="用户要求启用反代（${PROXY_ENGINE}）"
+            local has_nginx=0 has_caddy=0
+            systemctl is-active --quiet nginx 2>/dev/null && has_nginx=1
+            systemctl is-active --quiet caddy 2>/dev/null && has_caddy=1
+            if [[ "$PORT80_FREE" -ne 1 && "$has_nginx" -ne 1 && "$has_caddy" -ne 1 && -z "$PROXY_DOMAIN" ]]; then
+                if [[ "$INSTALL_KIND" == "full" ]]; then
+                    INSTALL_PROXY=1
+                    PROXY_ENGINE="nginx"
+                    proxy_reason="全面安装：80 占用仍尝试配置 Nginx（可能需手工改端口）"
+                else
+                    INSTALL_PROXY=0
+                    proxy_reason="80 端口占用且无现成反代，跳过"
+                fi
+            else
+                INSTALL_PROXY=1
+                PROXY_ENGINE="caddy"
+                [[ "$MEM_TOTAL_MB" -lt 3000 ]] && PROXY_ENGINE="nginx"
+                [[ "$has_nginx" -eq 1 ]] && PROXY_ENGINE="nginx"
+                [[ "$has_caddy" -eq 1 ]] && PROXY_ENGINE="caddy"
+                proxy_reason="启用反代（${PROXY_ENGINE}）"
+            fi
         fi
     fi
     if [[ "$FORCE_PROXY" == "0" ]]; then
@@ -293,55 +367,46 @@ analyze_vps() {
         proxy_reason="用户指定 --no-proxy"
     fi
 
-    # Core auto-start: default SKIP to prevent OOM power-offs on small VPS.
-    # High-memory hosts may enable cores with --start-core.
-    if [[ "$SKIP_CORE" -eq 0 ]]; then
+    # --start-core / --skip-core already applied via SKIP_CORE / FORCE_SKIP_CORE
+    if [[ "$FORCE_SKIP_CORE" -eq 0 ]]; then
+        # allow --start-core parsed as SKIP_CORE=0 before apply
         :
-    elif [[ "$PROFILE" == "high" && "$MEM_AVAIL_MB" -ge 1500 ]]; then
-        # Still default skip unless --start-core; keep safe.
-        SKIP_CORE=1
-    else
-        SKIP_CORE=1
     fi
 
-    echo -e "推荐：普通面板=${green}${INSTALL_PANEL}${plain}  Xray=${green}${INSTALL_XRAY}${plain}  反代=${green}${INSTALL_PROXY}${plain}$([ "$INSTALL_PROXY" -eq 1 ] && echo "(${PROXY_ENGINE})" || true)  自动启内核=${green}$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是)${plain}"
-    echo -e "Xray 原因：${xray_reason}"
-    echo -e "反代 原因：${proxy_reason}"
-    echo -e "内核策略：${yellow}默认不自动启动 sing-box/Xray，仅启动面板 Web，避免 OOM 关机${plain}"
-    echo -e "${blue}=================================${plain}"
+    echo -e "${blue}========== 安装方案 ==========${plain}"
+    echo -e "系统：${green}${PRETTY_NAME:-$release}${plain} | 架构：$(arch) | 内核：$(uname -r)"
+    echo -e "资源：${CPU_CORES} 核 / 内存 ${MEM_TOTAL_MB}MB（可用 ${MEM_AVAIL_MB}MB）/ Swap ${SWAP_MB}MB / 磁盘约 ${DISK_FREE_MB}MB"
+    echo -e "档位：${PROFILE} | 面板：${INSTALL_MODE}"
+    if [[ "$INSTALL_KIND" == "full" ]]; then
+        echo -e "模式：${green}全面服务端 (--full)${plain}"
+    else
+        echo -e "模式：${green}极简安装 (--minimal)${plain}"
+    fi
+    echo -e "组件：Xray=$([ "$INSTALL_XRAY" -eq 1 ] && echo 是 || echo 否)  反代=$([ "$INSTALL_PROXY" -eq 1 ] && echo "是(${PROXY_ENGINE:-?})" || echo 否)  Agent=$([ "$INSTALL_AGENT" -eq 1 ] && echo 是 || echo 否)  自动启内核=$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是)"
+    echo -e "  Xray：${xray_reason}"
+    echo -e "  反代：${proxy_reason}"
+    echo -e "  内核：${core_reason}"
+    echo -e "${blue}==============================${plain}"
 
     if [[ "$AUTO_YES" -ne 1 ]]; then
-        echo -e "将按以上方案安装（模式: ${INSTALL_MODE}, 档位: ${PROFILE}）。"
-        read -r -p "确认继续？[Y/n]: " confirm
+        read -r -p "确认按此方案安装？[Y/n]: " confirm
         if [[ "${confirm}" == "n" || "${confirm}" == "N" ]]; then
             echo "已取消。"
             exit 0
         fi
-        if [[ "$INSTALL_XRAY" -eq 0 && "$FORCE_XRAY" == "" ]]; then
-            read -r -p "是否安装 Xray-core 二进制？[y/N]: " xans
-            if [[ "${xans}" == "y" || "${xans}" == "Y" ]]; then
-                INSTALL_XRAY=1
-            fi
-        fi
-        if [[ "$INSTALL_PROXY" -eq 0 && "$FORCE_PROXY" == "" && "$PORT80_FREE" -eq 1 ]]; then
-            read -r -p "是否安装反向代理（Caddy/Nginx）？[y/N]: " pans
-            if [[ "${pans}" == "y" || "${pans}" == "Y" ]]; then
-                INSTALL_PROXY=1
-                PROXY_ENGINE="caddy"
-                [[ "$PROFILE" == "standard" && "$MEM_TOTAL_MB" -lt 3000 ]] && PROXY_ENGINE="nginx"
-                read -r -p "反代域名（可留空）：" PROXY_DOMAIN
-                if [[ -n "$PROXY_DOMAIN" ]]; then
-                    read -r -p "ACME 邮箱（可留空）：" PROXY_EMAIL
-                fi
-            fi
-        fi
-        if [[ "$SKIP_CORE" -eq 1 ]]; then
-            read -r -p "是否在安装后自动启动代理内核？[y/N]: " cans
-            if [[ "${cans}" == "y" || "${cans}" == "Y" ]]; then
-                SKIP_CORE=0
+        if [[ "$INSTALL_KIND" == "full" && -z "$PROXY_DOMAIN" && "$INSTALL_PROXY" -eq 1 ]]; then
+            read -r -p "反代域名（可留空，仅 HTTP:80）：" PROXY_DOMAIN
+            if [[ -n "$PROXY_DOMAIN" ]]; then
+                read -r -p "ACME 邮箱（可留空）：" PROXY_EMAIL
             fi
         fi
     fi
+}
+
+analyze_vps() {
+    detect_resources
+    choose_install_kind
+    apply_kind_defaults
 }
 
 apply_systemd_optimize() {
@@ -909,16 +974,18 @@ install_s-ui() {
     rm -rf /tmp/s-ui-extract
     mkdir -p /tmp/s-ui-extract
 
-    # Selective extract: only panel binary + unit + helper. Skip sui-agent (~6.6MB)
-    # and anything else so peak disk/page-cache is one 90MB file, not two.
-    echo -e "${yellow}选择性解压（仅 sui + service，跳过 agent）...${plain}"
+    # Selective extract: panel files always; agent only for full server.
+    local members=(s-ui/sui s-ui/s-ui.service s-ui/s-ui.sh)
+    if [[ "$INSTALL_AGENT" -eq 1 ]]; then
+        members+=(s-ui/sui-agent s-ui/s-ui-agent.service)
+        echo -e "${yellow}解压面板 + Agent（全面服务端）...${plain}"
+    else
+        echo -e "${yellow}选择性解压（极简：仅 sui + service，跳过 agent）...${plain}"
+    fi
     local extract_ok=0
-    if tar xzf "$tarball" -C /tmp/s-ui-extract s-ui/sui s-ui/s-ui.service s-ui/s-ui.sh 2>/dev/null; then
-        extract_ok=1
-    elif tar xzf "$tarball" -C /tmp/s-ui-extract sui s-ui.service s-ui.sh 2>/dev/null; then
+    if tar xzf "$tarball" -C /tmp/s-ui-extract "${members[@]}" 2>/dev/null; then
         extract_ok=1
     else
-        # Fallback: full extract (older layouts)
         echo -e "${yellow}选择性解压失败，回退完整解压${plain}"
         tar xzf "$tarball" -C /tmp/s-ui-extract || extract_ok=0
         [[ -f /tmp/s-ui-extract/s-ui/sui || -f /tmp/s-ui-extract/sui ]] && extract_ok=1
@@ -941,7 +1008,6 @@ install_s-ui() {
     fi
 
     mkdir -p /usr/local/s-ui /usr/local/s-ui/db /usr/local/s-ui/bin
-    # Single copy of the heavy binary into place, then delete extract tree immediately.
     cp -f "$src_dir/sui" /usr/local/s-ui/sui
     chmod +x /usr/local/s-ui/sui
     if [[ -f "$src_dir/s-ui.sh" ]]; then
@@ -954,11 +1020,11 @@ install_s-ui() {
     elif [[ -f /tmp/s-ui-extract/s-ui.service ]]; then
         cp -f /tmp/s-ui-extract/s-ui.service /etc/systemd/system/s-ui.service
     fi
-    # Never install agent binary during low-memory panel install (optional later).
-    if [[ "$MEM_TOTAL_MB" -ge 2048 && -f "$src_dir/sui-agent" ]]; then
+    if [[ "$INSTALL_AGENT" -eq 1 && -f "$src_dir/sui-agent" ]]; then
         cp -f "$src_dir/sui-agent" /usr/local/s-ui/sui-agent
         chmod +x /usr/local/s-ui/sui-agent
         [[ -f "$src_dir/s-ui-agent.service" ]] && cp -f "$src_dir/s-ui-agent.service" /etc/systemd/system/
+        echo -e "${green}已安装 sui-agent 二进制（全面服务端）${plain}"
     fi
     rm -rf /tmp/s-ui-extract
     free_page_cache
@@ -1040,23 +1106,38 @@ install_s-ui() {
     fi
 
     echo -e "${green}s-ui ${last_version}${plain} 安装完成"
-    echo -e "安装摘要：模式=${INSTALL_MODE} 档位=${PROFILE} Xray=$([ "$INSTALL_XRAY" -eq 1 ] && echo 是 || echo 否) 反代=$([ "$INSTALL_PROXY" -eq 1 ] && echo "是(${PROXY_ENGINE})" || echo 否) 自动启内核=$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是) Swap=${SWAP_MB}MB"
+    local kind_label="极简"
+    [[ "$INSTALL_KIND" == "full" ]] && kind_label="全面服务端"
+    echo -e "安装摘要：方案=${green}${kind_label}${plain} 升级=${INSTALL_MODE} 档位=${PROFILE}"
+    echo -e "  Xray=$([ "$INSTALL_XRAY" -eq 1 ] && echo 是 || echo 否) 反代=$([ "$INSTALL_PROXY" -eq 1 ] && echo "是(${PROXY_ENGINE})" || echo 否) Agent=$([ "$INSTALL_AGENT" -eq 1 ] && echo 是 || echo 否) 自动启内核=$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是) Swap=${SWAP_MB}MB"
     echo -e "访问：浏览器打开 http://服务器IP:2095/app/  （默认 admin/admin）"
     if [[ "$SKIP_CORE" -eq 1 ]]; then
         echo -e "${yellow}安全模式：配置入站后在面板内重启内核再启用代理。${plain}"
     fi
+    if [[ "$INSTALL_KIND" == "minimal" ]]; then
+        echo -e "${yellow}当前为极简安装。若需全面服务端可重新执行：${plain}"
+        echo -e "  bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --full --domain 你的域名"
+    fi
     echo -e ""
     echo -e "${yellow}若仍关机： free -h; swapon --show; dmesg | grep -iE 'oom|kill' | tail -30; journalctl -u s-ui -n 80 --no-pager${plain}"
-    echo -e "${blue}分析文档：https://github.com/Hhz0823/1s-ui/blob/main/docs/oom-reboot-analysis.md${plain}"
 }
 
 # ---- main ----
 parse_args "$@"
+# root required for install (--help exits earlier in parse_args)
+[[ $EUID -ne 0 ]] && echo -e "${red}致命错误：${plain}请使用 root 权限运行此脚本 \n " && exit 1
+detect_os
 echo -e "${green}1S-UI 安装程序${plain}"
 echo -e "当前系统发行版为：${release}"
 echo -e "架构：$(arch)"
 analyze_vps
-# Swap as early as possible (before apt / downloads)
-ensure_swap_if_needed || true
+
+# Swap: always for full; for minimal only when low RAM (OOM guard)
+if [[ "$INSTALL_KIND" == "full" ]]; then
+    ensure_swap_if_needed || true
+elif [[ "$MEM_TOTAL_MB" -lt 1500 ]]; then
+    ensure_swap_if_needed || true
+fi
+
 install_base
 install_s-ui

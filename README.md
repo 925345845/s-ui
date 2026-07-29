@@ -91,28 +91,37 @@ Agent **主动出站**连面板，节点上不开放控制端口。
 
 ### 快速安装
 
-安装脚本会**先分析 VPS**，再决定是否安装服务端、Xray、以及反向代理（Caddy/Nginx）。
+安装脚本提供两种方案（也可交互选择）：
+
+| 模式 | 参数 | 包含 | 适用 |
+| --- | --- | --- | --- |
+| **极简安装** | `--minimal` / `-m` | 面板 + sing-box（类似 1.4.10） | 日常 / 小机器 / 只做代理面板 |
+| **全面服务端** | `--full` | 面板 + Xray + 反代 + Agent + 自动启内核 | 生产 / 多节点控制面（建议 ≥2核2G） |
 
 ```bash
-# 最新版（交互预检）
+# 交互选择：1 极简 / 2 全面
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 
-# 指定版本
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.4
+# 极简（推荐，非交互；-y 未指定模式时也默认极简）
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --minimal
 
-# 非交互 + 不装 Xray + 启用反代（域名 HTTPS）
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --no-xray --with-proxy --domain panel.example.com --email a@b.com
+# 指定版本极简
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.5 -y -m
+
+# 全面服务端 + 域名 HTTPS
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --full --domain panel.example.com --email a@b.com
 ```
 
-| 条件 | 普通面板 | Xray | 反代 | 说明 |
-| --- | --- | --- | --- | --- |
-| 任意规格（含 1 核 / 1GB） | **可安装** | 默认否 | 默认否 | 低配更保守，默认不启内核 |
-| standard（约 2 核 2G+） | 是 | 有 Swap 时可装 | 可选（默认否） | 可作普通面板；作集群控制面更合适 |
-| high（≥4 核且内存充足） | 是 | 建议装 | 可选 Caddy HTTPS | 适合集群服务端 + 双内核 |
+| 组件 | 极简 | 全面 |
+| --- | --- | --- |
+| 面板 Web / sing-box | 是 | 是 |
+| Xray-core | 否（可加 `--with-xray`） | 是 |
+| Caddy/Nginx 反代 | 否（可加 `--with-proxy`） | 是 |
+| sui-agent 二进制 | 否 | 是 |
+| 自动启动代理内核 | 是（低配自动 skip） | 是 |
+| 建议配置 | 任意 | ≥2 核 2G |
 
-**配置区分：** 普通代理面板无硬性最低配置；**集群服务端**（接入多服务器 Agent 时）建议 ≥2 核 2G。
-
-覆盖推荐：`--with-xray` / `--no-xray` / `--with-proxy` / `--no-proxy` / `--domain` / `--start-core`
+其它开关：`--no-xray` / `--no-proxy` / `--skip-core` / `--start-core` / `--domain` / `--force`
 
 反代启用后，面板默认仅监听 `127.0.0.1`，通过 80/443 访问 `/app/`。
 
