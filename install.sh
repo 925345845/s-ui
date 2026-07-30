@@ -86,7 +86,7 @@ usage() {
 示例:
   # 极简（推荐日常/小机器）
   bash install.sh -y --minimal
-  bash install.sh v1.5.6 -y -m
+  bash install.sh v1.5.7 -y -m
 
   # 全面服务端（生产/多节点控制面）
   bash install.sh -y --full --domain panel.example.com --email a@b.com

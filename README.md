@@ -7,7 +7,7 @@
 [![sing-box](https://img.shields.io/badge/default%20core-sing--box-1677ff)](https://github.com/SagerNet/sing-box)
 [![Xray-core](https://img.shields.io/badge/optional%20core-Xray--core-28a745)](https://github.com/XTLS/Xray-core)
 
-**最新版本 Latest:** [v1.5.6](https://github.com/Hhz0823/1s-ui/releases/tag/v1.5.6)
+**最新版本 Latest:** [v1.5.7](https://github.com/Hhz0823/1s-ui/releases/tag/v1.5.7)
 
 基于 [S-UI](https://github.com/alireza0/s-ui) 二次开发的现代代理管理面板。默认内核 **sing-box**，入站可切换 **Xray-core**；面向 Linux 服务器（Ubuntu / Debian），提供 Web 管理、订阅、TLS 自动化、一键中转，以及类似哪吒 / Komari 的多服务器 Agent 监控与远程控制。
 
@@ -108,7 +108,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --minimal
 
 # 指定版本极简
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.6 -y -m
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.7 -y -m
 
 # 全面服务端 + 域名 HTTPS
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --full --domain panel.example.com --email a@b.com
@@ -187,7 +187,7 @@ services:
 仅含 sing-box，无 Xray。从 [Releases](https://github.com/Hhz0823/1s-ui/releases/latest) 下载 `s-ui-lite_*.ipk`：
 
 ```bash
-opkg install ./s-ui-lite_1.5.4-1_x86_64.ipk
+opkg install ./s-ui-lite_1.5.7-1_x86_64.ipk
 /etc/init.d/s-ui-lite enable
 /etc/init.d/s-ui-lite start
 ```
@@ -207,12 +207,12 @@ opkg install ./s-ui-lite_1.5.4-1_x86_64.ipk
 | **服务器监控** | Agent 列表、详情、控制、终端、批量 |
 | 管理员 / 设置 | 账号 Token、面板与系统网络参数 |
 
-### v1.5.4 变更
+### v1.5.7 变更
 
-- 扩展 Xray 入站（含 WireGuard）与自检展示
-- Agent：WebSocket 控制面、交互终端、多节点批量指令
-- 更丰富的节点指标（带宽、负载、进程数等）
-- 文档与默认安装版本对齐 `v1.5.4`
+- IPv6 中转创建前逐个验证真实公网出口；不可用时回滚，不再生成无法连接的节点
+- 一键创建数量统一限制为 1–100，并提供多语言页面提示
+- 单核且内存不少于 1500MB 的极简安装会正常启动 sing-box
+- 全面服务端与 Agent 继续保持 2 核 2GB 硬性门槛
 
 ---
 
@@ -246,7 +246,7 @@ opkg install ./s-ui-lite_1.5.4-1_x86_64.ipk
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 # or
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.6
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.7
 ```
 
 Defaults: panel `2095` `/app/`, sub `2096` `/sub/`, DB `/usr/local/s-ui/db`, login `admin`/`admin` (change immediately).
@@ -273,17 +273,18 @@ docker run -itd --network host \
 ### OpenWrt Lite
 
 ```bash
-opkg install ./s-ui-lite_1.5.4-1_x86_64.ipk
+opkg install ./s-ui-lite_1.5.7-1_x86_64.ipk
 /etc/init.d/s-ui-lite enable && /etc/init.d/s-ui-lite start
 ```
 
 See [docs/openwrt-lite.md](docs/openwrt-lite.md).
 
-### v1.5.4 highlights
+### v1.5.7 highlights
 
-- Broader Xray inbound set + self-check
-- Agent control plane (WS), PTY terminal, batch commands
-- Richer host metrics
+- Validate every generated IPv6 egress before relay creation and roll back unreachable addresses
+- Enforce a consistent 1–100 quick-create limit with localized UI feedback
+- Start sing-box in minimal mode on single-core hosts with at least 1500MB RAM
+- Keep the full server and Agent control plane hard-gated at 2 vCPU and 2GB RAM
 
 ---
 
@@ -292,7 +293,7 @@ See [docs/openwrt-lite.md](docs/openwrt-lite.md).
 [S-UI](https://github.com/alireza0/s-ui) ベースのプロキシ管理パネル。標準は sing-box、入站ごとに Xray-core を選択可能。主に Ubuntu / Debian 向け。v1.5 では Agent による監視・遠隔操作・対話型ターミナルに対応。
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.6
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.7
 ```
 
 Docker: `ghcr.io/Hhz0823/1s-ui`（`network_mode: host` 推奨）。OpenWrt Lite は実験版（sing-box のみ）。詳細は上の English / 中文 を参照。
@@ -304,7 +305,7 @@ Docker: `ghcr.io/Hhz0823/1s-ui`（`network_mode: host` 推奨）。OpenWrt Lite 
 [S-UI](https://github.com/alireza0/s-ui) 기반 프록시 관리 패널. 기본 코어 sing-box, 인바운드별 Xray-core 선택. 주로 Ubuntu/Debian 지원. v1.5: Agent 모니터링·원격 제어·대화형 터미널·다중 노드 일괄 명령.
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.6
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.7
 ```
 
 Docker: `ghcr.io/Hhz0823/1s-ui`. OpenWrt Lite는 실험 버전. 자세한 내용은 위 중문/영문 섹션 참고.
