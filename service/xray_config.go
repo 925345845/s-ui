@@ -861,6 +861,16 @@ func buildXrayStreamSettings(inbound *model.Inbound, transport map[string]interf
 		"network": network,
 	}
 
+	if network == "xhttp" || network == "ws" || network == "grpc" || network == "httpupgrade" {
+		trustedHeaders := toStringSlice(transport["trusted_x_forwarded_for"])
+		if len(trustedHeaders) == 0 {
+			trustedHeaders = []string{"X-1S-UI-Trusted-XFF"}
+		}
+		stream["sockopt"] = map[string]interface{}{
+			"trustedXForwardedFor": trustedHeaders,
+		}
+	}
+
 	switch network {
 	case "xhttp":
 		stream["xhttpSettings"] = map[string]interface{}{

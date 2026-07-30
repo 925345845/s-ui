@@ -42,7 +42,32 @@ func TestBuildXrayStreamSettingsCurrentTransports(t *testing.T) {
 					t.Fatalf("websocket host uses obsolete shape: %#v", settings)
 				}
 			}
+			if test.network == "xhttp" || test.network == "ws" || test.network == "grpc" || test.network == "httpupgrade" {
+				sockopt := stream["sockopt"].(map[string]interface{})
+				headers := sockopt["trustedXForwardedFor"].([]string)
+				if len(headers) != 1 || headers[0] != "X-1S-UI-Trusted-XFF" {
+					t.Fatalf("trusted XFF guard was not generated: %#v", sockopt)
+				}
+			}
 		})
+	}
+}
+
+func TestBuildXrayStreamSettingsKeepsCustomTrustedXFFHeaders(t *testing.T) {
+	stream, err := buildXrayStreamSettings(
+		&model.Inbound{},
+		map[string]interface{}{
+			"trusted_x_forwarded_for": []interface{}{"X-Real-IP", "CF-Connecting-IP"},
+		},
+		"xhttp",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sockopt := stream["sockopt"].(map[string]interface{})
+	headers := sockopt["trustedXForwardedFor"].([]string)
+	if !reflect.DeepEqual(headers, []string{"X-Real-IP", "CF-Connecting-IP"}) {
+		t.Fatalf("custom trusted XFF headers were lost: %#v", sockopt)
 	}
 }
 

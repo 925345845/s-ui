@@ -20,6 +20,7 @@ const Data = defineStore('Data', {
     clients: <any>[],
     tlsConfigs: <any[]>[],
     hostRequirements: <any>null,
+    lastCoreLog: "",
   }),
   getters: {
     hostMeetsRequirements(state): boolean {
@@ -39,13 +40,15 @@ const Data = defineStore('Data', {
         if (msg.obj.hostRequirements) {
           this.hostRequirements = msg.obj.hostRequirements
         }
-        if (msg.obj.lastLog) {
+        const lastCoreLog = msg.obj.lastLog || ""
+        if (lastCoreLog && lastCoreLog !== this.lastCoreLog) {
           push.error({
             title: i18n.global.t('error.core'),
             duration: 5000,
-            message: msg.obj.lastLog
+            message: lastCoreLog
           })
         }
+        this.lastCoreLog = lastCoreLog
         
         if (msg.obj.config) {
           this.setNewData(msg.obj)

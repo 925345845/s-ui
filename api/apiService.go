@@ -189,7 +189,7 @@ func (a *ApiService) getData(c *gin.Context) (interface{}, error) {
 
 	sysInfo := a.ServerService.GetSingboxInfo()
 	if sysInfo["running"] == false {
-		logs := a.ServerService.GetLogs("1", "debug")
+		logs := a.ServerService.GetLogs("1", "error")
 		if len(logs) > 0 {
 			data["lastLog"] = logs[0]
 		}

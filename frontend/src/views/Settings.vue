@@ -451,7 +451,7 @@ const normalizeUiChoice = (value: unknown, fallback: string, choices: readonly s
 
 const readUiPrefs = (): UiPrefs => ({
   menuPosition: normalizeUiChoice(localStorage.getItem('menuPosition'), 'side', uiPrefChoices.menuPosition),
-  uiStyle: normalizeUiChoice(localStorage.getItem('uiStyle'), 'glass', uiPrefChoices.uiStyle),
+  uiStyle: normalizeUiChoice(localStorage.getItem('uiStyle'), 'solid', uiPrefChoices.uiStyle),
   uiDensity: normalizeUiChoice(localStorage.getItem('uiDensity'), 'comfortable', uiPrefChoices.uiDensity),
   bgPreset: normalizeUiChoice(localStorage.getItem('bgPreset'), localStorage.getItem('bgImage') ? 'custom' : 'default', uiPrefChoices.bgPreset),
   bgImage: localStorage.getItem('bgImage') || '',
@@ -482,7 +482,7 @@ const menuPositionOptions = [
 ]
 const uiStyleModel = computed({
   get: () => uiPrefs.value.uiStyle,
-  set: (v: unknown) => setUiPref('uiStyle', normalizeUiChoice(v, 'glass', uiPrefChoices.uiStyle))
+  set: (v: unknown) => setUiPref('uiStyle', normalizeUiChoice(v, 'solid', uiPrefChoices.uiStyle))
 })
 const uiStyleOptions = [
   { title: i18n.global.t('setting.uiStyleGlass'), value: 'glass' },
@@ -733,7 +733,7 @@ const qdiscOptions = [
 ]
 
 const bbrVersion = computed({
-  get: () => settings.value.congestionAlgo ?? 'bbr',
+  get: () => settings.value.congestionAlgo || 'bbr',
   set: (v: string) => { settings.value.congestionAlgo = v }
 })
 

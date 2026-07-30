@@ -959,11 +959,11 @@ body,
   --app-new-control-blur: blur(16px) saturate(160%);
   --app-new-control-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
   --app-new-control-shadow-focus: 0 0 0 2px rgba(var(--v-theme-primary), 0.18), 0 8px 20px rgba(var(--v-theme-primary), 0.08);
-  --app-dialog-scrim-bg: rgba(15, 23, 42, 0.08);
-  --app-dialog-scrim-blur: blur(6px) saturate(112%);
-  --app-dialog-card-bg: rgba(255, 255, 255, 0.9);
+  --app-dialog-scrim-bg: rgba(15, 23, 42, 0.12);
+  --app-dialog-scrim-blur: blur(8px) saturate(112%);
+  --app-dialog-card-bg: rgba(255, 255, 255, 0.96);
   --app-dialog-card-border: rgba(15, 23, 42, 0.12);
-  --app-dialog-card-blur: blur(18px) saturate(172%);
+  --app-dialog-card-blur: blur(24px) saturate(172%);
   --app-dialog-radius: 20px;
   --app-dialog-control-radius: 14px;
   --app-dialog-button-radius: 12px;
@@ -1099,7 +1099,7 @@ body,
 /* Vuetify teleports dialogs outside .v-application and puts the active theme
    on the dialog itself. Resolve secondary-page surfaces in that scope. */
 .v-dialog {
-  --app-dialog-card-bg: rgba(var(--v-theme-surface), 0.9);
+  --app-dialog-card-bg: rgba(var(--v-theme-surface), 0.96);
   --app-dialog-card-border: rgba(var(--v-theme-on-surface), 0.14);
   --app-dialog-field-bg: rgba(var(--v-theme-on-surface), 0.07);
   --app-dialog-title-bg: rgba(var(--v-theme-on-surface), 0.045);
@@ -1112,8 +1112,17 @@ body,
   -webkit-backdrop-filter: var(--app-dialog-scrim-blur) !important;
 }
 
+/* The overlay container is teleported outside the app root. Keep a literal,
+   high-specificity blur fallback so secondary pages never show sharp content
+   through their glass surface. */
+.v-overlay-container > .v-dialog > .v-overlay__scrim {
+  backdrop-filter: blur(8px) saturate(112%) !important;
+  -webkit-backdrop-filter: blur(8px) saturate(112%) !important;
+}
+
 .v-dialog .v-card-text {
   max-height: min(70vh, 720px);
+  background: rgba(var(--v-theme-surface), 0.28);
   overflow: auto;
 }
 
@@ -1152,7 +1161,7 @@ body,
 }
 
 .ui-style--clear .v-dialog > .v-overlay__content > .v-card {
-  background: rgba(var(--v-theme-surface), 0.78) !important;
+  background: rgba(var(--v-theme-surface), 0.9) !important;
 }
 
 .v-dialog.v-theme--dark > .v-overlay__content > .v-card,

@@ -79,6 +79,7 @@ export interface XrayTransport {
   health_check_timeout?: number
   heartbeat_period?: number
   accept_proxy_protocol?: boolean
+  trusted_x_forwarded_for?: string[]
   mtu?: number
   tti?: number
   uplink_capacity?: number

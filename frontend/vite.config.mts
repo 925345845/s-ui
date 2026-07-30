@@ -3,9 +3,10 @@ import vue from '@vitejs/plugin-vue'
 import vuetify, { transformAssetUrls } from 'vite-plugin-vuetify'
 
 // Utilities
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import { fileURLToPath, URL } from 'node:url'
 import { randomBytes } from 'crypto'
+import postcss from 'postcss'
 
 function getUniqueFileName(template) {
   if (template.includes('.js') || template.includes('.css')) {
@@ -13,6 +14,30 @@ function getUniqueFileName(template) {
     return template.replace('[name]', hash)
   }
   return template
+}
+
+function preserveStandardBackdropFilter(): Plugin {
+  return {
+    name: 'preserve-standard-backdrop-filter',
+    enforce: 'post' as const,
+    generateBundle(_options, bundle) {
+      for (const asset of Object.values(bundle)) {
+        if (asset.type !== 'asset' || !asset.fileName.endsWith('.css')) continue
+        const source = typeof asset.source === 'string'
+          ? asset.source
+          : Buffer.from(asset.source).toString('utf8')
+        const root = postcss.parse(source)
+        root.walkDecls('-webkit-backdrop-filter', declaration => {
+          const previous = declaration.prev()
+          if (previous?.type === 'decl' &&
+              previous.prop === 'backdrop-filter' &&
+              previous.value === declaration.value) return
+          declaration.cloneBefore({ prop: 'backdrop-filter' })
+        })
+        asset.source = root.toString()
+      }
+    },
+  }
 }
 
 export default defineConfig({
@@ -26,7 +51,8 @@ export default defineConfig({
       styles: {
         configFile: 'src/styles/settings.scss',
       },
-    })
+    }),
+    preserveStandardBackdropFilter(),
   ],
   build: {
     manifest: false,

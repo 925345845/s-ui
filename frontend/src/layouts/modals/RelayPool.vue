@@ -428,9 +428,9 @@ watch(() => props.visible, (visible) => { if (visible) loadData() })
 </script>
 
 <style scoped>
-.relay-dialog { max-height: calc(100vh - 20px); display: flex; flex-direction: column; overflow: hidden !important; background: rgba(var(--v-theme-surface), 0.96) !important; }
-.relay-dialog > :deep(.v-card-title), .relay-dialog > :deep(.v-card-actions) { position: relative; z-index: 2; background: rgba(var(--v-theme-surface), 0.98) !important; }
-.relay-dialog-body { min-height: 0; overflow-y: auto !important; }
+.relay-dialog { max-height: calc(100vh - 20px); display: flex; flex-direction: column; overflow: hidden !important; background: rgba(var(--v-theme-surface), 0.985) !important; }
+.relay-dialog > :deep(.v-card-title), .relay-dialog > :deep(.v-card-actions) { position: relative; z-index: 2; background: rgba(var(--v-theme-surface), 0.99) !important; }
+.relay-dialog-body { min-height: 0; background: rgba(var(--v-theme-surface), 0.34); overflow-y: auto !important; }
 .relay-list { border: 1px solid rgba(var(--v-theme-on-surface), 0.08); border-radius: 10px; }
 .relay-quick-section { padding: 14px; border: 1px solid rgba(var(--v-theme-primary), 0.2); border-radius: 8px; background: rgba(var(--v-theme-primary), 0.045); }
 .relay-pool-actions { display: grid !important; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 40px; gap: 8px; }

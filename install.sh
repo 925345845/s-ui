@@ -75,18 +75,18 @@ usage() {
   --start-core          安装后自动启动代理内核
   --skip-core           仅面板 Web，不自动启内核（更安全）
   --no-start            只装文件，不 systemctl start
-  --force               全面安装时跳过 2核2G 建议拦截
+  --force               兼容旧命令；不能绕过全面服务端的 2核2G 硬门槛
   -h, --help            显示帮助
 
 对比:
   极简  = 下载面板 → 解压 → 启动（像 1.4.10，低配友好）
   全面  = 面板 + Xray + 反代 + Agent 二进制 + 自动启内核
-          建议 ≥${CLUSTER_CPU_CORES} 核 / ≥${CLUSTER_MEM_MB}MB（集群控制面）
+          要求 ≥${CLUSTER_CPU_CORES} 核 / ≥${CLUSTER_MEM_MB}MB（硬门槛）
 
 示例:
   # 极简（推荐日常/小机器）
   bash install.sh -y --minimal
-  bash install.sh v1.5.5 -y -m
+  bash install.sh v1.5.6 -y -m
 
   # 全面服务端（生产/多节点控制面）
   bash install.sh -y --full --domain panel.example.com --email a@b.com
@@ -335,7 +335,7 @@ choose_install_kind() {
     echo -e "  ${green}1) 极简安装${plain}  —— 类似 1.4.10：只装面板 + sing-box"
     echo -e "                 不装 Xray / 反代 / Agent，流程短、低配友好"
     echo -e "  ${green}2) 全面服务端${plain} —— 面板 + Xray + 反代 + Agent + 自动启内核"
-    echo -e "                 适合生产 / 多节点集群控制面（建议 ≥2核2G）"
+    echo -e "                 适合生产 / 多节点集群控制面（要求 ≥2核2G）"
     echo -e "${blue}=================================${plain}"
     read -r -p "请选择 [1/2]，默认 1: " kind_ans
     case "${kind_ans}" in
@@ -360,21 +360,14 @@ apply_kind_defaults() {
         xray_reason="全面服务端：安装 Xray-core"
         proxy_reason="全面服务端：安装反代"
         core_reason="全面服务端：自动启动代理内核"
-        # 2c2G soft gate for full/cluster-style install
+        # Full server/Agent control plane is a hard 2c2G gate.
         if [[ "$CPU_CORES" -lt "$CLUSTER_CPU_CORES" || "$MEM_TOTAL_MB" -lt "$CLUSTER_MEM_MB" ]]; then
-            echo -e "${yellow}全面服务端建议 ≥${CLUSTER_CPU_CORES} 核 / ≥${CLUSTER_MEM_MB}MB，当前 ${CPU_CORES} 核 / ${MEM_TOTAL_MB}MB${plain}"
+            echo -e "${red}全面服务端要求至少 ${CLUSTER_CPU_CORES} 核 / ${CLUSTER_MEM_MB}MB，当前 ${CPU_CORES} 核 / ${MEM_TOTAL_MB}MB。${plain}"
+            echo -e "${yellow}该配置只能安装极简面板：bash install.sh -y --minimal${plain}"
             if [[ "$FORCE_INSTALL" -eq 1 ]]; then
-                echo -e "${yellow}已 --force，继续全面安装（OOM 风险高）${plain}"
-            elif [[ "$AUTO_YES" -eq 1 ]]; then
-                echo -e "${red}非交互全面安装且配置不足：请加 --force，或改用 --minimal${plain}"
-                exit 1
-            else
-                read -r -p "配置偏低，仍要全面安装？[y/N]: " low_ok
-                if [[ "${low_ok}" != "y" && "${low_ok}" != "Y" ]]; then
-                    echo -e "${yellow}已取消。可改用： bash install.sh -y --minimal${plain}"
-                    exit 0
-                fi
+                echo -e "${yellow}--force 不会绕过服务器监控的 2核2G 门槛。${plain}"
             fi
+            return 1
         fi
         if [[ "$MEM_TOTAL_MB" -lt 1500 ]]; then
             SKIP_CORE=1
@@ -507,7 +500,7 @@ apply_kind_defaults() {
 analyze_vps() {
     detect_resources
     choose_install_kind
-    apply_kind_defaults
+    apply_kind_defaults || return 1
 }
 
 apply_systemd_optimize() {
@@ -1315,12 +1308,15 @@ detect_os
 echo -e "${green}1S-UI 安装程序${plain}"
 echo -e "当前系统发行版为：${release}"
 echo -e "架构：$(arch)"
-analyze_vps
+if ! analyze_vps; then
+    echo -e "${red}安装预检未通过，尚未下载或修改服务。${plain}"
+    exit 1
+fi
 
 # Single safety preparation; it is a no-op when memory or existing Swap is sufficient.
 if ! ensure_swap_if_needed; then
     echo -e "${red}低内存安全准备失败，已在下载/解压前停止。${plain}"
-    echo -e "${yellow}--force 只跳过全面模式的 2核2G 建议，不会绕过 OOM/磁盘保护。${plain}"
+    echo -e "${yellow}--force 不会绕过 2核2G、OOM、Swap 或磁盘保护。${plain}"
     exit 1
 fi
 

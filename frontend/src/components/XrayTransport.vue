@@ -49,6 +49,16 @@
       <v-col cols="12" sm="6" md="4" v-if="supportsProxyProtocol">
         <v-switch hide-details color="primary" label="Proxy Protocol" v-model="transport.accept_proxy_protocol"></v-switch>
       </v-col>
+      <v-col cols="12" sm="6" md="4" v-if="supportsTrustedXff">
+        <v-combobox
+          hide-details
+          chips
+          closable-chips
+          multiple
+          label="Trusted XFF Headers"
+          v-model="transport.trusted_x_forwarded_for"
+        ></v-combobox>
+      </v-col>
     </v-row>
   </v-card>
 </template>
@@ -85,15 +95,20 @@ export default {
     supportsProxyProtocol(): boolean {
       return ['raw', 'tcp', 'ws', 'httpupgrade'].includes(this.transport.type)
     },
+    supportsTrustedXff(): boolean {
+      return ['xhttp', 'ws', 'grpc', 'httpupgrade'].includes(this.transport.type)
+    },
   },
   watch: {
     'transport.type'(value: string) {
       if (value == 'xhttp') {
         this.transport.path = this.transport.path || '/xhttp'
         this.transport.mode = this.transport.mode || 'auto'
+        this.transport.trusted_x_forwarded_for = this.transport.trusted_x_forwarded_for || []
       } else if (value == 'grpc') {
         this.transport.service_name = this.transport.service_name || ''
         this.transport.authority = this.transport.authority || ''
+        this.transport.trusted_x_forwarded_for = this.transport.trusted_x_forwarded_for || []
       } else if (value == 'kcp') {
         this.transport.mtu = this.transport.mtu || 1350
         this.transport.tti = this.transport.tti || 50
@@ -103,6 +118,7 @@ export default {
         this.transport.max_sending_window = this.transport.max_sending_window || 2048
       } else if (['ws', 'httpupgrade'].includes(value)) {
         this.transport.path = this.transport.path || '/'
+        this.transport.trusted_x_forwarded_for = this.transport.trusted_x_forwarded_for || []
       }
     },
   },

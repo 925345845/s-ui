@@ -149,6 +149,7 @@
     selectOnline: "Select controllable",
     clearSelection: "Clear selection",
     batchResult: "Batch command results",
+    hostRequirement: "The server-monitoring control plane requires at least 2 CPU cores and 2 GiB RAM. Current: {cpu} cores / {memory} GiB. Upgrade the host or keep using the minimal panel.",
   },
   main: {
     tiles: "Tiles",

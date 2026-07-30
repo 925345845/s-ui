@@ -182,17 +182,27 @@ const (
 	MinClusterMemBytes = 2 * 1024 * 1024 * 1024 // 2 GiB
 )
 
-// GetHostRequirements reports host capacity vs cluster-server recommendation.
-// applies=true only when this panel is used as a cluster control plane (has Agent nodes).
-// Normal panel installs are always allowed; the web UI only warns when applies && !ok.
-func (s *ServerService) GetHostRequirements() map[string]interface{} {
+func currentClusterCapacity() (int, uint64) {
 	cpuCount := runtime.NumCPU()
 	var memTotal uint64
 	if memInfo, err := mem.VirtualMemory(); err == nil {
 		memTotal = memInfo.Total
 	}
+	return cpuCount, memTotal
+}
+
+func meetsClusterRequirements(cpuCount int, memTotal uint64) bool {
+	return cpuCount >= MinClusterCPUCores && memTotal >= MinClusterMemBytes
+}
+
+// GetHostRequirements reports host capacity vs the cluster-server minimum.
+// applies=true only when this panel is used as a cluster control plane (has Agent nodes).
+// Normal panel installs remain allowed, but creating the first Agent requires 2c2G.
+func (s *ServerService) GetHostRequirements() map[string]interface{} {
+	cpuCount, memTotal := currentClusterCapacity()
 	okCPU := cpuCount >= MinClusterCPUCores
 	okMem := memTotal >= MinClusterMemBytes
+	meetsCluster := meetsClusterRequirements(cpuCount, memTotal)
 	agentCount := 0
 	if db := database.GetDB(); db != nil {
 		var n int64
@@ -204,22 +214,23 @@ func (s *ServerService) GetHostRequirements() map[string]interface{} {
 	applies := agentCount > 0
 	ok := true
 	if applies {
-		ok = okCPU && okMem
+		ok = meetsCluster
 	}
 	return map[string]interface{}{
-		"mode":            map[bool]string{true: "cluster", false: "panel"}[applies],
-		"applies":         applies,
-		"agent_count":     agentCount,
-		"min_cpu_cores":   MinClusterCPUCores,
-		"min_mem_bytes":   uint64(MinClusterMemBytes),
-		"min_mem_gb":      2,
-		"cpu_cores":       cpuCount,
-		"mem_total_bytes": memTotal,
-		"ok_cpu":          okCPU,
-		"ok_mem":          okMem,
-		"ok":              ok,
-		// Meets the cluster recommendation regardless of whether cluster is active.
-		"meets_cluster_rec": okCPU && okMem,
+		"mode":              map[bool]string{true: "cluster", false: "panel"}[applies],
+		"applies":           applies,
+		"agent_count":       agentCount,
+		"min_cpu_cores":     MinClusterCPUCores,
+		"min_mem_bytes":     uint64(MinClusterMemBytes),
+		"min_mem_gb":        2,
+		"cpu_cores":         cpuCount,
+		"mem_total_bytes":   memTotal,
+		"ok_cpu":            okCPU,
+		"ok_mem":            okMem,
+		"ok":                ok,
+		"can_enable_agents": meetsCluster,
+		// Kept for frontend/API compatibility; this is now a hard minimum.
+		"meets_cluster_rec": meetsCluster,
 	}
 }
 

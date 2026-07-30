@@ -149,6 +149,7 @@
     selectOnline: "全选可控制节点",
     clearSelection: "清除选择",
     batchResult: "批量指令结果",
+    hostRequirement: "服务器监控控制面至少需要 2 核 CPU 和 2 GiB 内存。当前：{cpu} 核 / {memory} GiB；请升级配置或继续使用极简面板。",
   },
   main: {
     tiles: "信息卡",

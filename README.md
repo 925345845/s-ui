@@ -7,7 +7,7 @@
 [![sing-box](https://img.shields.io/badge/default%20core-sing--box-1677ff)](https://github.com/SagerNet/sing-box)
 [![Xray-core](https://img.shields.io/badge/optional%20core-Xray--core-28a745)](https://github.com/XTLS/Xray-core)
 
-**最新版本 Latest:** [v1.5.4](https://github.com/Hhz0823/1s-ui/releases/tag/v1.5.4)
+**最新版本 Latest:** [v1.5.6](https://github.com/Hhz0823/1s-ui/releases/tag/v1.5.6)
 
 基于 [S-UI](https://github.com/alireza0/s-ui) 二次开发的现代代理管理面板。默认内核 **sing-box**，入站可切换 **Xray-core**；面向 Linux 服务器（Ubuntu / Debian），提供 Web 管理、订阅、TLS 自动化、一键中转，以及类似哪吒 / Komari 的多服务器 Agent 监控与远程控制。
 
@@ -40,7 +40,7 @@ A modern proxy panel forked from S-UI: sing-box first, optional Xray-core per in
 | 默认内核 | [sing-box](https://github.com/SagerNet/sing-box) |
 | 可选内核 | [Xray-core](https://github.com/XTLS/Xray-core)（按入站选择） |
 | 普通面板 | **无硬性最低配置**，任意规格可安装（低配会更保守：默认不启内核/不装反代） |
-| **集群服务端**（多服务器 Agent 控制面） | **建议 2 核 CPU + 2GB 内存**（有 Agent 时 Web 会告警） |
+| **集群服务端**（多服务器 Agent 控制面） | **最低 2 核 CPU + 2GB 内存**（安装与 Agent 创建均硬性校验） |
 | 推荐配置 | 2 核 4GB + 1GB Swap |
 | 主维护平台 | Linux：Ubuntu、Debian、Docker |
 | 暂停 / 实验 | Windows 暂停维护；OpenWrt Lite 实验版 |
@@ -97,7 +97,7 @@ Agent **主动出站**连面板，节点上不开放控制端口。
 | 模式 | 参数 | 包含 | 适用 |
 | --- | --- | --- | --- |
 | **极简安装** | `--minimal` / `-m` | 面板 + sing-box（类似 1.4.10） | 日常 / 小机器 / 只做代理面板 |
-| **全面服务端** | `--full` | 面板 + Xray + 反代 + Agent + 自动启内核 | 生产 / 多节点控制面（建议 ≥2核2G） |
+| **全面服务端** | `--full` | 面板 + Xray + 反代 + Agent + 自动启内核 | 生产 / 多节点控制面（要求 ≥2核2G） |
 
 ```bash
 # 交互选择：1 极简 / 2 全面
@@ -107,7 +107,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --minimal
 
 # 指定版本极简
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.5 -y -m
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.6 -y -m
 
 # 全面服务端 + 域名 HTTPS
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --full --domain panel.example.com --email a@b.com
@@ -120,9 +120,9 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 | Caddy/Nginx 反代 | 否（可加 `--with-proxy`） | 是 |
 | sui-agent 二进制 | 否 | 是 |
 | 自动启动代理内核 | 是（低配自动 skip） | 是 |
-| 建议配置 | 任意 | ≥2 核 2G |
+| 最低配置 | 任意 | ≥2 核 2G（不可用 `--force` 绕过） |
 
-其它开关：`--no-xray` / `--no-proxy` / `--skip-core` / `--start-core` / `--domain` / `--force`
+其它开关：`--no-xray` / `--no-proxy` / `--skip-core` / `--start-core` / `--domain`。旧命令中的 `--force` 仍兼容，但不会绕过 2核2G、OOM 或磁盘保护。
 
 反代启用后，面板默认仅监听 `127.0.0.1`，通过 80/443 访问 `/app/`。
 
@@ -225,7 +225,7 @@ opkg install ./s-ui-lite_1.5.4-1_x86_64.ipk
 | Default core | [sing-box](https://github.com/SagerNet/sing-box) |
 | Optional core | [Xray-core](https://github.com/XTLS/Xray-core) (per inbound) |
 | Normal panel | **No hard minimum** — any VPS can install (low-spec uses safer defaults) |
-| **Cluster control plane** (Agent hub) | **Recommended 2 vCPU + 2GB RAM** (Web warns when agents exist and under-spec) |
+| **Cluster control plane** (Agent hub) | **Minimum 2 vCPU + 2GB RAM** (hard-gated by installer and Agent API) |
 | Recommended | 2 vCPU + 4GB RAM + 1GB Swap |
 | Primary OS | Linux (Ubuntu, Debian), Docker |
 | Other | Windows maintenance paused; OpenWrt Lite experimental |
@@ -245,7 +245,7 @@ opkg install ./s-ui-lite_1.5.4-1_x86_64.ipk
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 # or
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.4
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.6
 ```
 
 Defaults: panel `2095` `/app/`, sub `2096` `/sub/`, DB `/usr/local/s-ui/db`, login `admin`/`admin` (change immediately).
@@ -291,7 +291,7 @@ See [docs/openwrt-lite.md](docs/openwrt-lite.md).
 [S-UI](https://github.com/alireza0/s-ui) ベースのプロキシ管理パネル。標準は sing-box、入站ごとに Xray-core を選択可能。主に Ubuntu / Debian 向け。v1.5 では Agent による監視・遠隔操作・対話型ターミナルに対応。
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.4
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.6
 ```
 
 Docker: `ghcr.io/Hhz0823/1s-ui`（`network_mode: host` 推奨）。OpenWrt Lite は実験版（sing-box のみ）。詳細は上の English / 中文 を参照。
@@ -303,7 +303,7 @@ Docker: `ghcr.io/Hhz0823/1s-ui`（`network_mode: host` 推奨）。OpenWrt Lite 
 [S-UI](https://github.com/alireza0/s-ui) 기반 프록시 관리 패널. 기본 코어 sing-box, 인바운드별 Xray-core 선택. 주로 Ubuntu/Debian 지원. v1.5: Agent 모니터링·원격 제어·대화형 터미널·다중 노드 일괄 명령.
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.4
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.6
 ```
 
 Docker: `ghcr.io/Hhz0823/1s-ui`. OpenWrt Lite는 실험 버전. 자세한 내용은 위 중문/영문 섹션 참고.

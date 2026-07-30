@@ -14,7 +14,11 @@ func TestAgentEnrollmentHeartbeatAndRotation(t *testing.T) {
 	if err := database.InitDB(filepath.Join(dir, "agents.db")); err != nil {
 		t.Fatal(err)
 	}
-	service := AgentService{}
+	service := AgentService{
+		capacityProvider: func() (int, uint64) {
+			return MinClusterCPUCores, MinClusterMemBytes
+		},
+	}
 	enrollment, err := service.Create("edge-1")
 	if err != nil {
 		t.Fatal(err)
@@ -73,5 +77,36 @@ func TestAgentNameValidation(t *testing.T) {
 		if _, err := normalizeAgentName(name); err == nil {
 			t.Fatalf("accepted invalid agent name %q", name)
 		}
+	}
+}
+
+func TestClusterRequirementBoundary(t *testing.T) {
+	tests := []struct {
+		name string
+		cpu  int
+		mem  uint64
+		ok   bool
+	}{
+		{name: "minimum", cpu: 2, mem: 2 * 1024 * 1024 * 1024, ok: true},
+		{name: "one cpu", cpu: 1, mem: 4 * 1024 * 1024 * 1024, ok: false},
+		{name: "under two gib", cpu: 4, mem: 2*1024*1024*1024 - 1, ok: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := meetsClusterRequirements(test.cpu, test.mem); got != test.ok {
+				t.Fatalf("meetsClusterRequirements(%d, %d) = %v, want %v", test.cpu, test.mem, got, test.ok)
+			}
+		})
+	}
+}
+
+func TestAgentCreateRejectsUnderSpecControlPlane(t *testing.T) {
+	service := AgentService{
+		capacityProvider: func() (int, uint64) {
+			return 1, 4 * 1024 * 1024 * 1024
+		},
+	}
+	if _, err := service.Create("edge-1"); err == nil {
+		t.Fatal("under-spec control plane created a server Agent")
 	}
 }

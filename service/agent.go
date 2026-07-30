@@ -19,25 +19,25 @@ import (
 )
 
 const (
-	agentOnlineWindow   = 45 * time.Second
-	agentHistoryLimit   = 120
+	agentOnlineWindow    = 45 * time.Second
+	agentHistoryLimit    = 120
 	agentDefaultInterval = 15
 )
 
 type AgentNodeView struct {
-	Id          uint                `json:"id"`
-	Name        string              `json:"name"`
-	CreatedAt   int64               `json:"created_at"`
-	LastSeen    int64               `json:"last_seen"`
-	RemoteIP    string              `json:"remote_ip"`
-	Version     string              `json:"version"`
-	Online      bool                `json:"online"`
-	ConnMode    string              `json:"conn_mode,omitempty"`
-	Report      agent.Report        `json:"report"`
-	History     []AgentMetricSample `json:"history,omitempty"`
-	WSConnected bool                `json:"ws_connected,omitempty"`
-	Controllable bool               `json:"controllable"`
-	Commands    []agentCommandLog   `json:"commands,omitempty"`
+	Id           uint                `json:"id"`
+	Name         string              `json:"name"`
+	CreatedAt    int64               `json:"created_at"`
+	LastSeen     int64               `json:"last_seen"`
+	RemoteIP     string              `json:"remote_ip"`
+	Version      string              `json:"version"`
+	Online       bool                `json:"online"`
+	ConnMode     string              `json:"conn_mode,omitempty"`
+	Report       agent.Report        `json:"report"`
+	History      []AgentMetricSample `json:"history,omitempty"`
+	WSConnected  bool                `json:"ws_connected,omitempty"`
+	Controllable bool                `json:"controllable"`
+	Commands     []agentCommandLog   `json:"commands,omitempty"`
 }
 
 type AgentEnrollment struct {
@@ -53,7 +53,9 @@ type AgentMetricSample struct {
 	NetRecv    uint64  `json:"net_recv_rate"`
 }
 
-type AgentService struct{}
+type AgentService struct {
+	capacityProvider func() (int, uint64)
+}
 
 var (
 	agentHistoryMu sync.RWMutex
@@ -89,6 +91,18 @@ func (s *AgentService) Create(name string) (*AgentEnrollment, error) {
 	name, err := normalizeAgentName(name)
 	if err != nil {
 		return nil, err
+	}
+	cpuCount, memTotal := currentClusterCapacity()
+	if s.capacityProvider != nil {
+		cpuCount, memTotal = s.capacityProvider()
+	}
+	if !meetsClusterRequirements(cpuCount, memTotal) {
+		return nil, common.NewErrorf(
+			"server monitoring requires at least %d CPU cores and 2 GiB memory; current host: %d CPU cores / %.2f GiB",
+			MinClusterCPUCores,
+			cpuCount,
+			float64(memTotal)/(1024*1024*1024),
+		)
 	}
 	token, hash, err := newAgentToken()
 	if err != nil {

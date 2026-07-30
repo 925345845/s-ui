@@ -86,7 +86,7 @@ const readUiPrefs = () => ({
   bgSaturate: localStorage.getItem('bgSaturate') || '1.3',
   bgFit: normalizeUiChoice(localStorage.getItem('bgFit'), 'cover', ['cover', 'contain', 'auto']),
   bgPosition: normalizeUiChoice(localStorage.getItem('bgPosition'), 'center', ['center', 'center top', 'center bottom']),
-  uiStyle: normalizeUiChoice(localStorage.getItem('uiStyle'), 'glass', ['glass', 'solid', 'clear']),
+  uiStyle: normalizeUiChoice(localStorage.getItem('uiStyle'), 'solid', ['glass', 'solid', 'clear']),
   uiDensity: normalizeUiChoice(localStorage.getItem('uiDensity'), 'comfortable', ['comfortable', 'compact']),
 })
 const uiPrefs = ref(readUiPrefs())

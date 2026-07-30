@@ -151,8 +151,26 @@
     </v-card>
   </v-dialog>
 
+  <v-alert
+    v-if="hostRequirements && !serverMonitoringAvailable"
+    type="error"
+    variant="tonal"
+    density="comfortable"
+    class="mb-4"
+    border="start"
+    icon="mdi-server-off"
+  >
+    {{ serverRequirementText }}
+  </v-alert>
+
   <div class="agent-toolbar">
-    <v-btn color="primary" prepend-icon="mdi-server-plus" @click="openEnrollment">{{ $t('agent.enroll') }}</v-btn>
+    <v-btn
+      color="primary"
+      prepend-icon="mdi-server-plus"
+      :disabled="!serverMonitoringAvailable"
+      :title="serverMonitoringAvailable ? '' : serverRequirementText"
+      @click="openEnrollment"
+    >{{ $t('agent.enroll') }}</v-btn>
     <v-btn variant="tonal" prepend-icon="mdi-refresh" :loading="loading" @click="loadNodes">{{ $t('actions.update') }}</v-btn>
     <v-btn variant="tonal" prepend-icon="mdi-checkbox-multiple-marked" @click="selectAllControllable">{{ $t('agent.selectOnline') }}</v-btn>
     <v-btn variant="text" @click="selected = []">{{ $t('agent.clearSelection') }}</v-btn>
@@ -256,9 +274,10 @@
 </template>
 
 <script lang="ts" setup>
-import { nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { push } from 'notivue'
 import { i18n } from '@/locales'
+import Data from '@/store/modules/data'
 
 type Usage = { used?: number, total?: number }
 type AgentNode = {
@@ -295,6 +314,17 @@ type AgentNode = {
 const nodes = ref<AgentNode[]>([])
 const loading = ref(false)
 const selected = ref<number[]>([])
+const dataStore = Data()
+const hostRequirements = computed(() => dataStore.hostRequirements)
+const serverMonitoringAvailable = computed(() => hostRequirements.value?.can_enable_agents === true)
+const currentHostMemoryGiB = computed(() => {
+  const bytes = Number(hostRequirements.value?.mem_total_bytes || 0)
+  return bytes > 0 ? (bytes / (1024 ** 3)).toFixed(2) : '?'
+})
+const serverRequirementText = computed(() => i18n.global.t('agent.hostRequirement', {
+  cpu: hostRequirements.value?.cpu_cores ?? '?',
+  memory: currentHostMemoryGiB.value,
+}))
 const enroll = reactive({ visible: false, loading: false, name: '', token: '', command: '' })
 const removeDialog = reactive<{ visible: boolean, loading: boolean, node?: AgentNode }>({ visible: false, loading: false })
 const detail = reactive<{ visible: boolean, node?: AgentNode }>({ visible: false })
@@ -326,7 +356,13 @@ const loadNodes = async () => {
   } finally { loading.value = false }
 }
 
-const openEnrollment = () => Object.assign(enroll, { visible: true, loading: false, name: '', token: '', command: '' })
+const openEnrollment = () => {
+  if (!serverMonitoringAvailable.value) {
+    push.error({ message: serverRequirementText.value })
+    return
+  }
+  Object.assign(enroll, { visible: true, loading: false, name: '', token: '', command: '' })
+}
 const closeEnrollment = () => { enroll.visible = false; if (enroll.command) loadNodes() }
 
 const createNode = async () => {

@@ -509,7 +509,9 @@ export default {
     async genSelfSigned(){
       this.loading = true
       try {
-        const msg = await HttpUtils.get('api/keypairs', { k: "tls", o: this.inTls.server_name?? "''" })
+        const requestedName = (this.inTls.server_name || this.tls.name || 'localhost').trim()
+        const certificateName = requestedName.replace(/[^a-zA-Z0-9.-]/g, '-') || 'localhost'
+        const msg = await HttpUtils.get('api/keypairs', { k: "tls", o: certificateName })
         if (!msg.success) {
           push.error({
             message: i18n.global.t('error') + ": " + msg.obj

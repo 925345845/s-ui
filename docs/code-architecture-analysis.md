@@ -1,6 +1,6 @@
 # 1S-UI 代码架构与运行风险分析
 
-> 审计基线：`main` / 后端 `1.5.5`，Linux（Ubuntu、Debian）为主要部署目标。
+> 审计基线：`main` / 后端 `1.5.6`，Linux（Ubuntu、Debian）为主要部署目标。
 
 ## 1. 项目规模与边界
 
@@ -134,7 +134,7 @@ Agent/浏览器 WebSocket 已恢复同源校验，拒绝跨站终端劫持。
 - Swap 后保留至少 512MB 磁盘，安装前保留至少 384MB。
 - 删除全局 `drop_caches` 和 64MB `dd` 缓冲。
 - 识别 cgroup 内存与 Swap 上限；无法安全安装时在下载前退出。
-- `--force` 不能绕过 OOM、Swap、磁盘门闩。
+- `--force` 不能绕过 2c2G 全面服务端门槛，也不能绕过 OOM、Swap、磁盘门闩。
 - 低内存默认只启动面板；保存配置不再自动启动内核。
 - 新安装不执行无意义的 `migrate/admin/uri` 完整进程。
 
@@ -144,7 +144,6 @@ Agent/浏览器 WebSocket 已恢复同源校验，拒绝跨站终端劫持。
 2. 建议提供 Linux slim Release，去掉不常用的 gVisor、Tailscale、Naive/cronet。
 3. Agent root 终端属于高风险运维能力，后续应增加独立开关和更细权限审计。
 4. 全面模式安装 Xray/反代仍应只用于资源充足的控制面。
-5. 前端包版本仍为 1.5.4，而后端/Release 为 1.5.5，应在下次发布统一。
 
 ## 10. 验证结果
 

@@ -167,10 +167,22 @@ FORCE_XRAY=""
 FORCE_PROXY=""
 FORCE_SKIP_CORE=0
 FORCE_START_CORE=0
+if apply_kind_defaults >/dev/null; then
+    fail "--force bypassed the full-server 2c2G hard gate"
+fi
+
+INSTALL_KIND="full"
+MEM_TOTAL_MB=2048
+MEM_AVAIL_MB=1536
+CPU_CORES=2
+FORCE_INSTALL=0
+FORCE_XRAY=0
+FORCE_PROXY=0
+FORCE_SKIP_CORE=0
+FORCE_START_CORE=0
 apply_kind_defaults >/dev/null
-assert_eq 0 "$INSTALL_XRAY" "low-memory full mode Xray deferral"
-assert_eq 0 "$INSTALL_PROXY" "low-memory full mode proxy deferral"
-assert_eq 1 "$SKIP_CORE" "low-memory full mode core guard"
+assert_eq 1 "$INSTALL_AGENT" "2c2G full mode Agent enablement"
+assert_eq 0 "$SKIP_CORE" "2c2G full mode core startup"
 
 if grep -Eq '^[[:space:]]*swapoff([[:space:]]|$)' "$installer"; then
     fail "installer contains an executable swapoff command"

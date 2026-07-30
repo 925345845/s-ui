@@ -102,6 +102,7 @@
     createFailed: "Không thể tạo Agent",
     rotateFailed: "Không thể đổi mã Agent",
     deleteFailed: "Không thể xóa Agent",
+    hostRequirement: "Bảng điều khiển giám sát máy chủ cần ít nhất 2 lõi CPU và 2 GiB RAM. Hiện tại: {cpu} lõi / {memory} GiB. Hãy nâng cấp máy chủ hoặc dùng bảng tối giản.",
   },
   main: {
     tiles: "OHB",

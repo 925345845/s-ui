@@ -102,6 +102,7 @@
     createFailed: "建立 Agent 失敗",
     rotateFailed: "輪換 Agent 金鑰失敗",
     deleteFailed: "刪除 Agent 失敗",
+    hostRequirement: "伺服器監控控制面至少需要 2 核 CPU 和 2 GiB 記憶體。目前：{cpu} 核 / {memory} GiB；請升級配置或繼續使用極簡面板。",
   },
   main: {
     tiles: "信息卡",
