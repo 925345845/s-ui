@@ -39,7 +39,7 @@ A modern proxy panel forked from S-UI: sing-box first, optional Xray-core per in
 | 上游 | [alireza0/s-ui](https://github.com/alireza0/s-ui) |
 | 默认内核 | [sing-box](https://github.com/SagerNet/sing-box) |
 | 可选内核 | [Xray-core](https://github.com/XTLS/Xray-core)（按入站选择） |
-| 普通面板 | **无硬性最低配置**，任意规格可安装（低配会更保守：默认不启内核/不装反代） |
+| 普通面板 | **无硬性最低配置**；极简模式内存 ≥1500MB 时会自动启动 sing-box，低于该值默认只启面板 |
 | **集群服务端**（多服务器 Agent 控制面） | **最低 2 核 CPU + 2GB 内存**（安装与 Agent 创建均硬性校验） |
 | 推荐配置 | 2 核 4GB + 1GB Swap |
 | 主维护平台 | Linux：Ubuntu、Debian、Docker |
@@ -72,7 +72,8 @@ A modern proxy panel forked from S-UI: sing-box first, optional Xray-core per in
 - 协议：SOCKS、HTTP、Mixed、SS、VLESS、VMess、Trojan、Hysteria2、TUIC、Naive、AnyTLS
 - 自动创建入站、用户、出站、路由；支持 BitBrowser Excel 导出
 - IPv6 池模式由客户端连接原 VPS IPv4/域名，每条生成 IPv6 仅绑定对应出口
-- IPv6 用 `ip -6 addr add` 添加，等待 DAD，失败回滚；**不改默认路由**
+- IPv6 用 `ip -6 addr add` 添加，并逐个绑定源地址验证公网出口；DAD 或公网验证失败会回滚，**不改默认路由**
+- VPS 必须提供已路由或已授权的 IPv6 前缀；仅在系统里添加随机 `/64` 地址无法绕过服务商的源地址过滤
 - 参考 [auto-add-ipv6](https://github.com/help660vip/auto-add-ipv6) 流程，Go 内置实现，不执行远程脚本
 
 #### 服务器 Agent（v1.5，类哪吒 / Komari）
@@ -119,7 +120,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 | Xray-core | 否（可加 `--with-xray`） | 是 |
 | Caddy/Nginx 反代 | 否（可加 `--with-proxy`） | 是 |
 | sui-agent 二进制 | 否 | 是 |
-| 自动启动代理内核 | 是（低配自动 skip） | 是 |
+| 自动启动代理内核 | 内存 ≥1500MB 自动启动；更低配置默认 skip | 是 |
 | 最低配置 | 任意 | ≥2 核 2G（不可用 `--force` 绕过） |
 
 其它开关：`--no-xray` / `--no-proxy` / `--skip-core` / `--start-core` / `--domain`。旧命令中的 `--force` 仍兼容，但不会绕过 2核2G、OOM 或磁盘保护。
@@ -224,7 +225,7 @@ opkg install ./s-ui-lite_1.5.4-1_x86_64.ipk
 | Upstream | [alireza0/s-ui](https://github.com/alireza0/s-ui) |
 | Default core | [sing-box](https://github.com/SagerNet/sing-box) |
 | Optional core | [Xray-core](https://github.com/XTLS/Xray-core) (per inbound) |
-| Normal panel | **No hard minimum** — any VPS can install (low-spec uses safer defaults) |
+| Normal panel | **No hard minimum**; minimal mode auto-starts sing-box with at least 1500MB RAM and otherwise starts panel-only |
 | **Cluster control plane** (Agent hub) | **Minimum 2 vCPU + 2GB RAM** (hard-gated by installer and Agent API) |
 | Recommended | 2 vCPU + 4GB RAM + 1GB Swap |
 | Primary OS | Linux (Ubuntu, Debian), Docker |
@@ -236,7 +237,7 @@ opkg install ./s-ui-lite_1.5.4-1_x86_64.ipk
 
 **Xray (v1.5):** VLESS, VMess, Trojan, Shadowsocks, SOCKS, HTTP, Mixed, Hysteria2, Dokodemo-door, WireGuard; transports XHTTP/RAW/mKCP/gRPC/WS/HTTPUpgrade; self-check UI.
 
-**Relay:** IPv6 pool or upstream SOCKS5; clients connect to the original VPS IPv4/hostname while each generated IPv6 is bound only to its matching egress; multi-protocol batch; BitBrowser Excel export; safe IPv6 add with DAD + rollback (no default-route changes).
+**Relay:** IPv6 pool or upstream SOCKS5; clients connect to the original VPS IPv4/hostname while each generated IPv6 is bound only to its matching egress; multi-protocol batch; BitBrowser Excel export; DAD plus per-address public IPv6 egress validation and rollback (no default-route changes). The provider must route or authorize the IPv6 prefix; adding random local `/64` addresses cannot bypass upstream source filtering.
 
 **Agents (v1.5):** outbound HTTP + WebSocket; metrics; remote control (restart cores, exec, interval); interactive PTY terminal; multi-node batch commands. Control requires WebSocket online + panel login.
 

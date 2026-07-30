@@ -184,6 +184,31 @@ apply_kind_defaults >/dev/null
 assert_eq 1 "$INSTALL_AGENT" "2c2G full mode Agent enablement"
 assert_eq 0 "$SKIP_CORE" "2c2G full mode core startup"
 
+INSTALL_KIND="minimal"
+MEM_TOTAL_MB=1967
+MEM_AVAIL_MB=1400
+CPU_CORES=1
+PROFILE="low"
+FORCE_XRAY=0
+FORCE_PROXY=0
+FORCE_SKIP_CORE=0
+FORCE_START_CORE=0
+apply_kind_defaults >/dev/null
+assert_eq 0 "$INSTALL_AGENT" "single-core minimal mode Agent exclusion"
+assert_eq 0 "$SKIP_CORE" "single-core minimal mode core startup with sufficient memory"
+
+INSTALL_KIND="minimal"
+MEM_TOTAL_MB=1024
+MEM_AVAIL_MB=700
+CPU_CORES=1
+PROFILE="low"
+FORCE_XRAY=0
+FORCE_PROXY=0
+FORCE_SKIP_CORE=0
+FORCE_START_CORE=0
+apply_kind_defaults >/dev/null
+assert_eq 1 "$SKIP_CORE" "low-memory minimal mode core guard"
+
 if grep -Eq '^[[:space:]]*swapoff([[:space:]]|$)' "$installer"; then
     fail "installer contains an executable swapoff command"
 fi

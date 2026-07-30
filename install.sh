@@ -379,10 +379,11 @@ apply_kind_defaults() {
         INSTALL_XRAY=0
         INSTALL_PROXY=0
         INSTALL_AGENT=0
-        # Like 1.4.10: start cores with panel. On very low RAM keep safe skip.
-        if [[ "$PROFILE" == "low" || "$MEM_TOTAL_MB" -lt 1500 ]]; then
+        # A single CPU core selects low-profile tuning, but does not by itself
+        # prevent sing-box from running. Only the memory safety budget does.
+        if [[ "$MEM_TOTAL_MB" -lt 1500 ]]; then
             SKIP_CORE=1
-            core_reason="极简+低配：默认不启内核（防 OOM；可用 --start-core）"
+            core_reason="极简+内存不足：默认不启内核（防 OOM；可用 --start-core）"
         else
             SKIP_CORE=0
             core_reason="极简：启动面板时加载 sing-box（同 1.4.10）"

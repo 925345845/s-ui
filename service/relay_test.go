@@ -2,8 +2,10 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"path/filepath"
 	"strings"
@@ -326,6 +328,19 @@ func TestApplyRelayAutoAddIPv6Preset(t *testing.T) {
 	}
 }
 
+func TestCreateRelayRejectsCountAboveMaximum(t *testing.T) {
+	_, err := (&ConfigService{}).CreateRelay(RelayCreateRequest{
+		Mode:           relayModeIPv6,
+		Protocol:       "socks",
+		Count:          maxRelayItems + 1,
+		PortStart:      30000,
+		PasswordLength: 12,
+	}, "test", "203.0.113.10")
+	if err == nil || !strings.Contains(err.Error(), "cannot exceed 100") {
+		t.Fatalf("unexpected relay count validation error: %v", err)
+	}
+}
+
 func TestNormalizeRelayDomainStrategy(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -361,6 +376,44 @@ func TestRelayDirectOutboundOptionsForceIPv6(t *testing.T) {
 	options := relayDirectOutboundOptions(RelayCreateRequest{Mode: relayModeIPv6, DomainStrategy: relayDomainStrategyIPv6Only}, item)
 	if options["inet6_bind_address"] != item.IPv6 || options["domain_strategy"] != relayDomainStrategyIPv6Only {
 		t.Fatalf("unexpected IPv6 direct options: %#v", options)
+	}
+}
+
+func TestValidateRelayIPv6EgressDeduplicatesAddresses(t *testing.T) {
+	items := []model.RelayItem{
+		{IPv6: "2001:db8::10"},
+		{IPv6: "2001:db8::10"},
+	}
+	probeCalls := 0
+	var probedAddress netip.Addr
+	err := validateRelayIPv6Egress(context.Background(), items, func(_ context.Context, address netip.Addr) error {
+		probeCalls++
+		probedAddress = address
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probeCalls != 1 {
+		t.Fatalf("probe calls = %d, want 1", probeCalls)
+	}
+	if probedAddress.String() != "2001:db8::10" {
+		t.Fatalf("unexpected probe address %s", probedAddress)
+	}
+}
+
+func TestValidateRelayIPv6EgressReturnsStableFailure(t *testing.T) {
+	items := []model.RelayItem{{IPv6: "2001:db8::20"}}
+	err := validateRelayIPv6Egress(context.Background(), items, func(context.Context, netip.Addr) error {
+		return errors.New("source address rejected upstream")
+	})
+	if err == nil {
+		t.Fatal("expected unreachable IPv6 to be rejected")
+	}
+	for _, value := range []string{relayIPv6EgressErrorCode, "2001:db8::20", "No relay was created"} {
+		if !strings.Contains(err.Error(), value) {
+			t.Fatalf("error %q does not contain %q", err, value)
+		}
 	}
 }
 

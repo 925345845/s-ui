@@ -28,7 +28,7 @@
                   <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
                 </v-col>
                 <v-col cols="6" sm="3" md="1">
-                  <v-text-field v-model.number="form.count" type="number" min="1" max="1000" :label="$t('relay.count')" hide-details />
+                  <v-text-field v-model.number="form.count" type="number" min="1" max="100" :label="$t('relay.count')" :error-messages="relayCountValid ? [] : [$t('relay.countRange')]" hide-details="auto" />
                 </v-col>
                 <v-col cols="6" sm="3" md="2">
                   <v-text-field v-model.number="form.port_start" type="number" min="1" max="65535" :label="$t('relay.portStart')" hide-details />
@@ -241,7 +241,8 @@ const form = reactive({
 })
 
 const interfaceItems = computed(() => [...new Set(ipv6.value.map((item) => item.interface))].map((value) => ({ title: value, value })))
-const canCreateIPv6 = computed(() => ipv6.value.length > 0 || form.base_ipv6.trim().length > 0)
+const relayCountValid = computed(() => Number.isInteger(form.count) && form.count >= 1 && form.count <= 100)
+const canCreateIPv6 = computed(() => relayCountValid.value && (ipv6.value.length > 0 || form.base_ipv6.trim().length > 0))
 const canQuickCreateIPv6 = computed(() => canCreateIPv6.value && capabilities.value?.can_add_system_ipv6 === true)
 const capabilityMessage = computed(() => {
   const capability = capabilities.value
@@ -307,6 +308,10 @@ const poolAddressSummary = (pool: RelayPool) => {
 }
 
 const create = async (mode: 'ipv6' | 'upstream', quick = false) => {
+  if (mode === 'ipv6' && !relayCountValid.value) {
+    push.error({ message: i18n.global.t('relay.countRange') })
+    return
+  }
   loading.value = true
   try {
     const payload: any = { ...form, mode }
@@ -347,7 +352,12 @@ const create = async (mode: 'ipv6' | 'upstream', quick = false) => {
       await loadData()
       await Data().loadData()
     } else {
-      push.error({ message: msg.msg || i18n.global.t('relay.createFailed') })
+      const egressMatch = String(msg.msg || '').match(/relay_ipv6_egress_unreachable\|([^|]+)\|/)
+      push.error({
+        message: egressMatch
+          ? i18n.global.t('relay.ipv6EgressUnavailable', { address: egressMatch[1] })
+          : msg.msg || i18n.global.t('relay.createFailed'),
+      })
     }
   } catch (error: any) {
     push.error({ message: error?.message || i18n.global.t('relay.createFailed') })

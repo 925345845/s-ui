@@ -37,9 +37,16 @@ const (
 	relayAddressTentative         = "tentative"
 	relayAddressDADFailed         = "dadfailed"
 	relayAddressMissing           = "missing"
-	maxRelayItems                 = 1000
+	relayIPv6EgressErrorCode      = "relay_ipv6_egress_unreachable"
+	relayIPv6ProbeWorkers         = 8
+	maxRelayItems                 = 100
 	relayCoreSingBox              = model.CoreTypeSingBox
 )
+
+var relayIPv6EgressTargets = []string{
+	"[2606:4700:4700::1111]:443",
+	"[2001:4860:4860::8888]:443",
+}
 
 var relayProtocols = map[string]bool{
 	"socks": true, "http": true, "mixed": true, "shadowsocks": true,
@@ -644,6 +651,11 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	}
 	for _, item := range items {
 		if err := waitRelayAddressReady(item.Interface, item.IPv6); err != nil {
+			return nil, err
+		}
+	}
+	if req.Mode == relayModeIPv6 && runtime.GOOS == "linux" {
+		if err := validateRelayIPv6Egress(context.Background(), items, probeRelayIPv6Egress); err != nil {
 			return nil, err
 		}
 	}
@@ -1303,6 +1315,105 @@ func waitRelayAddressReady(iface, ip string) error {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+type relayIPv6EgressProbe func(context.Context, netip.Addr) error
+
+func validateRelayIPv6Egress(ctx context.Context, items []model.RelayItem, probe relayIPv6EgressProbe) error {
+	addresses := make([]netip.Addr, 0, len(items))
+	seen := make(map[netip.Addr]bool, len(items))
+	for _, item := range items {
+		if item.IPv6 == "" {
+			continue
+		}
+		address, err := netip.ParseAddr(item.IPv6)
+		if err != nil || !address.Is6() {
+			return common.NewErrorf("invalid relay IPv6 address %q", item.IPv6)
+		}
+		if !seen[address] {
+			seen[address] = true
+			addresses = append(addresses, address)
+		}
+	}
+	if len(addresses) == 0 {
+		return nil
+	}
+
+	probeContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan netip.Addr, len(addresses))
+	for _, address := range addresses {
+		jobs <- address
+	}
+	close(jobs)
+
+	workerCount := relayIPv6ProbeWorkers
+	if len(addresses) < workerCount {
+		workerCount = len(addresses)
+	}
+	var workers sync.WaitGroup
+	var firstFailure sync.Once
+	var failedAddress netip.Addr
+	var failedError error
+	for range workerCount {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case <-probeContext.Done():
+					return
+				case address, ok := <-jobs:
+					if !ok {
+						return
+					}
+					if err := probe(probeContext, address); err != nil {
+						firstFailure.Do(func() {
+							failedAddress = address
+							failedError = err
+							cancel()
+						})
+						return
+					}
+				}
+			}
+		}()
+	}
+	workers.Wait()
+	if failedError == nil {
+		return nil
+	}
+	return common.NewErrorf(
+		"%s|%s|IPv6 address is configured locally but cannot reach the IPv6 Internet; the VPS provider may only permit its assigned IPv6. Request a routed or authorized prefix. No relay was created: %v",
+		relayIPv6EgressErrorCode,
+		failedAddress,
+		failedError,
+	)
+}
+
+func probeRelayIPv6Egress(ctx context.Context, address netip.Addr) error {
+	if !address.Is6() {
+		return common.NewError("IPv6 egress probe requires an IPv6 address")
+	}
+	var lastError error
+	for _, target := range relayIPv6EgressTargets {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		attemptContext, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+		dialer := net.Dialer{
+			Timeout:   2500 * time.Millisecond,
+			LocalAddr: &net.TCPAddr{IP: net.IP(address.AsSlice())},
+		}
+		connection, err := dialer.DialContext(attemptContext, "tcp6", target)
+		cancel()
+		if err == nil {
+			_ = connection.Close()
+			return nil
+		}
+		lastError = err
+	}
+	return lastError
 }
 
 func relayIPv6AddressState(output, address string) string {
