@@ -55,9 +55,9 @@ func (h *AgentHandler) WebSocket(c *gin.Context) {
 		return
 	}
 
-	conn, err := websocket.Accept(c.Writer, c.Request, &websocket.AcceptOptions{
-		InsecureSkipVerify: true,
-	})
+	// The default origin policy accepts non-browser agents without Origin and
+	// same-origin browser requests, while rejecting cross-site WS hijacking.
+	conn, err := websocket.Accept(c.Writer, c.Request, nil)
 	if err != nil {
 		logger.Warning("agent websocket accept failed: ", err)
 		return

@@ -99,20 +99,18 @@ func TestRelaySOCKSURIFormatsIPv6(t *testing.T) {
 func TestRelaySOCKSExportUsesBrowserFormat(t *testing.T) {
 	tests := []struct {
 		name string
-		mode string
 		host string
-		ipv6 string
 		port int
 		user string
 		pass string
 		want string
 	}{
-		{name: "ipv4", mode: relayModeUpstream, host: "88.214.24.57", port: 1020, user: "proxy_xbhwi8qipf", pass: "ohNuE5VXWeta6jb@xn", want: "88.214.24.57:1020:proxy_xbhwi8qipf:ohNuE5VXWeta6jb@xn"},
-		{name: "ipv6", mode: relayModeIPv6, host: "88.214.24.57", ipv6: "2001:db8::10", port: 1021, user: "user", pass: "pass", want: "2001:db8::10:1021:user:pass"},
+		{name: "ipv4", host: "88.214.24.57", port: 1020, user: "proxy_xbhwi8qipf", pass: "ohNuE5VXWeta6jb@xn", want: "88.214.24.57:1020:proxy_xbhwi8qipf:ohNuE5VXWeta6jb@xn"},
+		{name: "ipv6 host", host: "2001:db8::10", port: 1021, user: "user", pass: "pass", want: "2001:db8::10:1021:user:pass"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := relaySOCKSExport(test.mode, test.host, test.ipv6, test.port, test.user, test.pass)
+			got := relaySOCKSExport(test.host, test.port, test.user, test.pass)
 			if got != test.want {
 				t.Fatalf("export = %q, want %q", got, test.want)
 			}
@@ -165,10 +163,10 @@ func TestRelayBitBrowserProxyInfo(t *testing.T) {
 			want: "88.214.24.57:1020:proxy-user:proxy-pass",
 		},
 		{
-			name: "ipv6",
+			name: "IPv6 egress with IPv4 connection host",
 			pool: model.RelayPool{Mode: relayModeIPv6, Protocol: "socks", ListenHost: "88.214.24.57"},
 			item: model.RelayItem{ListenPort: 30005, Username: "proxy-user", Password: "proxy-pass", IPv6: "2a05:f480:3400:282d:a75c:71ba:1e76:7c1b"},
-			want: "ipv6:2a05:f480:3400:282d:a75c:71ba:1e76:7c1b:30005:proxy-user:proxy-pass",
+			want: "88.214.24.57:30005:proxy-user:proxy-pass",
 		},
 	}
 	for _, test := range tests {
@@ -211,8 +209,8 @@ func TestBuildRelayBitBrowserWorkbook(t *testing.T) {
 		"F1": "代理信息",
 		"A4": "IPv6 pool-001",
 		"E4": "socks5",
-		"F4": "ipv6:2001:db8::10:30005:user-1:pass-1",
-		"F5": "ipv6:2001:db8::11:30006:user-2:pass-2",
+		"F4": "88.214.24.57:30005:user-1:pass-1",
+		"F5": "88.214.24.57:30006:user-2:pass-2",
 	}
 	for cell, want := range checks {
 		got, err := workbook.GetCellValue(sheet, cell)
@@ -281,17 +279,29 @@ func TestRelayShadowsocksUses256BitKeys(t *testing.T) {
 	}
 }
 
-func TestRelayClientLinkFormatsIPv6(t *testing.T) {
+func TestRelayClientLinkUsesPublicHostForIPv6Egress(t *testing.T) {
 	req := RelayCreateRequest{Mode: relayModeIPv6, Protocol: "socks"}
 	inbound := model.Inbound{
 		Type: "socks", Tag: "relay-test", CoreType: model.CoreTypeSingBox,
-		Options: mustJSON(map[string]interface{}{"listen": "2001:db8::10", "listen_port": 1080}),
+		Options: mustJSON(map[string]interface{}{"listen": "0.0.0.0", "listen_port": 1080}),
 		OutJson: mustJSON(map[string]interface{}{}),
 	}
 	client := map[string]interface{}{"socks": map[string]interface{}{"username": "user", "password": "pass"}}
-	got := relayClientLink(req, inbound, client, "example.com")
-	if !strings.Contains(got, "@[2001:db8::10]:1080") {
-		t.Fatalf("unexpected IPv6 link %q", got)
+	got := relayClientLink(req, inbound, client, "88.214.24.57")
+	if !strings.Contains(got, "@88.214.24.57:1080") || strings.Contains(got, "2001:db8") {
+		t.Fatalf("unexpected public-host link %q", got)
+	}
+}
+
+func TestRelayInboundListenAddressSeparatesIngressFromIPv6Egress(t *testing.T) {
+	if got := relayInboundListenAddress(relayModeIPv6, "88.214.24.57"); got != "0.0.0.0" {
+		t.Fatalf("IPv4 ingress listen = %q, want 0.0.0.0", got)
+	}
+	if got := relayInboundListenAddress(relayModeIPv6, "2001:db8::10"); got != "::" {
+		t.Fatalf("IPv6 ingress listen = %q, want ::", got)
+	}
+	if got := relayInboundListenAddress(relayModeUpstream, "88.214.24.57"); got != "::" {
+		t.Fatalf("upstream listen = %q, want ::", got)
 	}
 }
 
@@ -410,6 +420,114 @@ func TestRepairRelayIPv6OutboundStrategies(t *testing.T) {
 	firstRule := rules[0].(map[string]interface{})
 	if firstRule["action"] != "reject" || relayRuleIPVersion(firstRule) != 4 {
 		t.Fatalf("first repaired rule = %#v, want IPv4 reject", firstRule)
+	}
+}
+
+func TestRepairRelayIPv6ConnectionHost(t *testing.T) {
+	dbDir := t.TempDir()
+	t.Setenv("SUI_DB_FOLDER", dbDir)
+	if err := database.InitDB(filepath.Join(dbDir, "relay-connection-host.db")); err != nil {
+		t.Fatal(err)
+	}
+	db := database.GetDB()
+	if _, err := (&SettingService{}).GetAllSetting(); err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		publicHost = "88.214.24.57"
+		egressIPv6 = "2001:db8::10"
+		listenPort = 30000
+	)
+	inbound := model.Inbound{
+		Type:     "socks",
+		Tag:      "relay-in-legacy",
+		CoreType: model.CoreTypeSingBox,
+		Addrs:    mustJSON([]map[string]interface{}{{"server": egressIPv6, "server_port": listenPort}}),
+		OutJson:  mustJSON(map[string]interface{}{}),
+		Options:  mustJSON(map[string]interface{}{"listen": egressIPv6, "listen_port": listenPort}),
+	}
+	if err := db.Create(&inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	client := model.Client{
+		Enable:   true,
+		Name:     "relay-user",
+		Config:   mustJSON(map[string]interface{}{"socks": map[string]interface{}{"username": "relay-user", "password": "relay-pass"}}),
+		Inbounds: mustJSON([]uint{inbound.Id}),
+		Links:    mustJSON([]map[string]string{{"remark": inbound.Tag, "type": "local", "uri": "socks5://relay-user:relay-pass@[2001:db8::10]:30000"}}),
+	}
+	if err := db.Create(&client).Error; err != nil {
+		t.Fatal(err)
+	}
+	outbound := model.Outbound{
+		Type: "direct",
+		Tag:  "relay-out-legacy",
+		Options: mustJSON(map[string]interface{}{
+			"inet6_bind_address": egressIPv6,
+			"domain_strategy":    relayDomainStrategyIPv6Only,
+		}),
+	}
+	if err := db.Create(&outbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	item := model.RelayItem{
+		InboundID: inbound.Id, InboundTag: inbound.Tag,
+		OutboundTag: outbound.Tag, ClientID: client.Id,
+		ListenPort: listenPort, Username: "relay-user", Password: "relay-pass",
+		Protocol: "socks", IPv6: egressIPv6,
+		Export: "2001:db8::10:30000:relay-user:relay-pass",
+	}
+	pool := model.RelayPool{
+		Name: "legacy-ipv6-ingress", Mode: relayModeIPv6, Protocol: "socks",
+		DomainStrategy: relayDomainStrategyIPv6Only, ListenHost: publicHost,
+		PortStart: listenPort, Count: 1, Items: mustJSON([]model.RelayItem{item}),
+	}
+	if err := db.Create(&pool).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (&ConfigService{}).repairRelayIPv6OutboundStrategies(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&inbound, inbound.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	var options map[string]interface{}
+	if err := json.Unmarshal(inbound.Options, &options); err != nil {
+		t.Fatal(err)
+	}
+	if options["listen"] != "0.0.0.0" {
+		t.Fatalf("repaired listen = %#v, want 0.0.0.0", options["listen"])
+	}
+	var addrs []map[string]interface{}
+	if err := json.Unmarshal(inbound.Addrs, &addrs); err != nil {
+		t.Fatal(err)
+	}
+	if len(addrs) != 1 || addrs[0]["server"] != publicHost {
+		t.Fatalf("repaired inbound addresses = %#v", addrs)
+	}
+	if err := db.First(&client, client.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if links := string(client.Links); !strings.Contains(links, "@"+publicHost+":30000") || strings.Contains(links, egressIPv6) {
+		t.Fatalf("repaired client links = %s", links)
+	}
+	if err := db.First(&pool, pool.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	var repairedItems []model.RelayItem
+	if err := json.Unmarshal(pool.Items, &repairedItems); err != nil {
+		t.Fatal(err)
+	}
+	if len(repairedItems) != 1 || repairedItems[0].Export != publicHost+":30000:relay-user:relay-pass" {
+		t.Fatalf("repaired relay items = %#v", repairedItems)
+	}
+	if err := db.First(&outbound, outbound.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(outbound.Options), egressIPv6) {
+		t.Fatalf("IPv6 outbound binding was lost: %s", outbound.Options)
 	}
 }
 

@@ -254,8 +254,8 @@ func relayBitBrowserProxyInfo(pool model.RelayPool, item model.RelayItem) (strin
 	if protocol != "socks" && protocol != "mixed" {
 		return "", common.NewErrorf("BitBrowser export only supports SOCKS5 or Mixed, got %q", protocol)
 	}
-	host := relayItemHost(pool.Mode, pool.ListenHost, item.IPv6)
-	proxyInfo := relaySOCKSExport(pool.Mode, pool.ListenHost, item.IPv6, item.ListenPort, item.Username, item.Password)
+	host := pool.ListenHost
+	proxyInfo := relaySOCKSExport(pool.ListenHost, item.ListenPort, item.Username, item.Password)
 	if address, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil && address.Is6() {
 		return "ipv6:" + proxyInfo, nil
 	}
@@ -394,6 +394,9 @@ func (s *ConfigService) repairRelayIPv6OutboundStrategies() error {
 					return err
 				}
 			}
+			if err := repairRelayIPv6ConnectionHost(tx, pool, items); err != nil {
+				return err
+			}
 		}
 		if len(dualStackItems) > 0 {
 			if err := updateRelayRouteRules(tx, dualStackItems, false, false); err != nil {
@@ -407,6 +410,109 @@ func (s *ConfigService) repairRelayIPv6OutboundStrategies() error {
 		}
 		return nil
 	})
+}
+
+// repairRelayIPv6ConnectionHost upgrades pools that exposed each generated
+// IPv6 as the client endpoint. The generated address belongs only on the
+// direct outbound; clients connect to the pool's public host instead.
+func repairRelayIPv6ConnectionHost(tx *gorm.DB, pool model.RelayPool, items []model.RelayItem) error {
+	if strings.TrimSpace(pool.ListenHost) == "" {
+		return nil
+	}
+	publicHost, err := normalizeRelayPublicHost(pool.ListenHost)
+	if err != nil {
+		logger.Warningf("relay pool %q has invalid public host %q; connection host was not repaired", pool.Name, pool.ListenHost)
+		return nil
+	}
+
+	itemsChanged := false
+	for index := range items {
+		item := &items[index]
+		protocol := item.Protocol
+		if protocol == "" {
+			protocol = pool.Protocol
+		}
+		if protocol == "" {
+			protocol = "socks"
+		}
+		req := RelayCreateRequest{Mode: relayModeIPv6, Protocol: protocol}
+
+		var inbound *model.Inbound
+		if item.InboundID > 0 {
+			current := model.Inbound{}
+			if err := tx.Preload("Tls").First(&current, item.InboundID).Error; err != nil {
+				if database.IsNotFound(err) {
+					logger.Warningf("relay pool %q inbound %d was not found", pool.Name, item.InboundID)
+				} else {
+					return err
+				}
+			} else {
+				var options map[string]interface{}
+				if err := json.Unmarshal(current.Options, &options); err != nil {
+					return fmt.Errorf("relay pool %q inbound %d has invalid options: %w", pool.Name, item.InboundID, err)
+				}
+				desiredListen := relayInboundListenAddress(relayModeIPv6, publicHost)
+				desiredAddrs := mustJSON([]map[string]interface{}{{
+					"server": publicHost, "server_port": item.ListenPort,
+				}})
+				inboundUpdates := map[string]interface{}{}
+				if fmt.Sprint(options["listen"]) != desiredListen {
+					options["listen"] = desiredListen
+					current.Options = mustJSON(options)
+					inboundUpdates["options"] = current.Options
+				}
+				if string(current.Addrs) != string(desiredAddrs) {
+					current.Addrs = desiredAddrs
+					inboundUpdates["addrs"] = current.Addrs
+				}
+				if len(inboundUpdates) > 0 {
+					if err := tx.Model(&model.Inbound{}).Where("id = ?", current.Id).Updates(inboundUpdates).Error; err != nil {
+						return err
+					}
+				}
+				inbound = &current
+			}
+		}
+
+		var links []map[string]string
+		if item.ClientID > 0 && inbound != nil {
+			var client model.Client
+			if err := tx.First(&client, item.ClientID).Error; err != nil {
+				if database.IsNotFound(err) {
+					logger.Warningf("relay pool %q client %d was not found", pool.Name, item.ClientID)
+				} else {
+					return err
+				}
+			} else {
+				var clientConfig map[string]interface{}
+				if err := json.Unmarshal(client.Config, &clientConfig); err != nil {
+					return fmt.Errorf("relay pool %q client %d has invalid config: %w", pool.Name, item.ClientID, err)
+				}
+				links = relayClientLinks(req, *inbound, clientConfig, publicHost)
+				desiredLinks := mustJSON(links)
+				if string(client.Links) != string(desiredLinks) {
+					if err := tx.Model(&model.Client{}).Where("id = ?", client.Id).Update("links", desiredLinks).Error; err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		desiredExport := item.Export
+		if protocol == "socks" || protocol == "mixed" {
+			desiredExport = relaySOCKSExport(publicHost, item.ListenPort, item.Username, item.Password)
+		} else if len(links) > 0 {
+			desiredExport = links[0]["uri"]
+		}
+		if item.Export != desiredExport {
+			item.Export = desiredExport
+			itemsChanged = true
+		}
+	}
+	if itemsChanged {
+		return tx.Model(&model.RelayPool{}).Where("id = ?", pool.Id).Update("items", mustJSON(items)).Error
+	}
+	return nil
 }
 
 func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost string) (*model.RelayPool, error) {
@@ -599,9 +705,8 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	for i := range items {
 		listenAddress := "::"
 		if req.Mode == relayModeIPv6 {
-			listenAddress = items[i].IPv6
+			listenAddress = relayInboundListenAddress(req.Mode, publicHost)
 		}
-		listenHost := relayItemHost(req.Mode, publicHost, items[i].IPv6)
 		inboundOptions, clientConfig, err := relayProtocolConfig(req, &items[i])
 		if err != nil {
 			return nil, err
@@ -610,7 +715,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 			Type:     req.Protocol,
 			Tag:      fmt.Sprintf("relay-%s-%d", common.Random(5), items[i].ListenPort),
 			CoreType: req.CoreType,
-			Addrs:    mustJSON([]map[string]interface{}{{"server": listenHost, "server_port": items[i].ListenPort}}),
+			Addrs:    mustJSON([]map[string]interface{}{{"server": publicHost, "server_port": items[i].ListenPort}}),
 			OutJson:  json.RawMessage("{}"),
 			TlsId:    req.TlsID,
 			Options:  mustJSON(relayInboundOptions(req, inboundOptions, listenAddress, items[i].ListenPort)),
@@ -665,7 +770,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		if req.Protocol == "socks" || req.Protocol == "mixed" {
 			// Browser-oriented SOCKS importers commonly expect four colon-separated
 			// fields rather than a socks5:// URI.
-			items[i].Export = relaySOCKSExport(req.Mode, publicHost, items[i].IPv6, items[i].ListenPort, items[i].Username, items[i].Password)
+			items[i].Export = relaySOCKSExport(publicHost, items[i].ListenPort, items[i].Username, items[i].Password)
 		} else {
 			items[i].Export = relayClientLink(req, inbound, clientConfig, publicHost)
 		}
@@ -958,14 +1063,7 @@ func relayClientLink(req RelayCreateRequest, inbound model.Inbound, clientConfig
 }
 
 func relayClientLinks(req RelayCreateRequest, inbound model.Inbound, clientConfig map[string]interface{}, publicHost string) []map[string]string {
-	host := relayItemHost(req.Mode, publicHost, "")
-	if req.Mode == relayModeIPv6 {
-		var options map[string]interface{}
-		_ = json.Unmarshal(inbound.Options, &options)
-		if value, ok := options["listen"].(string); ok && value != "" {
-			host = value
-		}
-	}
+	host := publicHost
 	copyInbound := inbound
 	linkHost := host
 	if req.Protocol != "vmess" {
@@ -1547,9 +1645,8 @@ func relaySOCKSURI(host string, port int, username, password string) string {
 	}).String()
 }
 
-func relaySOCKSExport(mode, publicHost, ipv6 string, port int, username, password string) string {
-	host := relayItemHost(mode, publicHost, ipv6)
-	host = strings.Trim(host, "[]")
+func relaySOCKSExport(publicHost string, port int, username, password string) string {
+	host := strings.Trim(publicHost, "[]")
 	return fmt.Sprintf("%s:%d:%s:%s", host, port, username, password)
 }
 
@@ -1591,9 +1688,12 @@ func formatRelayHost(host string) string {
 	return host
 }
 
-func relayItemHost(mode, publicHost, ipv6 string) string {
-	if mode == relayModeIPv6 && ipv6 != "" {
-		return ipv6
+func relayInboundListenAddress(mode, publicHost string) string {
+	if mode == relayModeIPv6 {
+		if address, err := netip.ParseAddr(strings.Trim(publicHost, "[]")); err == nil && address.Is6() {
+			return "::"
+		}
+		return "0.0.0.0"
 	}
-	return publicHost
+	return "::"
 }

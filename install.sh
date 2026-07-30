@@ -37,6 +37,24 @@ PORT443_FREE=1
 CLUSTER_CPU_CORES=2
 CLUSTER_MEM_MB=2048
 
+# Runtime files are variables so the safety helpers can be tested without
+# touching the host. Production execution keeps these Linux defaults.
+MEMINFO_FILE="/proc/meminfo"
+PROC_SWAPS_FILE="/proc/swaps"
+CGROUP_V2_MEMORY_MAX_FILE="/sys/fs/cgroup/memory.max"
+CGROUP_V2_MEMORY_CURRENT_FILE="/sys/fs/cgroup/memory.current"
+CGROUP_V2_SWAP_MAX_FILE="/sys/fs/cgroup/memory.swap.max"
+CGROUP_V2_SWAP_CURRENT_FILE="/sys/fs/cgroup/memory.swap.current"
+CGROUP_V1_MEMORY_MAX_FILE="/sys/fs/cgroup/memory/memory.limit_in_bytes"
+CGROUP_V1_MEMORY_CURRENT_FILE="/sys/fs/cgroup/memory/memory.usage_in_bytes"
+FSTAB_FILE="/etc/fstab"
+MANAGED_SWAP_FILE="/var/lib/s-ui/swapfile"
+SWAP_DISK_RESERVE_MB=512
+SWAP_PREPARED=0
+CGROUP_MEMORY_LIMIT_MB=0
+CGROUP_SWAP_BLOCKED=0
+CGROUP_SWAP_LIMIT_MB=0
+
 usage() {
     cat <<EOF
 用法: install.sh [版本号] [选项]
@@ -201,11 +219,76 @@ port_in_use() {
     return 1
 }
 
+meminfo_kb() {
+    local key="$1"
+    awk -v key="${key}:" '$1 == key { print $2; exit }' "$MEMINFO_FILE" 2>/dev/null
+}
+
+cgroup_value_kb() {
+    local file raw
+    for file in "$@"; do
+        [[ -r "$file" ]] || continue
+        raw=$(tr -d '[:space:]' <"$file" 2>/dev/null || true)
+        [[ "$raw" =~ ^[0-9]+$ ]] || continue
+        awk -v bytes="$raw" 'BEGIN { printf "%.0f\n", bytes / 1024 }'
+        return 0
+    done
+    echo 0
+}
+
+effective_available_kb() {
+    local available_kb limit_kb current_kb cgroup_available_kb
+    available_kb=$(meminfo_kb MemAvailable)
+    available_kb=${available_kb:-0}
+    limit_kb=$(cgroup_value_kb "$CGROUP_V2_MEMORY_MAX_FILE" "$CGROUP_V1_MEMORY_MAX_FILE")
+    current_kb=$(cgroup_value_kb "$CGROUP_V2_MEMORY_CURRENT_FILE" "$CGROUP_V1_MEMORY_CURRENT_FILE")
+    if [[ "$limit_kb" -gt 0 ]]; then
+        if [[ "$current_kb" -ge "$limit_kb" ]]; then
+            cgroup_available_kb=0
+        else
+            cgroup_available_kb=$((limit_kb - current_kb))
+        fi
+        if [[ "$available_kb" -eq 0 || "$cgroup_available_kb" -lt "$available_kb" ]]; then
+            available_kb="$cgroup_available_kb"
+        fi
+    fi
+    echo "$available_kb"
+}
+
 detect_resources() {
-    local mem_kb avail_kb swap_kb
-    mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
-    avail_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
-    swap_kb=$(awk '/SwapTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    local mem_kb avail_kb swap_kb cgroup_limit_kb swap_limit swap_limit_kb
+    CGROUP_MEMORY_LIMIT_MB=0
+    CGROUP_SWAP_BLOCKED=0
+    CGROUP_SWAP_LIMIT_MB=0
+    mem_kb=$(meminfo_kb MemTotal)
+    avail_kb=$(effective_available_kb)
+    swap_kb=$(meminfo_kb SwapTotal)
+    mem_kb=${mem_kb:-0}
+    avail_kb=${avail_kb:-0}
+    swap_kb=${swap_kb:-0}
+
+    # Containers may expose host /proc/meminfo while enforcing a much smaller
+    # cgroup limit. Use the lower value or the installer can misclassify a
+    # 512MB LXC container as a large server and trigger its OOM killer.
+    cgroup_limit_kb=$(cgroup_value_kb "$CGROUP_V2_MEMORY_MAX_FILE" "$CGROUP_V1_MEMORY_MAX_FILE")
+    if [[ "$cgroup_limit_kb" -gt 0 && ( "$mem_kb" -eq 0 || "$cgroup_limit_kb" -lt "$mem_kb" ) ]]; then
+        mem_kb="$cgroup_limit_kb"
+        CGROUP_MEMORY_LIMIT_MB=$((cgroup_limit_kb / 1024))
+    fi
+
+    swap_limit=""
+    [[ -r "$CGROUP_V2_SWAP_MAX_FILE" ]] && swap_limit=$(tr -d '[:space:]' <"$CGROUP_V2_SWAP_MAX_FILE" 2>/dev/null || true)
+    if [[ "$swap_limit" == "0" ]]; then
+        CGROUP_SWAP_BLOCKED=1
+        swap_kb=0
+    elif [[ "$swap_limit" =~ ^[0-9]+$ ]]; then
+        swap_limit_kb=$(awk -v bytes="$swap_limit" 'BEGIN { printf "%.0f\n", bytes / 1024 }')
+        CGROUP_SWAP_LIMIT_MB=$((swap_limit_kb / 1024))
+        if [[ "$swap_kb" -gt "$swap_limit_kb" ]]; then
+            swap_kb="$swap_limit_kb"
+        fi
+    fi
+
     MEM_TOTAL_MB=$((mem_kb / 1024))
     MEM_AVAIL_MB=$((avail_kb / 1024))
     SWAP_MB=$((swap_kb / 1024))
@@ -293,6 +376,10 @@ apply_kind_defaults() {
                 fi
             fi
         fi
+        if [[ "$MEM_TOTAL_MB" -lt 1500 ]]; then
+            SKIP_CORE=1
+            core_reason="全面服务端+低内存：先启动面板，内核需稳定后手动启动"
+        fi
     else
         # minimal — 1.4.10-style: panel + sing-box only
         INSTALL_KIND="minimal"
@@ -300,7 +387,7 @@ apply_kind_defaults() {
         INSTALL_PROXY=0
         INSTALL_AGENT=0
         # Like 1.4.10: start cores with panel. On very low RAM keep safe skip.
-        if [[ "$PROFILE" == "low" ]]; then
+        if [[ "$PROFILE" == "low" || "$MEM_TOTAL_MB" -lt 1500 ]]; then
             SKIP_CORE=1
             core_reason="极简+低配：默认不启内核（防 OOM；可用 --start-core）"
         else
@@ -366,6 +453,17 @@ apply_kind_defaults() {
         PROXY_ENGINE=""
         proxy_reason="用户指定 --no-proxy"
     fi
+    if [[ "$MEM_TOTAL_MB" -lt 1500 ]]; then
+        if [[ "$INSTALL_XRAY" -eq 1 ]]; then
+            INSTALL_XRAY=0
+            xray_reason="内存 <1.5G：安装期强制延后 Xray，避免 OOM"
+        fi
+        if [[ "$INSTALL_PROXY" -eq 1 ]]; then
+            INSTALL_PROXY=0
+            PROXY_ENGINE=""
+            proxy_reason="内存 <1.5G：安装期强制延后反代，避免与面板叠加"
+        fi
+    fi
 
     # --start-core / --skip-core already applied via SKIP_CORE / FORCE_SKIP_CORE
     if [[ "$FORCE_SKIP_CORE" -eq 0 ]]; then
@@ -376,6 +474,9 @@ apply_kind_defaults() {
     echo -e "${blue}========== 安装方案 ==========${plain}"
     echo -e "系统：${green}${PRETTY_NAME:-$release}${plain} | 架构：$(arch) | 内核：$(uname -r)"
     echo -e "资源：${CPU_CORES} 核 / 内存 ${MEM_TOTAL_MB}MB（可用 ${MEM_AVAIL_MB}MB）/ Swap ${SWAP_MB}MB / 磁盘约 ${DISK_FREE_MB}MB"
+    if [[ "$CGROUP_MEMORY_LIMIT_MB" -gt 0 ]]; then
+        echo -e "容器限制：内存上限 ${CGROUP_MEMORY_LIMIT_MB}MB$([ "$CGROUP_SWAP_BLOCKED" -eq 1 ] && echo ' / 禁止 Swap' || true)$([ "$CGROUP_SWAP_LIMIT_MB" -gt 0 ] && echo " / Swap 上限 ${CGROUP_SWAP_LIMIT_MB}MB" || true)"
+    fi
     echo -e "档位：${PROFILE} | 面板：${INSTALL_MODE}"
     if [[ "$INSTALL_KIND" == "full" ]]; then
         echo -e "模式：${green}全面服务端 (--full)${plain}"
@@ -418,7 +519,7 @@ apply_systemd_optimize() {
     sed -i '/^MemoryMax=/d;/^MemoryHigh=/d' "$unit" 2>/dev/null || true
 
     mkdir -p /etc/systemd/system/s-ui.service.d
-    local skip_line=""
+    local skip_line="Environment=SUI_SKIP_CORE=false"
     local go_mem_lines=""
     if [[ "$SKIP_CORE" -eq 1 ]]; then
         skip_line="Environment=SUI_SKIP_CORE=true"
@@ -457,14 +558,6 @@ EOF
     [[ -n "$go_mem_lines" ]] && echo -e "${green}已限制面板 Go 内存（GOMEMLIMIT），降低 OOM 风险${plain}"
 }
 
-suggest_swap() {
-    if [[ "$SWAP_MB" -lt 512 ]]; then
-        echo -e "${yellow}建议配置 ≥1G Swap 提升稳定性，例如：${plain}"
-        echo -e "  fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile"
-        echo -e "  echo '/swapfile none swap sw 0 0' >> /etc/fstab"
-    fi
-}
-
 install_base() {
     # Only install missing tools. Never full upgrade. Skip apt update when possible
     # (apt update alone can OOM tiny VPS during install).
@@ -472,31 +565,37 @@ install_base() {
     for bin in curl tar; do
         command -v "$bin" >/dev/null 2>&1 || need=1
     done
+    if [[ "$INSTALL_XRAY" -eq 1 ]]; then
+        command -v unzip >/dev/null 2>&1 || need=1
+        command -v wget >/dev/null 2>&1 || need=1
+    fi
     command -v wget >/dev/null 2>&1 || command -v curl >/dev/null 2>&1 || need=1
     if [[ "$need" -eq 0 ]]; then
         echo -e "${green}基础工具已就绪，跳过包管理器安装（省内存）${plain}"
         return 0
     fi
+    local packages=(wget curl tar ca-certificates)
+    [[ "$INSTALL_XRAY" -eq 1 ]] && packages+=(unzip)
     case "${release}" in
     centos | almalinux | rocky | oracle)
-        yum install -y -q wget curl tar ca-certificates
+        yum install -y -q "${packages[@]}"
         ;;
     fedora)
-        dnf install -y -q wget curl tar ca-certificates
+        dnf install -y -q "${packages[@]}"
         ;;
     arch | manjaro | parch)
-        pacman -Sy --noconfirm wget curl tar ca-certificates
+        pacman -Sy --noconfirm "${packages[@]}"
         ;;
     opensuse-tumbleweed)
-        zypper -q install -y wget curl tar ca-certificates
+        zypper -q install -y "${packages[@]}"
         ;;
     *)
         # Avoid apt-get update on low RAM unless packages missing
         if [[ "$MEM_TOTAL_MB" -ge 1500 ]]; then
             apt-get update -qq 2>/dev/null || true
         fi
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends curl tar ca-certificates \
-            || DEBIAN_FRONTEND=noninteractive apt-get install -y -q curl tar ca-certificates
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends "${packages[@]}" \
+            || DEBIAN_FRONTEND=noninteractive apt-get install -y -q "${packages[@]}"
         ;;
     esac
 }
@@ -806,94 +905,178 @@ prepare_services() {
     systemctl daemon-reload
 }
 
-free_page_cache() {
-    sync 2>/dev/null || true
-    # drop_caches is optional; never fail install if blocked
-    echo 1 >/proc/sys/vm/drop_caches 2>/dev/null || true
-}
-
 # Reclaimable + swap free, in MB (best-effort).
 mem_budget_mb() {
-    local avail_kb swap_free_kb
-    avail_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
-    swap_free_kb=$(awk '/SwapFree/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    local avail_kb swap_free_kb swap_limit_kb swap_current_kb cgroup_swap_free_kb
+    avail_kb=$(effective_available_kb)
+    swap_free_kb=$(meminfo_kb SwapFree)
+    avail_kb=${avail_kb:-0}
+    swap_free_kb=${swap_free_kb:-0}
+    [[ "$CGROUP_SWAP_BLOCKED" -eq 1 ]] && swap_free_kb=0
+    if [[ "$CGROUP_SWAP_LIMIT_MB" -gt 0 ]]; then
+        swap_limit_kb=$((CGROUP_SWAP_LIMIT_MB * 1024))
+        swap_current_kb=$(cgroup_value_kb "$CGROUP_V2_SWAP_CURRENT_FILE")
+        if [[ "$swap_current_kb" -ge "$swap_limit_kb" ]]; then
+            cgroup_swap_free_kb=0
+        else
+            cgroup_swap_free_kb=$((swap_limit_kb - swap_current_kb))
+        fi
+        [[ "$swap_free_kb" -gt "$cgroup_swap_free_kb" ]] && swap_free_kb="$cgroup_swap_free_kb"
+    fi
     echo $(((avail_kb + swap_free_kb) / 1024))
 }
 
-# Refuse to launch the ~90MB binary if remaining budget is too low.
+# Refuse to launch the large static binary if remaining budget is too low.
 require_mem_budget() {
     local need="${1:-280}"
     local have
     have=$(mem_budget_mb)
     echo -e "可用内存预算（MemAvailable+SwapFree）：${have}MB（启动面板建议 ≥${need}MB）"
-    if [[ "$have" -lt "$need" && "$FORCE_INSTALL" -ne 1 ]]; then
-        echo -e "${red}内存预算不足，强行启动 90MB 面板进程极易 OOM 整机重启。${plain}"
+    if [[ "$have" -lt "$need" ]]; then
+        echo -e "${red}内存预算不足，强行启动面板进程极易触发 OOM 并造成整机失联。${plain}"
         echo -e "${yellow}请：1) 确认 Swap 已启用  2) 关闭其它占内存进程  3) 或换 ≥2G 机器${plain}"
         echo -e "${yellow}排查： free -h; swapon --show; dmesg | grep -i oom | tail${plain}"
         return 1
     fi
-    if [[ "$have" -lt "$need" ]]; then
-        echo -e "${yellow}--force：内存预算不足仍继续（高风险）${plain}"
+    return 0
+}
+
+swap_path_is_active() {
+    local path="$1"
+    awk -v path="$path" 'NR > 1 && $1 == path { found=1 } END { exit found ? 0 : 1 }' "$PROC_SWAPS_FILE" 2>/dev/null
+}
+
+disk_free_mb_at() {
+    local path="$1"
+    df -Pm "$path" 2>/dev/null | awk 'NR == 2 { print $4; exit }'
+}
+
+require_install_disk_budget() {
+    local need="${1:-384}"
+    local have
+    have=$(disk_free_mb_at /usr/local)
+    [[ -z "$have" ]] && have=$(disk_free_mb_at /)
+    have=${have:-0}
+    if [[ "$have" -le 0 ]]; then
+        echo -e "${red}无法读取根分区剩余空间，已停止安装以避免写满磁盘。${plain}"
+        return 1
+    fi
+    if [[ "$have" -gt 0 && "$have" -lt "$need" ]]; then
+        echo -e "${red}磁盘空间不足：仅剩 ${have}MB，安全安装至少需要 ${need}MB。${plain}"
+        echo -e "${yellow}已在下载和解压前停止，避免写满根分区导致 VPS 失联。${plain}"
+        return 1
     fi
     return 0
 }
 
+# Pick a new path owned by this installer. Existing swap files are never
+# disabled, resized, removed, or overwritten.
+next_managed_swap_path() {
+    local candidate suffix
+    for suffix in "" ".supplemental" ".supplemental.2" ".supplemental.3"; do
+        candidate="${MANAGED_SWAP_FILE}${suffix}"
+        if [[ ! -e "$candidate" ]] && ! swap_path_is_active "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 ensure_swap_if_needed() {
-    # Critical: create swap BEFORE download/extract. 90MB binary + Go RSS
-    # easily OOMs 1GB machines with 0 swap (looks like a hard reboot).
-    local need_mb=0
-    if [[ "$MEM_TOTAL_MB" -lt 1500 ]]; then
-        need_mb=2048
-    elif [[ "$MEM_TOTAL_MB" -lt 2500 && "$SWAP_MB" -lt 512 ]]; then
-        need_mb=1024
-    else
+    [[ "$SWAP_PREPARED" -eq 1 ]] && return 0
+
+    local desired_total_mb=1024
+    local minimum_total_mb=512
+    [[ "$MEM_TOTAL_MB" -lt 700 ]] && minimum_total_mb=768
+
+    # Only low-memory hosts need automatic swap. A healthy existing swap of at
+    # least the minimum below is enough for the panel-only startup path.
+    if [[ "$MEM_TOTAL_MB" -ge 1500 || "$SWAP_MB" -ge "$minimum_total_mb" ]]; then
+        SWAP_PREPARED=1
         return 0
     fi
-    if [[ "$SWAP_MB" -ge "$need_mb" ]]; then
+
+    if [[ "$CGROUP_SWAP_BLOCKED" -eq 1 ]]; then
+        echo -e "${red}当前容器的 cgroup 禁止 Swap，无法安全补充内存。${plain}"
+        echo -e "${yellow}请在 VPS 管理面板提高内存/Swap 限额，脚本不会冒险继续。${plain}"
+        return 1
+    fi
+    if [[ "$CGROUP_SWAP_LIMIT_MB" -gt 0 && "$CGROUP_SWAP_LIMIT_MB" -lt "$minimum_total_mb" ]]; then
+        echo -e "${red}当前容器的 Swap 上限仅 ${CGROUP_SWAP_LIMIT_MB}MB，创建宿主机 Swap 也无法突破该限制。${plain}"
+        echo -e "${yellow}请先在 VPS 管理面板提高 cgroup Swap 限额。${plain}"
+        return 1
+    fi
+
+    local desired_add_mb=$((desired_total_mb - SWAP_MB))
+    local minimum_add_mb=$((minimum_total_mb - SWAP_MB))
+    [[ "$minimum_add_mb" -lt 1 ]] && {
+        SWAP_PREPARED=1
         return 0
-    fi
-    if [[ -f /swapfile ]] && swapon --show 2>/dev/null | grep -q '/swapfile'; then
-        local cur
-        cur=$(swapon --show --bytes 2>/dev/null | awk '/swapfile/ {print int($3/1024/1024); exit}')
-        [[ -n "$cur" && "$cur" -ge 512 ]] && return 0
-    fi
+    }
 
-    # Always create on low-RAM (no interactive cancel) — reboot risk is worse.
-    local size_mb="$need_mb"
-    echo -e "${yellow}低内存机器：自动创建 ${size_mb}MB Swap（防止安装时 OOM 关机）${plain}"
+    local swap_path swap_dir free_mb max_add_mb size_mb partial
+    swap_path=$(next_managed_swap_path) || {
+        echo -e "${red}找不到可安全创建的补充 Swap 路径；现有文件均保持不变。${plain}"
+        return 1
+    }
+    swap_dir=$(dirname "$swap_path")
+    mkdir -p "$swap_dir"
 
-    # Prefer fallocate (cheap). dd as fallback but with low-memory-friendly block size.
-    swapoff /swapfile 2>/dev/null || true
-    rm -f /swapfile 2>/dev/null || true
-    free_page_cache
+    free_mb=$(disk_free_mb_at "$swap_dir")
+    free_mb=${free_mb:-0}
+    if [[ "$free_mb" -le "$SWAP_DISK_RESERVE_MB" ]]; then
+        echo -e "${red}磁盘仅剩 ${free_mb}MB，必须保留至少 ${SWAP_DISK_RESERVE_MB}MB；不创建 Swap。${plain}"
+        return 1
+    fi
+    max_add_mb=$((free_mb - SWAP_DISK_RESERVE_MB))
+    if [[ "$max_add_mb" -lt "$minimum_add_mb" ]]; then
+        echo -e "${red}磁盘不足以安全补充 Swap：需至少 ${minimum_add_mb}MB，保留系统空间后仅可用 ${max_add_mb}MB。${plain}"
+        return 1
+    fi
+    size_mb="$desired_add_mb"
+    [[ "$size_mb" -gt "$max_add_mb" ]] && size_mb="$max_add_mb"
+
+    echo -e "${yellow}低内存机器：新增 ${size_mb}MB 独立 Swap（保留已有 Swap，不执行 swapoff）${plain}"
+    partial="${swap_path}.partial"
+    rm -f "$partial"
+
+    # Btrfs swap files need NOCOW before allocation. Harmless elsewhere.
+    : >"$partial"
+    chattr +C "$partial" 2>/dev/null || true
 
     local ok=0
-    if fallocate -l "${size_mb}M" /swapfile 2>/dev/null; then
+    if command -v fallocate >/dev/null 2>&1 && fallocate -l "${size_mb}M" "$partial" 2>/dev/null; then
         ok=1
-    elif dd if=/dev/zero of=/swapfile bs=64M count=$((size_mb / 64)) status=none conv=fsync 2>/dev/null; then
-        ok=1
-    elif dd if=/dev/zero of=/swapfile bs=1M count="$size_mb" status=none conv=fsync 2>/dev/null; then
-        ok=1
+    else
+        rm -f "$partial"
+        # 1MB blocks avoid the old 64MB userspace buffer spike on tiny VPS.
+        if dd if=/dev/zero of="$partial" bs=1M count="$size_mb" status=none conv=fsync 2>/dev/null; then
+            ok=1
+        fi
     fi
-    if [[ "$ok" -ne 1 ]]; then
-        echo -e "${red}创建 Swap 失败：请先手动加 Swap 再安装，否则 1G 机器极易重启${plain}"
-        echo -e "  fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile"
+    if [[ "$ok" -eq 1 ]]; then
+        chmod 600 "$partial"
+        if mkswap "$partial" >/dev/null 2>&1; then
+            mv "$partial" "$swap_path"
+            if swapon "$swap_path" >/dev/null 2>&1; then
+                ok=2
+            fi
+        fi
+    fi
+    if [[ "$ok" -ne 2 ]]; then
+        rm -f "$partial" "$swap_path"
+        echo -e "${red}补充 Swap 创建或启用失败；未改动任何已有 Swap。${plain}"
         return 1
     fi
-    chmod 600 /swapfile
-    if ! mkswap /swapfile >/dev/null 2>&1; then
-        echo -e "${red}mkswap 失败${plain}"
-        rm -f /swapfile
-        return 1
+
+    if ! awk -v path="$swap_path" '$1 == path && $3 == "swap" { found=1 } END { exit found ? 0 : 1 }' "$FSTAB_FILE" 2>/dev/null; then
+        printf '%s none swap sw 0 0\n' "$swap_path" >>"$FSTAB_FILE"
     fi
-    if ! swapon /swapfile; then
-        echo -e "${red}swapon 失败（部分虚拟机禁用 Swap）${plain}"
-        return 1
-    fi
-    grep -q '/swapfile' /etc/fstab 2>/dev/null || echo '/swapfile none swap sw 0 0' >>/etc/fstab
-    SWAP_MB=$size_mb
-    echo -e "${green}Swap 已启用：${size_mb}MB${plain}"
-    free -h 2>/dev/null || true
+    SWAP_MB=$((SWAP_MB + size_mb))
+    SWAP_PREPARED=1
+    echo -e "${green}补充 Swap 已启用：${swap_path}（${size_mb}MB，总计约 ${SWAP_MB}MB）${plain}"
+    return 0
 }
 
 # Sets DOWNLOAD_TARBALL path on success.
@@ -935,17 +1118,9 @@ install_s-ui() {
     echo -e "${yellow}安装前停止旧服务并准备 Swap（防 OOM 重启）...${plain}"
     systemctl stop s-ui 2>/dev/null || true
     systemctl stop s-ui-agent 2>/dev/null || true
-    free_page_cache
-    if ! ensure_swap_if_needed; then
-        if [[ "$MEM_TOTAL_MB" -lt 1500 && "$FORCE_INSTALL" -ne 1 ]]; then
-            echo -e "${red}内存 ${MEM_TOTAL_MB}MB 且无法创建 Swap：1G 级机器上 90MB 面板极易 OOM 整机重启。${plain}"
-            echo -e "${yellow}请先手动创建 Swap 后重试，或加 --force（不推荐）。${plain}"
-            exit 1
-        fi
-        echo -e "${yellow}Swap 未就绪，继续安装（风险高）${plain}"
-    fi
     free -h 2>/dev/null || true
     swapon --show 2>/dev/null || true
+    require_install_disk_budget 384 || exit 1
 
     local last_version
     if [[ -z "$REQUESTED_VERSION" ]]; then
@@ -991,7 +1166,6 @@ install_s-ui() {
         [[ -f /tmp/s-ui-extract/s-ui/sui || -f /tmp/s-ui-extract/sui ]] && extract_ok=1
     fi
     rm -f "$tarball"
-    free_page_cache
     if [[ "$extract_ok" -ne 1 ]]; then
         echo -e "${red}解压失败${plain}"
         rm -rf /tmp/s-ui-extract
@@ -1027,7 +1201,6 @@ install_s-ui() {
         echo -e "${green}已安装 sui-agent 二进制（全面服务端）${plain}"
     fi
     rm -rf /tmp/s-ui-extract
-    free_page_cache
 
     # systemd: SUI_SKIP_CORE + GOMEMLIMIT before first start
     apply_systemd_optimize
@@ -1046,7 +1219,6 @@ install_s-ui() {
         if require_mem_budget 300; then
             GOMEMLIMIT=200MiB GOGC=40 /usr/local/s-ui/sui migrate || \
                 echo -e "${yellow}migrate 非零退出，继续启动服务${plain}"
-            free_page_cache
         else
             echo -e "${red}内存不足，跳过 migrate；请空闲时手动： /usr/local/s-ui/sui migrate${plain}"
         fi
@@ -1067,10 +1239,15 @@ install_s-ui() {
     systemctl enable s-ui >/dev/null 2>&1 || true
 
     if [[ "$START_SERVICE" -eq 1 ]]; then
-        free_page_cache
         # This should be the ONLY full binary launch on a fresh install.
-        require_mem_budget 280 || exit 1
-        echo -e "${yellow}启动面板（唯一一次加载 90MB 进程；安全模式不启内核）...${plain}"
+        local start_budget=384
+        [[ "$SKIP_CORE" -eq 0 ]] && start_budget=768
+        require_mem_budget "$start_budget" || exit 1
+        if [[ "$SKIP_CORE" -eq 1 ]]; then
+            echo -e "${yellow}启动面板（唯一一次加载主进程；安全模式不启内核）...${plain}"
+        else
+            echo -e "${yellow}启动面板与代理内核（已通过 768MB 启动预算检查）...${plain}"
+        fi
         if ! systemctl start s-ui; then
             echo -e "${red}s-ui 服务启动失败，最近日志：${plain}"
             journalctl -u s-ui -n 80 --no-pager || true
@@ -1084,7 +1261,11 @@ install_s-ui() {
             dmesg 2>/dev/null | grep -iE 'oom|kill' | tail -20 || true
             exit 1
         fi
-        echo -e "${green}面板已运行（未自动加载代理内核）${plain}"
+        if [[ "$SKIP_CORE" -eq 1 ]]; then
+            echo -e "${green}面板已运行（未自动加载代理内核）${plain}"
+        else
+            echo -e "${green}面板与代理内核已启动${plain}"
+        fi
 
         # Never install Xray/proxy in the same critical window on tiny hosts.
         if [[ "$INSTALL_XRAY" -eq 1 ]]; then
@@ -1123,6 +1304,10 @@ install_s-ui() {
 }
 
 # ---- main ----
+if [[ "${SUI_INSTALL_SOURCE_ONLY:-0}" == "1" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
+
 parse_args "$@"
 # root required for install (--help exits earlier in parse_args)
 [[ $EUID -ne 0 ]] && echo -e "${red}致命错误：${plain}请使用 root 权限运行此脚本 \n " && exit 1
@@ -1132,12 +1317,15 @@ echo -e "当前系统发行版为：${release}"
 echo -e "架构：$(arch)"
 analyze_vps
 
-# Swap: always for full; for minimal only when low RAM (OOM guard)
-if [[ "$INSTALL_KIND" == "full" ]]; then
-    ensure_swap_if_needed || true
-elif [[ "$MEM_TOTAL_MB" -lt 1500 ]]; then
-    ensure_swap_if_needed || true
+# Single safety preparation; it is a no-op when memory or existing Swap is sufficient.
+if ! ensure_swap_if_needed; then
+    echo -e "${red}低内存安全准备失败，已在下载/解压前停止。${plain}"
+    echo -e "${yellow}--force 只跳过全面模式的 2核2G 建议，不会绕过 OOM/磁盘保护。${plain}"
+    exit 1
 fi
 
-install_base
+if ! install_base; then
+    echo -e "${red}基础工具安装失败，已停止；不会继续进入下载和启动阶段。${plain}"
+    exit 1
+fi
 install_s-ui

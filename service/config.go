@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Hhz0823/1s-ui/config"
 	"github.com/Hhz0823/1s-ui/core"
 	"github.com/Hhz0823/1s-ui/database"
 	"github.com/Hhz0823/1s-ui/database/model"
@@ -489,9 +490,20 @@ func (s *ConfigService) Save(obj string, act string, data json.RawMessage, initU
 	LastUpdate.Store(time.Now().UnixMilli())
 
 	if restartWithConfig {
-		err = s.restartCoreWithConfig(configData)
+		if config.IsSkipCore() && (corePtr == nil || !corePtr.IsRunning()) {
+			logger.Info("configuration saved in safe mode; proxy core remains stopped")
+		} else {
+			err = s.restartCoreWithConfig(configData)
+		}
 	} else if corePtr != nil && !corePtr.IsRunning() {
-		err = s.StartCore()
+		if config.IsSkipCore() {
+			logger.Info("configuration saved in safe mode; proxy core remains stopped")
+			if restartXray && xrayPtr != nil && xrayPtr.IsRunning() {
+				err = s.RestartXrayCoreIfNeeded()
+			}
+		} else {
+			err = s.StartCore()
+		}
 	} else if restartXray {
 		err = s.RestartXrayCoreIfNeeded()
 	}

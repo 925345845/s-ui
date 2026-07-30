@@ -561,7 +561,7 @@
     exportBitBrowser: "Xuất BitBrowser",
     exportBitBrowserReady: "Đã tải tệp nhập BitBrowser",
     exportBitBrowserFailed: "Không thể tạo tệp nhập BitBrowser",
-    generatedAddresses: "Địa chỉ được tạo chỉ được thêm vào giao diện đã chọn; tuyến mặc định của hệ thống không thay đổi.",
+    generatedAddresses: "Máy khách kết nối qua địa chỉ công khai (IPv4/tên miền gốc của máy chủ); IPv6 được tạo chỉ gắn với lối ra tương ứng và không đổi tuyến mặc định.",
     capability: {
       unsupported_os: "Đây là môi trường thử nghiệm {os} cục bộ. Gán IPv6 một chạm chỉ hỗ trợ VPS Linux.",
       root_required: "Bảng điều khiển không có quyền quản lý giao diện mạng. Hãy chạy 1S-UI bằng quyền root trên VPS Linux.",

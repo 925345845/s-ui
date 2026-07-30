@@ -71,6 +71,7 @@ A modern proxy panel forked from S-UI: sing-box first, optional Xray-core per in
 - 模式：本机公网 IPv6 池 / 上游 SOCKS5
 - 协议：SOCKS、HTTP、Mixed、SS、VLESS、VMess、Trojan、Hysteria2、TUIC、Naive、AnyTLS
 - 自动创建入站、用户、出站、路由；支持 BitBrowser Excel 导出
+- IPv6 池模式由客户端连接原 VPS IPv4/域名，每条生成 IPv6 仅绑定对应出口
 - IPv6 用 `ip -6 addr add` 添加，等待 DAD，失败回滚；**不改默认路由**
 - 参考 [auto-add-ipv6](https://github.com/help660vip/auto-add-ipv6) 流程，Go 内置实现，不执行远程脚本
 
@@ -235,7 +236,7 @@ opkg install ./s-ui-lite_1.5.4-1_x86_64.ipk
 
 **Xray (v1.5):** VLESS, VMess, Trojan, Shadowsocks, SOCKS, HTTP, Mixed, Hysteria2, Dokodemo-door, WireGuard; transports XHTTP/RAW/mKCP/gRPC/WS/HTTPUpgrade; self-check UI.
 
-**Relay:** IPv6 pool or upstream SOCKS5; multi-protocol batch; BitBrowser Excel export; safe IPv6 add with DAD + rollback (no default-route changes).
+**Relay:** IPv6 pool or upstream SOCKS5; clients connect to the original VPS IPv4/hostname while each generated IPv6 is bound only to its matching egress; multi-protocol batch; BitBrowser Excel export; safe IPv6 add with DAD + rollback (no default-route changes).
 
 **Agents (v1.5):** outbound HTTP + WebSocket; metrics; remote control (restart cores, exec, interval); interactive PTY terminal; multi-node batch commands. Control requires WebSocket online + panel login.
 

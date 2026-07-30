@@ -13,6 +13,18 @@ permissions:
   contents: read
 
 jobs:
+  installer-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Validate Linux installer safety guards
+        run: |
+          bash -n install.sh
+          bash -n scripts/test-install-safety.sh
+          scripts/test-install-safety.sh
+
   frontend-audit:
     runs-on: ubuntu-latest
     steps:

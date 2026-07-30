@@ -7,8 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Hhz0823/1s-ui/core"
 	"github.com/Hhz0823/1s-ui/database"
 	"github.com/Hhz0823/1s-ui/database/model"
+	"github.com/Hhz0823/1s-ui/logger"
+	"github.com/op/go-logging"
 )
 
 func TestGetChangesUsesExactFilters(t *testing.T) {
@@ -63,6 +66,35 @@ func TestCheckChangesAcceptsMillisecondTimestamp(t *testing.T) {
 	}
 	if !updated {
 		t.Fatal("CheckChanges() missed a persisted change with a millisecond cursor")
+	}
+}
+
+func TestSaveKeepsCoreStoppedInSafeMode(t *testing.T) {
+	logger.InitLogger(logging.CRITICAL)
+	dbDir := t.TempDir()
+	t.Setenv("SUI_DB_FOLDER", dbDir)
+	t.Setenv("SUI_SKIP_CORE", "true")
+	if err := database.InitDB(filepath.Join(dbDir, "safe-save.db")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&SettingService{}).GetAllSetting(); err != nil {
+		t.Fatal(err)
+	}
+
+	oldCore, oldXray := corePtr, xrayPtr
+	corePtr = core.NewCore()
+	xrayPtr = core.NewXrayRuntime()
+	t.Cleanup(func() {
+		corePtr = oldCore
+		xrayPtr = oldXray
+	})
+
+	service := ConfigService{}
+	if _, err := service.Save("config", "edit", json.RawMessage(defaultConfig), "", "tester", "localhost"); err != nil {
+		t.Fatal(err)
+	}
+	if corePtr.IsRunning() {
+		t.Fatal("safe-mode config save started sing-box")
 	}
 }
 

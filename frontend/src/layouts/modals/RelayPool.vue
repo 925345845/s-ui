@@ -302,8 +302,8 @@ const poolAddressSummary = (pool: RelayPool) => {
     ? i18n.global.t('relay.preferIPv6')
     : i18n.global.t('relay.ipv6Only')
   if (addresses.length === 0) return `${pool.listen_host} / ${mode}`
-  if (addresses.length <= 2) return `${addresses.join(', ')} / ${mode}`
-  return `${addresses[0]}, ${addresses[1]} ... (+${addresses.length - 2} IPv6) / ${mode}`
+  if (addresses.length <= 2) return `${pool.listen_host} -> ${addresses.join(', ')} / ${mode}`
+  return `${pool.listen_host} -> ${addresses[0]}, ${addresses[1]} ... (+${addresses.length - 2} IPv6) / ${mode}`
 }
 
 const create = async (mode: 'ipv6' | 'upstream', quick = false) => {
@@ -358,7 +358,7 @@ const create = async (mode: 'ipv6' | 'upstream', quick = false) => {
 
 const exportText = (pool: RelayPool) => pool.items.map((item) => {
   if (item.protocol && !['socks', 'mixed'].includes(item.protocol) && item.export) return item.export
-  const host = (item.ipv6 || pool.listen_host).replace(/^\[|\]$/g, '')
+  const host = pool.listen_host.replace(/^\[|\]$/g, '')
   return `${host}:${item.listen_port}:${item.username}:${item.password}`
 }).join('\n')
 

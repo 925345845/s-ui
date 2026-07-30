@@ -562,7 +562,7 @@
     exportBitBrowser: "Экспорт BitBrowser",
     exportBitBrowserReady: "Файл импорта BitBrowser загружен",
     exportBitBrowserFailed: "Не удалось создать файл импорта BitBrowser",
-    generatedAddresses: "Созданные адреса добавляются только в выбранный интерфейс; маршрут по умолчанию не меняется.",
+    generatedAddresses: "Клиенты подключаются к публичному адресу (исходному IPv4/имени сервера); созданные IPv6 привязаны только к своим выходам и не меняют маршрут по умолчанию.",
     capability: {
       unsupported_os: "Это локальная тестовая среда {os}. Назначение IPv6 в один клик поддерживается только на Linux VPS.",
       root_required: "У панели нет прав на управление сетью. Запустите 1S-UI с правами root на Linux VPS.",

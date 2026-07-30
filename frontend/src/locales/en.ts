@@ -608,7 +608,7 @@
     exportBitBrowser: "Export BitBrowser",
     exportBitBrowserReady: "BitBrowser import file downloaded",
     exportBitBrowserFailed: "Could not generate BitBrowser import file",
-    generatedAddresses: "Generated addresses are assigned only to the selected interface; the system default route is unchanged.",
+    generatedAddresses: "Clients connect through the public host (original server IPv4/hostname); generated IPv6 addresses are bound only to their matching egress and do not change the system default route.",
     capability: {
       unsupported_os: "This is a local {os} test environment. One-click IPv6 assignment requires a Linux VPS.",
       root_required: "The panel cannot manage network interfaces. Run 1S-UI with root privileges on the Linux VPS.",

@@ -608,7 +608,7 @@
     exportBitBrowser: "导出 BitBrowser",
     exportBitBrowserReady: "BitBrowser 导入文件已下载",
     exportBitBrowserFailed: "BitBrowser 导入文件生成失败",
-    generatedAddresses: "生成的地址只添加到选定网卡，不会修改系统默认路由。",
+    generatedAddresses: "客户端通过对外连接地址（原服务器 IPv4/域名）接入；生成的 IPv6 只绑定对应出口，不会修改系统默认路由。",
     capability: {
       unsupported_os: "当前是 {os} 本地测试环境。一键添加 IPv6 仅支持部署在 Linux VPS 上。",
       root_required: "面板当前没有管理网卡的权限，请在 Linux VPS 上以 root 权限运行 1S-UI。",

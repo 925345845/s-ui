@@ -561,7 +561,7 @@
     exportBitBrowser: "خروجی BitBrowser",
     exportBitBrowserReady: "فایل ورود BitBrowser بارگیری شد",
     exportBitBrowserFailed: "ساخت فایل ورود BitBrowser ناموفق بود",
-    generatedAddresses: "آدرس‌های تولیدشده فقط به رابط انتخاب‌شده اضافه می‌شوند و مسیر پیش‌فرض سیستم تغییر نمی‌کند.",
+    generatedAddresses: "کلاینت‌ها از طریق آدرس عمومی (IPv4/نام میزبان اصلی سرور) متصل می‌شوند؛ IPv6های تولیدشده فقط به خروجی متناظر متصل‌اند و مسیر پیش‌فرض را تغییر نمی‌دهند.",
     capability: {
       unsupported_os: "این محیط آزمایشی محلی {os} است. تخصیص یک‌کلیکی IPv6 به VPS لینوکس نیاز دارد.",
       root_required: "پنل اجازه مدیریت رابط شبکه را ندارد. 1S-UI را با دسترسی root روی VPS لینوکس اجرا کنید.",

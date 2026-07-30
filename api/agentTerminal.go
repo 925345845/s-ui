@@ -35,9 +35,9 @@ func (a *ApiService) AgentTerminal(c *gin.Context) {
 	cols, _ := strconv.Atoi(c.DefaultQuery("cols", "80"))
 	rows, _ := strconv.Atoi(c.DefaultQuery("rows", "24"))
 
-	conn, err := websocket.Accept(c.Writer, c.Request, &websocket.AcceptOptions{
-		InsecureSkipVerify: true,
-	})
+	// Keep the terminal same-origin. Disabling origin verification here would
+	// let an unrelated website drive a logged-in administrator's remote shell.
+	conn, err := websocket.Accept(c.Writer, c.Request, nil)
 	if err != nil {
 		logger.Warning("browser terminal accept failed: ", err)
 		return
