@@ -17,6 +17,7 @@ INSTALL_AGENT=0              # copy sui-agent binary + unit
 PROXY_ENGINE=""              # caddy | nginx | ""
 PROXY_DOMAIN=""
 PROXY_EMAIL=""
+PROXY_READY=0                # 1 = reverse proxy was configured and is active
 INSTALL_MODE="fresh"         # fresh | upgrade
 PROFILE="standard"           # low | standard | high
 MEM_TOTAL_MB=0
@@ -86,7 +87,7 @@ usage() {
 示例:
   # 极简（推荐日常/小机器）
   bash install.sh -y --minimal
-  bash install.sh v1.5.7 -y -m
+  bash install.sh v1.5.8 -y -m
 
   # 全面服务端（生产/多节点控制面）
   bash install.sh -y --full --domain panel.example.com --email a@b.com
@@ -490,10 +491,7 @@ apply_kind_defaults() {
             exit 0
         fi
         if [[ "$INSTALL_KIND" == "full" && -z "$PROXY_DOMAIN" && "$INSTALL_PROXY" -eq 1 ]]; then
-            read -r -p "反代域名（可留空，仅 HTTP:80）：" PROXY_DOMAIN
-            if [[ -n "$PROXY_DOMAIN" ]]; then
-                read -r -p "ACME 邮箱（可留空）：" PROXY_EMAIL
-            fi
+            echo -e "${yellow}反代将先使用服务器 IP 的 HTTP:80。安装后请在「面板设置 → 服务端面板」配置域名。${plain}"
         fi
     fi
 }
@@ -657,6 +655,7 @@ write_caddy_config() {
     local panel_port="${3:-2095}"
     mkdir -p /etc/caddy
     {
+        echo "# BEGIN 1S-UI MANAGED REVERSE PROXY"
         if [[ -n "$domain" && -n "$email" ]]; then
             echo "{"
             echo "	email ${email}"
@@ -676,6 +675,7 @@ write_caddy_config() {
 	}
 }
 EOF
+        echo "# END 1S-UI MANAGED REVERSE PROXY"
     } >/etc/caddy/Caddyfile
 }
 
@@ -693,6 +693,7 @@ write_nginx_config() {
     [[ -n "$domain" ]] && server_name="$domain"
 
     cat >"$conf_file" <<EOF
+# BEGIN 1S-UI MANAGED REVERSE PROXY
 server {
     listen 80;
     listen [::]:80;
@@ -711,6 +712,7 @@ server {
         proxy_pass http://127.0.0.1:${panel_port};
     }
 }
+# END 1S-UI MANAGED REVERSE PROXY
 EOF
     if [[ -d /etc/nginx/sites-enabled ]]; then
         ln -sfn "$conf_file" /etc/nginx/sites-enabled/s-ui.conf
@@ -723,15 +725,44 @@ bind_panel_localhost() {
     local domain="$1"
     local uri=""
     if [[ -n "$domain" ]]; then
-        uri="https://${domain}/app/"
+        local scheme="http"
+        [[ "$PROXY_ENGINE" == "caddy" ]] && scheme="https"
+        uri="${scheme}://${domain}/app/"
         /usr/local/s-ui/sui setting -listen 127.0.0.1 -domain "$domain" -uri "$uri" >/dev/null 2>&1 || true
     else
-        /usr/local/s-ui/sui setting -listen 127.0.0.1 >/dev/null 2>&1 || true
+        /usr/local/s-ui/sui setting -listen 127.0.0.1 -domain - -uri - >/dev/null 2>&1 || true
     fi
     # Avoid restart storm; caller restarts once if needed.
 }
 
+panel_access_url() {
+    if [[ "$PROXY_READY" -eq 1 ]]; then
+        if [[ -n "$PROXY_DOMAIN" ]]; then
+            if [[ "$PROXY_ENGINE" == "caddy" ]]; then
+                printf 'https://%s/app/' "$PROXY_DOMAIN"
+            else
+                printf 'http://%s/app/' "$PROXY_DOMAIN"
+            fi
+        else
+            printf 'http://服务器IP/app/'
+        fi
+        return
+    fi
+    printf 'http://服务器IP:2095/app/'
+}
+
+proxy_summary_label() {
+    if [[ "$INSTALL_PROXY" -ne 1 ]]; then
+        printf '否'
+    elif [[ "$PROXY_READY" -eq 1 ]]; then
+        printf '是(%s，已启动)' "$PROXY_ENGINE"
+    else
+        printf '否（未启动）'
+    fi
+}
+
 install_reverse_proxy() {
+    PROXY_READY=0
     if [[ "$INSTALL_PROXY" -ne 1 ]]; then
         echo -e "${yellow}按预检结果跳过反代安装。${plain}"
         return 0
@@ -757,6 +788,7 @@ install_reverse_proxy() {
             write_caddy_config "$PROXY_DOMAIN" "$PROXY_EMAIL" "$panel_port"
             systemctl enable caddy >/dev/null 2>&1 || true
             if systemctl restart caddy && systemctl is-active --quiet caddy; then
+                PROXY_READY=1
                 echo -e "${green}Caddy 反代已启动${plain}"
                 if [[ -n "$PROXY_DOMAIN" ]]; then
                     echo -e "面板地址：${green}https://${PROXY_DOMAIN}/app/${plain}"
@@ -781,6 +813,9 @@ install_reverse_proxy() {
         nginx -t 2>/dev/null || true
         systemctl enable nginx >/dev/null 2>&1 || true
         if systemctl restart nginx && systemctl is-active --quiet nginx; then
+            PROXY_READY=1
+            # Caddy fallback changes the public scheme from HTTPS to HTTP.
+            bind_panel_localhost "$PROXY_DOMAIN"
             echo -e "${green}Nginx 反代已启动${plain}"
             if [[ -n "$PROXY_DOMAIN" ]]; then
                 echo -e "HTTP：${green}http://${PROXY_DOMAIN}/app/${plain}"
@@ -844,6 +879,19 @@ install_xray() {
     [[ -f "$tmp_dir/geosite.dat" ]] && install -m 644 "$tmp_dir/geosite.dat" /usr/local/s-ui/bin/geosite.dat
     rm -rf "$tmp_dir" "$zip_path"
     echo -e "${green}Xray-core 已安装到 /usr/local/s-ui/bin/xray${plain}"
+
+    if systemctl is-active --quiet s-ui; then
+        echo -e "${yellow}正在重启 1S-UI 以加载新的 Xray-core...${plain}"
+        if ! systemctl try-restart s-ui; then
+            echo -e "${red}Xray-core 已更新，但 1S-UI 重启失败，请检查：journalctl -u s-ui -n 80${plain}"
+            return 1
+        fi
+        sleep 2
+        if ! systemctl is-active --quiet s-ui; then
+            echo -e "${red}1S-UI 未能在 Xray-core 更新后保持运行，请检查服务日志${plain}"
+            return 1
+        fi
+    fi
 }
 
 config_after_install() {
@@ -1284,8 +1332,11 @@ install_s-ui() {
     local kind_label="极简"
     [[ "$INSTALL_KIND" == "full" ]] && kind_label="全面服务端"
     echo -e "安装摘要：方案=${green}${kind_label}${plain} 升级=${INSTALL_MODE} 档位=${PROFILE}"
-    echo -e "  Xray=$([ "$INSTALL_XRAY" -eq 1 ] && echo 是 || echo 否) 反代=$([ "$INSTALL_PROXY" -eq 1 ] && echo "是(${PROXY_ENGINE})" || echo 否) Agent=$([ "$INSTALL_AGENT" -eq 1 ] && echo 是 || echo 否) 自动启内核=$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是) Swap=${SWAP_MB}MB"
-    echo -e "访问：浏览器打开 http://服务器IP:2095/app/  （默认 admin/admin）"
+    echo -e "  Xray=$([ "$INSTALL_XRAY" -eq 1 ] && echo 是 || echo 否) 反代=$(proxy_summary_label) Agent=$([ "$INSTALL_AGENT" -eq 1 ] && echo 是 || echo 否) 自动启内核=$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是) Swap=${SWAP_MB}MB"
+    echo -e "访问：浏览器打开 ${green}$(panel_access_url)${plain}（默认 admin/admin）"
+    if [[ "$PROXY_READY" -eq 1 ]]; then
+        echo -e "${yellow}安全说明：2095 仅监听本机，请勿使用公网 IP:2095；公网入口由 ${PROXY_ENGINE} 提供。${plain}"
+    fi
     if [[ "$SKIP_CORE" -eq 1 ]]; then
         echo -e "${yellow}安全模式：配置入站后在面板内重启内核再启用代理。${plain}"
     fi

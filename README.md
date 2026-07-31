@@ -7,7 +7,7 @@
 [![sing-box](https://img.shields.io/badge/default%20core-sing--box-1677ff)](https://github.com/SagerNet/sing-box)
 [![Xray-core](https://img.shields.io/badge/optional%20core-Xray--core-28a745)](https://github.com/XTLS/Xray-core)
 
-**最新版本 Latest:** [v1.5.7](https://github.com/Hhz0823/1s-ui/releases/tag/v1.5.7)
+**最新版本 Latest:** [v1.5.8](https://github.com/Hhz0823/1s-ui/releases/tag/v1.5.8)
 
 基于 [S-UI](https://github.com/alireza0/s-ui) 二次开发的现代代理管理面板。默认内核 **sing-box**，入站可切换 **Xray-core**；面向 Linux 服务器（Ubuntu / Debian），提供 Web 管理、订阅、TLS 自动化、一键中转，以及类似哪吒 / Komari 的多服务器 Agent 监控与远程控制。
 
@@ -66,6 +66,8 @@ A modern proxy panel forked from S-UI: sing-box first, optional Xray-core per in
 | 已移除（上游） | HTTP/2、旧 QUIC → 请用 XHTTP stream-one / H3 |
 | 自检 | 二进制版本、配置校验、运行状态、协议/传输能力列表 |
 
+> Xray Hysteria2 请使用 Xray-core `26.7.11` 或更新版本。全面安装和 `--with-xray` 会下载当前官方版本，并在更新后重启 1S-UI 以加载新内核。
+
 #### 一键中转
 
 - 模式：本机公网 IPv6 池 / 上游 SOCKS5
@@ -108,7 +110,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --minimal
 
 # 指定版本极简
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.7 -y -m
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.8 -y -m
 
 # 全面服务端 + 域名 HTTPS
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --full --domain panel.example.com --email a@b.com
@@ -125,7 +127,19 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 
 其它开关：`--no-xray` / `--no-proxy` / `--skip-core` / `--start-core` / `--domain`。旧命令中的 `--force` 仍兼容，但不会绕过 2核2G、OOM 或磁盘保护。
 
-反代启用后，面板默认仅监听 `127.0.0.1`，通过 80/443 访问 `/app/`。
+反代启用后，面板默认仅监听 `127.0.0.1:2095`，公网必须通过 80/443 访问 `/app/`：
+
+| 安装结果 | 正确访问地址 |
+| --- | --- |
+| 极简 / 未启用反代 | `http://服务器IP:2095/app/` |
+| 全面服务端、未填写域名 | `http://服务器IP/app/` |
+| 全面服务端、Caddy + 域名 | `https://你的域名/app/` |
+
+全面服务端的公网 `IP:2095` 默认不可访问，这是避免面板绕过反代直接暴露的安全设计。请以安装结束时输出的“访问”地址为准。
+
+安装后可在 **面板设置 → 服务端面板 → 反向代理** 查看 Caddy/Nginx 状态、修改域名并应用配置。面板只会接管由 1S-UI 生成或识别为旧版安装器生成的配置；检测到自定义站点配置时会拒绝覆盖。
+
+交互式全面安装不再要求输入域名：首次先提供 `http://服务器IP/app/`，登录后在上述页面配置域名。自动化部署仍可使用 `--domain panel.example.com --email a@b.com` 直接启用 Caddy HTTPS。
 
 | 配置 | 默认 |
 | --- | --- |
@@ -152,7 +166,7 @@ s-ui update
 手动示例：
 
 ```bash
-sui agent --panel 'https://你的域名:2095/app/' --token '<一次性Token>'
+sui agent --panel 'https://你的域名/app/' --token '<一次性Token>'
 ```
 
 ### Docker
@@ -184,7 +198,7 @@ services:
 
 ### OpenWrt Lite（实验）
 
-仅含 sing-box，无 Xray。从 [Releases](https://github.com/Hhz0823/1s-ui/releases/latest) 下载 `s-ui-lite_*.ipk`：
+仅含 sing-box，无 Xray。OpenWrt Lite 暂停在 `v1.5.7`，从 [v1.5.7 Release](https://github.com/Hhz0823/1s-ui/releases/tag/v1.5.7) 下载 `s-ui-lite_*.ipk`：
 
 ```bash
 opkg install ./s-ui-lite_1.5.7-1_x86_64.ipk
@@ -207,12 +221,13 @@ opkg install ./s-ui-lite_1.5.7-1_x86_64.ipk
 | **服务器监控** | Agent 列表、详情、控制、终端、批量 |
 | 管理员 / 设置 | 账号 Token、面板与系统网络参数 |
 
-### v1.5.7 变更
+### v1.5.8 变更
 
-- IPv6 中转创建前逐个验证真实公网出口；不可用时回滚，不再生成无法连接的节点
-- 一键创建数量统一限制为 1–100，并提供多语言页面提示
-- 单核且内存不少于 1500MB 的极简安装会正常启动 sing-box
-- 全面服务端与 Agent 继续保持 2 核 2GB 硬性门槛
+- 修复 HY2、TUIC、AnyTLS、VLESS、Trojan、VMess 等分享链接在 v2rayN 的转义、TLS 钉扎和传输兼容
+- Xray Hysteria2 改用官方 `users` 配置，并要求 Xray-core 26.7.11 或更新版本
+- 一键创建的 sing-box VLESS / Trojan 默认使用稳定的 RAW 传输，TUIC 自动补齐 H3 ALPN
+- 服务端面板增加反向代理状态与配置管理；安装器更新 Xray 后会安全重启服务加载新内核
+- 继续保留 1–100 批量节点、IPv6 出口验证和低内存安装保护
 
 ---
 
@@ -246,10 +261,10 @@ opkg install ./s-ui-lite_1.5.7-1_x86_64.ipk
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 # or
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.7
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.8
 ```
 
-Defaults: panel `2095` `/app/`, sub `2096` `/sub/`, DB `/usr/local/s-ui/db`, login `admin`/`admin` (change immediately).
+Defaults: panel upstream `2095` `/app/`, sub `2096` `/sub/`, DB `/usr/local/s-ui/db`, login `admin`/`admin` (change immediately). With the full reverse-proxy install, public access uses `http://server-ip/app/` or `https://your-domain/app/`; port `2095` remains localhost-only. Reverse proxy status and domain changes are available under **Panel Settings → Server Panel**.
 
 ```bash
 s-ui / s-ui status / s-ui log / s-ui update
@@ -258,7 +273,7 @@ s-ui / s-ui status / s-ui log / s-ui update
 **Agent:** enroll under **Server Agents**, run the one-time install command on each host, or:
 
 ```bash
-sui agent --panel 'https://host:2095/app/' --token '<token>'
+sui agent --panel 'https://host/app/' --token '<token>'
 ```
 
 ### Docker
@@ -272,6 +287,8 @@ docker run -itd --network host \
 
 ### OpenWrt Lite
 
+OpenWrt Lite remains at `v1.5.7` while Linux development is prioritized.
+
 ```bash
 opkg install ./s-ui-lite_1.5.7-1_x86_64.ipk
 /etc/init.d/s-ui-lite enable && /etc/init.d/s-ui-lite start
@@ -279,12 +296,13 @@ opkg install ./s-ui-lite_1.5.7-1_x86_64.ipk
 
 See [docs/openwrt-lite.md](docs/openwrt-lite.md).
 
-### v1.5.7 highlights
+### v1.5.8 highlights
 
-- Validate every generated IPv6 egress before relay creation and roll back unreachable addresses
-- Enforce a consistent 1–100 quick-create limit with localized UI feedback
-- Start sing-box in minimal mode on single-core hosts with at least 1500MB RAM
-- Keep the full server and Agent control plane hard-gated at 2 vCPU and 2GB RAM
+- Fix v2rayN link escaping, TLS pinning, and transport compatibility for HY2, TUIC, AnyTLS, VLESS, Trojan, and VMess
+- Generate Xray Hysteria2 with the official `users` shape and require Xray-core 26.7.11 or newer
+- Use stable RAW defaults for one-click sing-box VLESS/Trojan and add the required H3 ALPN for TUIC
+- Add reverse-proxy management under Server Panel and restart 1S-UI after an Xray binary update
+- Preserve 1–100 batch creation, IPv6 egress validation, and low-memory install guards
 
 ---
 
@@ -293,7 +311,7 @@ See [docs/openwrt-lite.md](docs/openwrt-lite.md).
 [S-UI](https://github.com/alireza0/s-ui) ベースのプロキシ管理パネル。標準は sing-box、入站ごとに Xray-core を選択可能。主に Ubuntu / Debian 向け。v1.5 では Agent による監視・遠隔操作・対話型ターミナルに対応。
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.7
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.8
 ```
 
 Docker: `ghcr.io/Hhz0823/1s-ui`（`network_mode: host` 推奨）。OpenWrt Lite は実験版（sing-box のみ）。詳細は上の English / 中文 を参照。
@@ -305,7 +323,7 @@ Docker: `ghcr.io/Hhz0823/1s-ui`（`network_mode: host` 推奨）。OpenWrt Lite 
 [S-UI](https://github.com/alireza0/s-ui) 기반 프록시 관리 패널. 기본 코어 sing-box, 인바운드별 Xray-core 선택. 주로 Ubuntu/Debian 지원. v1.5: Agent 모니터링·원격 제어·대화형 터미널·다중 노드 일괄 명령.
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.7
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.8
 ```
 
 Docker: `ghcr.io/Hhz0823/1s-ui`. OpenWrt Lite는 실험 버전. 자세한 내용은 위 중문/영문 섹션 참고.

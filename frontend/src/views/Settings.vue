@@ -6,6 +6,7 @@
     align-tabs="center"
     show-arrows
   >
+    <v-tab value="t0">{{ $t('setting.serverPanel') }}</v-tab>
     <v-tab value="t1">{{ $t('setting.interface') }}</v-tab>
     <v-tab value="t2">{{ $t('setting.sub') }}</v-tab>
     <v-tab value="t3">{{ $t('setting.jsonSub') }}</v-tab>
@@ -26,7 +27,123 @@
       </v-col>
     </v-row>
     <v-window v-model="tab">
-      <v-window-item value="t1">
+      <v-window-item value="t0">
+        <section class="reverse-proxy-section">
+          <div class="reverse-proxy-header">
+            <div>
+              <div class="text-subtitle-1 font-weight-bold">{{ $t('setting.reverseProxyTitle') }}</div>
+              <div class="text-body-2 text-medium-emphasis">{{ $t('setting.reverseProxyHint') }}</div>
+            </div>
+            <div class="reverse-proxy-status">
+              <v-chip
+                size="small"
+                :color="reverseProxyStatus.running ? 'success' : 'warning'"
+                :prepend-icon="reverseProxyStatus.running ? 'mdi-check-circle' : 'mdi-alert-circle-outline'"
+              >
+                {{ reverseProxyStatus.running ? $t('setting.reverseProxyRunning') : $t('setting.reverseProxyStopped') }}
+              </v-chip>
+              <v-chip
+                size="small"
+                :color="reverseProxyStatus.managed ? 'primary' : 'default'"
+                prepend-icon="mdi-shield-check-outline"
+              >
+                {{ reverseProxyStatus.managed ? $t('setting.reverseProxyManaged') : $t('setting.reverseProxyUnmanaged') }}
+              </v-chip>
+              <v-btn
+                icon="mdi-refresh"
+                size="small"
+                variant="text"
+                :loading="reverseProxyLoading"
+                :aria-label="$t('setting.reverseProxyRefresh')"
+                @click="loadReverseProxy"
+              ></v-btn>
+            </div>
+          </div>
+
+          <v-alert
+            v-if="!reverseProxyStatus.supported"
+            type="warning"
+            variant="tonal"
+            density="compact"
+            class="mt-4"
+          >
+            {{ $t('setting.reverseProxyUnsupported') }}
+          </v-alert>
+          <v-alert
+            v-else-if="reverseProxyStatus.running && !reverseProxyStatus.managed"
+            type="warning"
+            variant="tonal"
+            density="compact"
+            class="mt-4"
+          >
+            {{ $t('setting.reverseProxyCustomConfig') }}
+          </v-alert>
+          <v-alert
+            v-else-if="!selectedReverseProxyInstalled"
+            type="info"
+            variant="tonal"
+            density="compact"
+            class="mt-4"
+          >
+            {{ $t('setting.reverseProxyNotInstalled') }}
+          </v-alert>
+
+          <v-row class="mt-1">
+            <v-col cols="12" sm="6" md="4">
+              <v-select
+                v-model="reverseProxyConfig.engine"
+                :items="reverseProxyEngineOptions"
+                item-title="title"
+                item-value="value"
+                :label="$t('setting.reverseProxyEngine')"
+                hide-details
+              ></v-select>
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <v-text-field
+                v-model.trim="reverseProxyConfig.domain"
+                :label="$t('setting.reverseProxyDomain')"
+                :placeholder="$t('setting.reverseProxyDomainPlaceholder')"
+                hide-details
+                clearable
+              ></v-text-field>
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <v-text-field
+                :model-value="reverseProxyUpstream"
+                :label="$t('setting.reverseProxyUpstream')"
+                prepend-inner-icon="mdi-server-network"
+                readonly
+                hide-details
+              ></v-text-field>
+            </v-col>
+            <v-col cols="12">
+              <v-text-field
+                :model-value="reverseProxyPublicURL"
+                :label="$t('setting.reverseProxyPublicURL')"
+                prepend-inner-icon="mdi-open-in-new"
+                readonly
+                hide-details
+              ></v-text-field>
+            </v-col>
+          </v-row>
+
+          <div class="reverse-proxy-actions">
+            <v-btn
+              color="primary"
+              prepend-icon="mdi-shield-sync-outline"
+              :loading="reverseProxyLoading"
+              :disabled="!canApplyReverseProxy"
+              @click="applyReverseProxy"
+            >
+              {{ $t('setting.reverseProxyApply') }}
+            </v-btn>
+            <span class="text-caption text-medium-emphasis">{{ $t('setting.reverseProxyRestartHint') }}</span>
+          </div>
+        </section>
+
+        <v-divider class="my-5" opacity="40"></v-divider>
+        <div class="text-subtitle-2 font-weight-bold mb-3">{{ $t('setting.panelBuiltinServer') }}</div>
         <v-row>
           <v-col cols="12" sm="6" md="4">
             <v-text-field v-model="settings.webListen" :label="$t('setting.addr')" hide-details></v-text-field>
@@ -92,8 +209,9 @@
               placeholder="0 0 1 * *"></v-text-field>
           </v-col>
         </v-row>
+      </v-window-item>
 
-        <v-divider class="my-4" opacity="40"></v-divider>
+      <v-window-item value="t1">
         <div class="text-subtitle-2 font-weight-bold mb-3" style="letter-spacing: 0.02em;">{{ $t('setting.uiCustomization') }}</div>
         <v-row>
           <v-col cols="12" sm="6" md="4">
@@ -410,7 +528,44 @@ import SubJsonExtVue from '@/components/SubJsonExt.vue'
 import SubClashExtVue from '@/components/SubClashExt.vue'
 import { push } from 'notivue'
 import bgAsset from '@/assets/bg.jpg'
-const tab = ref("t1")
+
+type ReverseProxyStatus = {
+  supported: boolean
+  privileged: boolean
+  enabled: boolean
+  installed: boolean
+  running: boolean
+  managed: boolean
+  caddyInstalled: boolean
+  nginxInstalled: boolean
+  engine: string
+  domain: string
+  panelListen: string
+  panelPort: number
+  panelPath: string
+  publicUrl: string
+  message: string
+}
+
+const emptyReverseProxyStatus = (): ReverseProxyStatus => ({
+  supported: false,
+  privileged: false,
+  enabled: false,
+  installed: false,
+  running: false,
+  managed: false,
+  caddyInstalled: false,
+  nginxInstalled: false,
+  engine: 'caddy',
+  domain: '',
+  panelListen: '',
+  panelPort: 2095,
+  panelPath: '/app/',
+  publicUrl: '',
+  message: '',
+})
+
+const tab = ref("t0")
 
 const uiPreferenceEvent = 'ui-preferences-changed'
 const notifyUiPrefs = () => window.dispatchEvent(new Event(uiPreferenceEvent))
@@ -602,9 +757,59 @@ const settings = ref({
   qdisc: "",
 })
 
+const reverseProxyLoading = ref(false)
+const reverseProxyStatus = ref<ReverseProxyStatus>(emptyReverseProxyStatus())
+const reverseProxyConfig = ref({
+  engine: 'caddy',
+  domain: '',
+})
+const reverseProxyEngineOptions = [
+  { title: 'Caddy', value: 'caddy' },
+  { title: 'Nginx', value: 'nginx' },
+]
+
+const normalizedPanelPath = computed(() => {
+  let path = reverseProxyStatus.value.panelPath || settings.value.webPath || '/app/'
+  if (!path.startsWith('/')) path = `/${path}`
+  if (!path.endsWith('/')) path += '/'
+  return path
+})
+
+const browserHostname = () => {
+  const hostname = window.location.hostname
+  return hostname.includes(':') && !hostname.startsWith('[') ? `[${hostname}]` : hostname
+}
+
+const reverseProxyUpstream = computed(() => {
+  const port = reverseProxyStatus.value.panelPort || webPort.value || 2095
+  return `127.0.0.1:${port}`
+})
+
+const reverseProxyPublicURL = computed(() => {
+  const domain = reverseProxyConfig.value.domain.trim()
+  if (domain) {
+    const protocol = reverseProxyConfig.value.engine === 'caddy' ? 'https' : 'http'
+    return `${protocol}://${domain}${normalizedPanelPath.value}`
+  }
+  return `http://${browserHostname()}${normalizedPanelPath.value}`
+})
+
+const selectedReverseProxyInstalled = computed(() => {
+  return reverseProxyConfig.value.engine === 'caddy'
+    ? reverseProxyStatus.value.caddyInstalled
+    : reverseProxyStatus.value.nginxInstalled
+})
+
+const canApplyReverseProxy = computed(() => {
+  return reverseProxyStatus.value.supported &&
+    selectedReverseProxyInstalled.value &&
+    !(reverseProxyStatus.value.running && !reverseProxyStatus.value.managed)
+})
+
 onMounted(async () => {
   loading.value = true
   await loadData()
+  await loadReverseProxy()
   loading.value = false
 })
 
@@ -620,6 +825,40 @@ const loadData = async () => {
 const setData = (data: any) => {
   settings.value = data
   oldSettings.value = { ...data }
+}
+
+const loadReverseProxy = async () => {
+  reverseProxyLoading.value = true
+  const msg = await HttpUtils.get('api/reverse-proxy')
+  if (msg.success && msg.obj) {
+    reverseProxyStatus.value = { ...emptyReverseProxyStatus(), ...msg.obj }
+    reverseProxyConfig.value = {
+      engine: reverseProxyStatus.value.engine || 'caddy',
+      domain: reverseProxyStatus.value.domain || '',
+    }
+  }
+  reverseProxyLoading.value = false
+}
+
+const applyReverseProxy = async () => {
+  reverseProxyLoading.value = true
+  const msg = await HttpUtils.post('api/reverse-proxy', {
+    engine: reverseProxyConfig.value.engine,
+    domain: reverseProxyConfig.value.domain.trim(),
+  })
+  reverseProxyLoading.value = false
+  if (!msg.success || !msg.obj) return
+
+  reverseProxyStatus.value = { ...emptyReverseProxyStatus(), ...msg.obj }
+  push.success({
+    title: i18n.global.t('success'),
+    duration: 2500,
+    message: i18n.global.t('setting.reverseProxyApplied'),
+  })
+
+  const target = `${reverseProxyPublicURL.value}settings`
+  await sleep(3200)
+  window.location.replace(target)
 }
 
 const save = async () => {
@@ -643,7 +882,7 @@ const restartApp = async () => {
   const msg = await HttpUtils.post('api/restartApp',{})
   if (msg.success) {
     let url = settings.value.webURI
-    if (url !== "") {
+    if (url === "") {
       const isTLS = settings.value.webCertFile !== "" || settings.value.webKeyFile !== ""
       url = buildURL(settings.value.webDomain,settings.value.webPort.toString(),isTLS, settings.value.webPath)
     }
@@ -768,6 +1007,48 @@ const applyCongestion = async () => {
 </script>
 
 <style scoped>
+.reverse-proxy-section {
+  width: 100%;
+}
+
+.reverse-proxy-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.reverse-proxy-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reverse-proxy-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+@media (max-width: 600px) {
+  .reverse-proxy-header,
+  .reverse-proxy-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .reverse-proxy-status {
+    justify-content: flex-start;
+  }
+
+  .reverse-proxy-actions :deep(.v-btn) {
+    width: 100%;
+  }
+}
+
 .ui-choice-field,
 .ui-range-field {
   min-height: 64px;

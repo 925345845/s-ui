@@ -114,6 +114,41 @@ func TestXrayHysteriaMasqueradeMapping(t *testing.T) {
 	}
 }
 
+func TestBuildXrayHysteria2InboundUsesUsers(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "xray-hysteria2.db")); err != nil {
+		t.Fatal(err)
+	}
+	db := database.GetDB()
+	client := model.Client{
+		Enable:   true,
+		Name:     "hysteria-user",
+		Config:   json.RawMessage(`{"hysteria2":{"password":"test-password"}}`),
+		Inbounds: json.RawMessage(`[43]`),
+	}
+	if err := db.Create(&client).Error; err != nil {
+		t.Fatal(err)
+	}
+	inbound := &model.Inbound{
+		Id:      43,
+		Tag:     "hysteria-in",
+		Type:    "hysteria2",
+		Options: json.RawMessage(`{"listen":"127.0.0.1","listen_port":32104,"transport":{"type":"hysteria"}}`),
+		Tls:     &model.Tls{Server: json.RawMessage(`{"enabled":true}`)},
+	}
+	config, err := (&InboundService{}).buildXrayHysteria2Inbound(db, inbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := config["settings"].(map[string]interface{})
+	users, ok := settings["users"].([]map[string]interface{})
+	if !ok || len(users) != 1 || users[0]["auth"] != "test-password" {
+		t.Fatalf("unexpected Hysteria2 users: %#v", settings)
+	}
+	if _, exists := settings["clients"]; exists {
+		t.Fatalf("deprecated Hysteria2 clients field was generated: %#v", settings)
+	}
+}
+
 func TestFetchXrayVlessClientsKeepsVisionFlowOnRaw(t *testing.T) {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "xray-flow.db")); err != nil {
 		t.Fatal(err)

@@ -39,6 +39,7 @@ type ApiService struct {
 	service.StatsService
 	service.ServerService
 	service.AgentService
+	service.ReverseProxyService
 }
 
 type createAgentRequest struct {

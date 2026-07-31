@@ -40,6 +40,8 @@ func (a *APIHandler) initRouter(g *gin.RouterGroup) {
 	g.POST("/agents/:id/command", a.ApiService.ControlAgent)
 	g.POST("/agents/:id/rotate", a.ApiService.RotateAgent)
 	g.POST("/agents/:id/delete", a.ApiService.DeleteAgent)
+	g.GET("/reverse-proxy", a.ApiService.GetReverseProxy)
+	g.POST("/reverse-proxy", a.ApiService.SetReverseProxy)
 	g.GET("/:getAction", a.getHandler)
 }
 

@@ -218,5 +218,34 @@ fi
 if grep -q 'bs=64M' "$installer"; then
     fail "installer still uses a 64MB dd buffer"
 fi
+if grep -q 'read -r -p "反代域名' "$installer"; then
+    fail "interactive installer still asks for reverse proxy domain instead of using the server panel"
+fi
+grep -q 'setting -listen 127.0.0.1 -domain - -uri -' "$installer" \
+    || fail "IP-only reverse proxy setup does not clear stale domain settings"
+
+INSTALL_PROXY=0
+PROXY_READY=0
+PROXY_ENGINE=""
+PROXY_DOMAIN=""
+assert_eq "http://服务器IP:2095/app/" "$(panel_access_url)" "direct panel URL"
+assert_eq "否" "$(proxy_summary_label)" "disabled proxy summary"
+
+INSTALL_PROXY=1
+PROXY_READY=1
+PROXY_ENGINE="caddy"
+PROXY_DOMAIN=""
+assert_eq "http://服务器IP/app/" "$(panel_access_url)" "Caddy IP URL"
+assert_eq "是(caddy，已启动)" "$(proxy_summary_label)" "active Caddy summary"
+
+PROXY_DOMAIN="panel.example.com"
+assert_eq "https://panel.example.com/app/" "$(panel_access_url)" "Caddy domain URL"
+
+PROXY_ENGINE="nginx"
+assert_eq "http://panel.example.com/app/" "$(panel_access_url)" "Nginx domain URL"
+
+PROXY_READY=0
+assert_eq "http://服务器IP:2095/app/" "$(panel_access_url)" "failed proxy fallback URL"
+assert_eq "否（未启动）" "$(proxy_summary_label)" "failed proxy summary"
 
 echo "PASS: installer swap, disk, and cgroup safety checks"

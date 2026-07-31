@@ -446,7 +446,7 @@ func (s *InboundService) buildXrayHysteria2Inbound(db *gorm.DB, inbound *model.I
 		return nil, common.NewErrorf("xray hysteria2 inbound <%s> requires TLS", inbound.Tag)
 	}
 
-	clients, err := s.fetchXrayHysteria2Clients(db, inbound.Id)
+	users, err := s.fetchXrayHysteria2Users(db, inbound.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -468,7 +468,7 @@ func (s *InboundService) buildXrayHysteria2Inbound(db *gorm.DB, inbound *model.I
 		"protocol": "hysteria",
 		"settings": map[string]interface{}{
 			"version": 2,
-			"clients": clients,
+			"users":   users,
 		},
 		"streamSettings": streamSettings,
 	}, nil
@@ -821,12 +821,12 @@ func (s *InboundService) fetchXrayAccountClients(db *gorm.DB, inboundId uint, pr
 	return accounts, nil
 }
 
-func (s *InboundService) fetchXrayHysteria2Clients(db *gorm.DB, inboundId uint) ([]map[string]interface{}, error) {
+func (s *InboundService) fetchXrayHysteria2Users(db *gorm.DB, inboundId uint) ([]map[string]interface{}, error) {
 	users, err := fetchXrayClientConfigs(db, inboundId, "hysteria2")
 	if err != nil {
 		return nil, err
 	}
-	clients := make([]map[string]interface{}, 0, len(users))
+	accounts := make([]map[string]interface{}, 0, len(users))
 	for _, user := range users {
 		var cfg map[string]interface{}
 		if err := json.Unmarshal([]byte(user.Config), &cfg); err != nil {
@@ -836,9 +836,9 @@ func (s *InboundService) fetchXrayHysteria2Clients(db *gorm.DB, inboundId uint) 
 		if password == "" {
 			continue
 		}
-		clients = append(clients, map[string]interface{}{"auth": password, "email": user.Name})
+		accounts = append(accounts, map[string]interface{}{"auth": password, "email": user.Name})
 	}
-	return clients, nil
+	return accounts, nil
 }
 
 type xrayClientConfigRow struct {

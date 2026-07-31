@@ -695,13 +695,13 @@ const createQuickNode = async () => {
         break
       case 'vless':
         ;(inbound as any).tls_id = tlsId
-        ;(inbound as any).transport = isXray ? { type: 'xhttp', path: '/xhttp', host: location.hostname, mode: 'auto' } : { type: 'http' }
+        ;(inbound as any).transport = isXray ? { type: 'xhttp', path: '/xhttp', host: location.hostname, mode: 'auto' } : {}
         inbound.addrs = []
         inbound.out_json = {}
         break
       case 'trojan':
         ;(inbound as any).tls_id = tlsId
-        ;(inbound as any).transport = isXray ? { type: 'ws', path: '/', host: location.hostname } : { type: 'http' }
+        ;(inbound as any).transport = isXray ? { type: 'ws', path: '/', host: location.hostname } : {}
         inbound.addrs = []
         inbound.out_json = {}
         break

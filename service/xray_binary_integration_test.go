@@ -70,7 +70,7 @@ func TestXrayAdditionalInboundConfigsWithRealBinary(t *testing.T) {
 	inbounds := []map[string]interface{}{
 		{"tag": "mixed", "listen": "127.0.0.1", "port": 32100, "protocol": "mixed", "settings": map[string]interface{}{"auth": "noauth", "udp": true}},
 		{"tag": "transparent", "listen": "127.0.0.1", "port": 32101, "protocol": "dokodemo-door", "settings": map[string]interface{}{"network": "tcp,udp", "address": "127.0.0.1", "port": 80, "followRedirect": true}},
-		{"tag": "hysteria2", "listen": "127.0.0.1", "port": 32102, "protocol": "hysteria", "settings": map[string]interface{}{"version": 2, "clients": []map[string]interface{}{{"auth": "test-password", "email": "test"}}}, "streamSettings": map[string]interface{}{"network": "hysteria", "hysteriaSettings": map[string]interface{}{"version": 2, "udpIdleTimeout": 60, "masquerade": map[string]interface{}{"type": "proxy", "url": "https://example.com/"}}}},
+		{"tag": "hysteria2", "listen": "127.0.0.1", "port": 32102, "protocol": "hysteria", "settings": map[string]interface{}{"version": 2, "users": []map[string]interface{}{{"auth": "test-password", "email": "test"}}}, "streamSettings": map[string]interface{}{"network": "hysteria", "hysteriaSettings": map[string]interface{}{"version": 2, "udpIdleTimeout": 60, "masquerade": map[string]interface{}{"type": "proxy", "url": "https://example.com/"}}}},
 	}
 	for _, inbound := range inbounds {
 		t.Run(inbound["tag"].(string), func(t *testing.T) {

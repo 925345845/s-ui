@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 )
 
 var InboundTypeWithLink = []string{"socks", "http", "mixed", "shadowsocks", "naive", "hysteria", "hysteria2", "anytls", "tuic", "vless", "trojan", "vmess"}
+
 // Note: dokodemo-door and wireguard are operational inbounds without share-link clients.
 
 type LinkParam struct {
@@ -188,7 +190,14 @@ func prepareTls(t *model.Tls) map[string]interface{} {
 func socksLink(userConfig map[string]interface{}, addrs []map[string]interface{}) []string {
 	var links []string
 	for _, addr := range addrs {
-		links = append(links, fmt.Sprintf("socks5://%s:%s@%s:%d", userConfig["username"], userConfig["password"], addr["server"].(string), uint(addr["server_port"].(float64))))
+		username, _ := userConfig["username"].(string)
+		password, _ := userConfig["password"].(string)
+		links = append(links, fmt.Sprintf(
+			"socks5://%s:%s@%s",
+			escapeLinkUserInfo(username),
+			escapeLinkUserInfo(password),
+			linkHostPort(addr),
+		))
 	}
 	return links
 }
@@ -200,7 +209,15 @@ func httpLink(userConfig map[string]interface{}, addrs []map[string]interface{})
 		if addr["tls"] != nil {
 			protocol = "https"
 		}
-		links = append(links, fmt.Sprintf("%s://%s:%s@%s:%d", protocol, userConfig["username"], userConfig["password"], addr["server"].(string), uint(addr["server_port"].(float64))))
+		username, _ := userConfig["username"].(string)
+		password, _ := userConfig["password"].(string)
+		links = append(links, fmt.Sprintf(
+			"%s://%s:%s@%s",
+			protocol,
+			escapeLinkUserInfo(username),
+			escapeLinkUserInfo(password),
+			linkHostPort(addr),
+		))
 	}
 	return links
 }
@@ -242,25 +259,21 @@ func naiveLink(
 	password, _ := userConfig["password"].(string)
 	username, _ := userConfig["username"].(string)
 
-	baseUri := "http2://"
+	baseUri := "naive+https://"
 	var links []string
 
 	for _, addr := range addrs {
 		var params []LinkParam
-		params = append(params, LinkParam{"padding", "1"})
 		if tls, ok := addr["tls"].(map[string]interface{}); ok {
-			if sni, ok := tls["server_name"].(string); ok {
-				params = append(params, LinkParam{"peer", sni})
-			}
-			if alpn, ok := tls["alpn"].([]interface{}); ok {
-				alpnList := make([]string, len(alpn))
-				for i, v := range alpn {
-					alpnList[i] = v.(string)
+			// sing-box rejects insecure on Naive outbounds. A trusted
+			// certificate or a client that supports the exported pin is required.
+			getTlsParams(&params, tls, "")
+			for _, param := range params {
+				if param.Key == "sni" {
+					// peer keeps older 1S-UI importers compatible.
+					params = append(params, LinkParam{"peer", param.Value})
+					break
 				}
-				params = append(params, LinkParam{"alpn", strings.Join(alpnList, ",")})
-			}
-			if insecure, ok := tls["insecure"].(bool); ok && insecure {
-				params = append(params, LinkParam{"insecure", "1"})
 			}
 		}
 		if tfo, ok := inbound["tcp_fast_open"].(bool); ok && tfo {
@@ -269,9 +282,14 @@ func naiveLink(
 			params = append(params, LinkParam{"tfo", "0"})
 		}
 
-		port, _ := addr["server_port"].(float64)
-		uri := baseUri + toBase64([]byte(fmt.Sprintf("%s:%s@%s:%.0f", username, password, addr["server"].(string), port)))
-		links = append(links, addParams(uri, params, addr["remark"].(string)))
+		uri := fmt.Sprintf(
+			"%s%s:%s@%s",
+			baseUri,
+			escapeLinkUserInfo(username),
+			escapeLinkUserInfo(password),
+			linkHostPort(addr),
+		)
+		links = append(links, addRawParams(uri, params, addr["remark"].(string)))
 	}
 	return links
 }
@@ -332,7 +350,6 @@ func hysteria2Link(
 	addrs []map[string]interface{}) []string {
 
 	password, _ := userConfig["password"].(string)
-	baseUri := fmt.Sprintf("%s%s@", "hysteria2://", password)
 	var links []string
 
 	for _, addr := range addrs {
@@ -378,8 +395,13 @@ func hysteria2Link(
 		}
 
 		port, _ := addr["server_port"].(float64)
-		uri := fmt.Sprintf("%s%s:%.0f", baseUri, addr["server"].(string), port)
-		links = append(links, addParams(uri, params, addr["remark"].(string)))
+		server := strings.Trim(addr["server"].(string), "[]")
+		uri := fmt.Sprintf(
+			"hysteria2://%s@%s",
+			escapeLinkUserInfo(password),
+			net.JoinHostPort(server, fmt.Sprintf("%.0f", port)),
+		)
+		links = append(links, addRawParams(uri, params, addr["remark"].(string)))
 	}
 
 	return links
@@ -390,18 +412,17 @@ func anytlsLink(
 	addrs []map[string]interface{}) []string {
 
 	password, _ := userConfig["password"].(string)
-	baseUri := fmt.Sprintf("%s%s@", "anytls://", password)
 	var links []string
 
 	for _, addr := range addrs {
 		var params []LinkParam
 		if tls, ok := addr["tls"].(map[string]interface{}); ok {
 			getTlsParams(&params, tls, "insecure")
+			ensurePinnedTLSClientCompatibility(&params)
 		}
 
-		port, _ := addr["server_port"].(float64)
-		uri := fmt.Sprintf("%s%s:%.0f", baseUri, addr["server"].(string), port)
-		links = append(links, addParams(uri, params, addr["remark"].(string)))
+		uri := fmt.Sprintf("anytls://%s@%s", escapeLinkUserInfo(password), linkHostPort(addr))
+		links = append(links, addRawParams(uri, params, addr["remark"].(string)))
 	}
 
 	return links
@@ -414,21 +435,28 @@ func tuicLink(
 
 	password, _ := userConfig["password"].(string)
 	uuid, _ := userConfig["uuid"].(string)
-	baseUri := fmt.Sprintf("%s%s:%s@", "tuic://", uuid, password)
 	var links []string
 
 	for _, addr := range addrs {
 		var params []LinkParam
 		if tls, ok := addr["tls"].(map[string]interface{}); ok {
 			getTlsParams(&params, tls, "insecure")
+			ensurePinnedTLSClientCompatibility(&params)
+			if !hasLinkParam(params, "alpn") {
+				params = append(params, LinkParam{"alpn", "h3"})
+			}
 		}
 		if congestionControl, ok := inbound["congestion_control"].(string); ok {
 			params = append(params, LinkParam{"congestion_control", congestionControl})
 		}
 
-		port, _ := addr["server_port"].(float64)
-		uri := fmt.Sprintf("%s%s:%.0f", baseUri, addr["server"].(string), port)
-		links = append(links, addParams(uri, params, addr["remark"].(string)))
+		uri := fmt.Sprintf(
+			"tuic://%s:%s@%s",
+			escapeLinkUserInfo(uuid),
+			escapeLinkUserInfo(password),
+			linkHostPort(addr),
+		)
+		links = append(links, addRawParams(uri, params, addr["remark"].(string)))
 	}
 
 	return links
@@ -509,9 +537,8 @@ func xrayTrojanLink(
 				getXrayTlsParams(&params, tls, "allowInsecure")
 			}
 		}
-		port, _ := addr["server_port"].(float64)
-		uri := fmt.Sprintf("trojan://%s@%s:%.0f", password, addr["server"].(string), port)
-		uri = addParams(uri, params, addr["remark"].(string))
+		uri := fmt.Sprintf("trojan://%s@%s", escapeLinkUserInfo(password), linkHostPort(addr))
+		uri = addRawParams(uri, params, addr["remark"].(string))
 		links = append(links, uri)
 	}
 
@@ -532,9 +559,8 @@ func trojanLink(
 		if tls, ok := addr["tls"].(map[string]interface{}); ok && tls["enabled"].(bool) {
 			getTlsParams(&params, tls, "allowInsecure")
 		}
-		port, _ := addr["server_port"].(float64)
-		uri := fmt.Sprintf("trojan://%s@%s:%.0f", password, addr["server"].(string), port)
-		uri = addParams(uri, params, addr["remark"].(string))
+		uri := fmt.Sprintf("trojan://%s@%s", escapeLinkUserInfo(password), linkHostPort(addr))
+		uri = addRawParams(uri, params, addr["remark"].(string))
 		links = append(links, uri)
 	}
 
@@ -628,6 +654,8 @@ func vmessLink(
 		switch p.Key {
 		case "type":
 			net = p.Value
+		case "headerType":
+			typ = p.Value
 		case "host":
 			host = p.Value
 		case "path":
@@ -635,11 +663,8 @@ func vmessLink(
 		}
 	}
 
-	if net == "http" || net == "tcp" {
+	if net == "tcp" {
 		baseParams["net"] = "tcp"
-		if net == "http" {
-			typ = "http"
-		}
 	} else {
 		baseParams["net"] = net
 	}
@@ -715,7 +740,7 @@ func populateXrayVmessTlsParams(obj map[string]interface{}, tlsConfig interface{
 				obj["fp"] = p.Value
 			case "alpn":
 				obj["alpn"] = p.Value
-			case "pinSHA256":
+			case "pcs":
 				obj["pinSHA256"] = p.Value
 				obj["pcs"] = p.Value
 			}
@@ -731,6 +756,22 @@ func toBase64(d []byte) string {
 
 func addParams(uri string, params []LinkParam, remark string) string {
 	URL, _ := url.Parse(uri)
+	URL.RawQuery = encodeLinkParams(params)
+	URL.Fragment = remark
+	return URL.String()
+}
+
+func addRawParams(uri string, params []LinkParam, remark string) string {
+	if query := encodeLinkParams(params); query != "" {
+		uri += "?" + query
+	}
+	if remark != "" {
+		uri += "#" + url.PathEscape(remark)
+	}
+	return uri
+}
+
+func encodeLinkParams(params []LinkParam) string {
 	var q []string
 	for _, p := range params {
 		switch p.Key {
@@ -740,9 +781,18 @@ func addParams(uri string, params []LinkParam, remark string) string {
 			q = append(q, fmt.Sprintf("%s=%s", p.Key, url.QueryEscape(p.Value)))
 		}
 	}
-	URL.RawQuery = strings.Join(q, "&")
-	URL.Fragment = remark
-	return URL.String()
+	return strings.Join(q, "&")
+}
+
+func escapeLinkUserInfo(value string) string {
+	// QueryEscape covers every base64 separator; userinfo requires %20 for spaces.
+	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
+}
+
+func linkHostPort(addr map[string]interface{}) string {
+	server := strings.Trim(addr["server"].(string), "[]")
+	port, _ := addr["server_port"].(float64)
+	return net.JoinHostPort(server, fmt.Sprintf("%.0f", port))
 }
 
 func getTransportParams(t interface{}) []LinkParam {
@@ -754,7 +804,12 @@ func getTransportParams(t interface{}) []LinkParam {
 	} else {
 		transportType = "tcp"
 	}
-	params = append(params, LinkParam{"type", transportType})
+	if transportType == "http" {
+		params = append(params, LinkParam{"type", "tcp"})
+		params = append(params, LinkParam{"headerType", "http"})
+	} else {
+		params = append(params, LinkParam{"type", transportType})
+	}
 	if transportType == "tcp" {
 		return params
 	}
@@ -880,26 +935,35 @@ func getTlsParams(params *[]LinkParam, tls map[string]interface{}, insecureKey s
 		*params = append(*params, LinkParam{"alpn", strings.Join(alpnList, ",")})
 	}
 	if pcs := getPinnedPeerCertSha256(tls); pcs != "" {
-		*params = append(*params, LinkParam{"pcs", pcs})
+		*params = append(*params, LinkParam{"pcs", pinnedPeerCertSha256ForLink(pcs)})
 	}
 }
 
 func getXrayTlsParams(params *[]LinkParam, tls map[string]interface{}, insecureKey string) {
-	var rawParams []LinkParam
-	getTlsParams(&rawParams, tls, insecureKey)
-	for _, p := range rawParams {
-		if p.Key == "pcs" {
-			if pin := xrayPinSHA256ForLink(p.Value); pin != "" {
-				*params = append(*params, LinkParam{"pinSHA256", pin})
+	getTlsParams(params, tls, insecureKey)
+	if !hasLinkParam(*params, "pcs") {
+		if pin, ok := tls["pinSHA256"].(string); ok {
+			if normalized := xrayPinSHA256ForLink(pin); normalized != "" {
+				*params = append(*params, LinkParam{"pcs", normalized})
 			}
-			continue
 		}
-		*params = append(*params, p)
 	}
-	if pin, ok := tls["pinSHA256"].(string); ok {
-		if normalized := xrayPinSHA256ForLink(pin); normalized != "" {
-			*params = append(*params, LinkParam{"pinSHA256", normalized})
+}
+
+func hasLinkParam(params []LinkParam, key string) bool {
+	for _, param := range params {
+		if param.Key == key {
+			return true
 		}
+	}
+	return false
+}
+
+func ensurePinnedTLSClientCompatibility(params *[]LinkParam) {
+	// v2rayN 7.23.x does not pass pcs to sing-box outbounds. Retain the pin for
+	// capable clients and add the compatibility fallback for generated certs.
+	if hasLinkParam(*params, "pcs") && !hasLinkParam(*params, "insecure") {
+		*params = append(*params, LinkParam{"insecure", "1"})
 	}
 }
 

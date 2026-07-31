@@ -469,7 +469,11 @@ func parseNaiveLink(u *url.URL, i int) (*map[string]interface{}, string, error) 
 	}
 
 	query := u.Query()
-	if peer := query.Get("peer"); peer != "" {
+	peer := query.Get("sni")
+	if peer == "" {
+		peer = query.Get("peer")
+	}
+	if peer != "" {
 		if tls, ok := naive["tls"].(map[string]interface{}); ok {
 			tls["server_name"] = peer
 		}
@@ -482,6 +486,11 @@ func parseNaiveLink(u *url.URL, i int) (*map[string]interface{}, string, error) 
 	if alpn := query.Get("alpn"); alpn != "" {
 		if tls, ok := naive["tls"].(map[string]interface{}); ok {
 			tls["alpn"] = strings.Split(alpn, ",")
+		}
+	}
+	if pcs := query.Get("pcs"); pcs != "" {
+		if tls, ok := naive["tls"].(map[string]interface{}); ok {
+			tls["pinned_peer_certificate_sha256"] = []string{pcs}
 		}
 	}
 	if u.Scheme == "naive+quic" {
