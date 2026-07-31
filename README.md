@@ -1,13 +1,16 @@
 # 1S-UI
 
 [![Release](https://img.shields.io/github/v/release/Hhz0823/1s-ui?label=release)](https://github.com/Hhz0823/1s-ui/releases/latest)
+[![Dependency Security](https://github.com/Hhz0823/1s-ui/actions/workflows/security.yml/badge.svg)](https://github.com/Hhz0823/1s-ui/actions/workflows/security.yml)
 [![License](https://img.shields.io/github/license/Hhz0823/1s-ui)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8)](go.mod)
 [![Vue](https://img.shields.io/badge/Vue-3-42b883)](frontend/package.json)
 [![sing-box](https://img.shields.io/badge/default%20core-sing--box-1677ff)](https://github.com/SagerNet/sing-box)
 [![Xray-core](https://img.shields.io/badge/optional%20core-Xray--core-28a745)](https://github.com/XTLS/Xray-core)
 
-**最新版本 Latest:** [v1.5.8](https://github.com/Hhz0823/1s-ui/releases/tag/v1.5.8)
+**最新 Linux 版本 Latest Linux release:** [v1.5.8](https://github.com/Hhz0823/1s-ui/releases/tag/v1.5.8)
+
+**OpenWrt Lite:** [v1.5.7](https://github.com/Hhz0823/1s-ui/releases/tag/v1.5.7)（暂缓更新，仅 sing-box）
 
 基于 [S-UI](https://github.com/alireza0/s-ui) 二次开发的现代代理管理面板。默认内核 **sing-box**，入站可切换 **Xray-core**；面向 Linux 服务器（Ubuntu / Debian），提供 Web 管理、订阅、TLS 自动化、一键中转，以及类似哪吒 / Komari 的多服务器 Agent 监控与远程控制。
 
@@ -18,13 +21,33 @@ A modern proxy panel forked from S-UI: sing-box first, optional Xray-core per in
 
 **语言 Languages:** [简体中文](#简体中文) · [English](#english) · [日本語](#日本語) · [한국어](#한국어)
 
+**快速导航:** [安装](#快速安装) · [功能](#功能特性) · [一键中转](#一键中转) · [页面一览](#页面一览) · [Docker](#docker) · [安全建议](#安全建议-security)
+
 ---
+
+## 安装选择
+
+| 使用场景 | 建议 | 要求 |
+| --- | --- | --- |
+| 单机代理、小内存 VPS | **极简安装** `--minimal` | 无硬性最低配置；低于 1.5GB 内存默认只启动面板 |
+| Xray、反向代理、多服务器 Agent | **全面服务端** `--full` | 最低 2 核 CPU + 2GB 内存 |
+| OpenWrt | **Lite v1.5.7** | 仅 sing-box；本轮 Linux 更新不包含新的 IPK |
+
+```bash
+# 推荐：交互选择极简或全面服务端
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
+
+# 极简非交互安装
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.8 -y --minimal
+```
+
+> 全面服务端启用反向代理后，公网入口是 `http://服务器IP/app/` 或 `https://域名/app/`，不是公网 `IP:2095`。
 
 ## Screenshots
 
-演示数据截图，不含真实密钥。 Demo data only.
+截图来自 v1.5.8 默认实色主题，不含账号密码或节点密钥。 Screenshots use the v1.5.8 default solid theme and contain no credentials.
 
-| 首页 Dashboard | 入站 Inbounds | 登录 Login |
+| 实色首页 Dashboard | 入站与批量节点 Inbounds | 登录 Login |
 | --- | --- | --- |
 | ![Dashboard](docs/screenshots/dashboard.png) | ![Inbounds](docs/screenshots/inbounds.png) | ![Login](docs/screenshots/login.png) |
 
@@ -51,11 +74,13 @@ A modern proxy panel forked from S-UI: sing-box first, optional Xray-core per in
 
 - 入站 / 出站 / 端点 / 服务 / DNS / 路由 / 用户 / 管理员
 - **双内核**：入站可选 `sing-box` 或 `xray`
-- 一键添加节点（端口、标签、用户、TLS、协议默认值）
+- 一键添加节点（1–100 条、连续端口、标签、用户、TLS、协议默认值）
 - TLS / ACME / ECH / Reality / Pinned SHA256 集中管理
-- 订阅服务与分享链接（Clash / JSON / 标准 URI，兼容 v2rayN）
+- 订阅服务与分享链接（Clash / JSON / 标准 URI；v2rayN 7.23.4 实测导入）
 - Shadowsocks 默认 `2022-blake3-aes-256-gcm`
 - 首页仪表盘、日志、备份恢复、流量统计
+- 默认使用实色界面；可选玻璃 / 清透按钮、自定义背景和模糊强度
+- 服务端面板内管理 Caddy / Nginx 反向代理状态、域名与配置应用
 
 #### Xray-core（v1.5）
 
@@ -72,7 +97,8 @@ A modern proxy panel forked from S-UI: sing-box first, optional Xray-core per in
 
 - 模式：本机公网 IPv6 池 / 上游 SOCKS5
 - 协议：SOCKS、HTTP、Mixed、SS、VLESS、VMess、Trojan、Hysteria2、TUIC、Naive、AnyTLS
-- 自动创建入站、用户、出站、路由；支持 BitBrowser Excel 导出
+- 单批可创建 1–100 条；已用端口自动跳过并继续分配
+- 自动创建入站、用户、出站、路由；支持 BitBrowser Excel 与纯文本导出
 - IPv6 池模式由客户端连接原 VPS IPv4/域名，每条生成 IPv6 仅绑定对应出口
 - IPv6 用 `ip -6 addr add` 添加，并逐个绑定源地址验证公网出口；DAD 或公网验证失败会回滚，**不改默认路由**
 - VPS 必须提供已路由或已授权的 IPv6 前缀；仅在系统里添加随机 `/64` 地址无法绕过服务商的源地址过滤
@@ -99,7 +125,7 @@ Agent **主动出站**连面板，节点上不开放控制端口。
 
 | 模式 | 参数 | 包含 | 适用 |
 | --- | --- | --- | --- |
-| **极简安装** | `--minimal` / `-m` | 面板 + sing-box（类似 1.4.10） | 日常 / 小机器 / 只做代理面板 |
+| **极简安装** | `--minimal` / `-m` | 面板 + sing-box | 日常 / 小机器 / 只做代理面板 |
 | **全面服务端** | `--full` | 面板 + Xray + 反代 + Agent + 自动启内核 | 生产 / 多节点控制面（要求 ≥2核2G） |
 
 ```bash
@@ -223,11 +249,12 @@ opkg install ./s-ui-lite_1.5.7-1_x86_64.ipk
 
 ### v1.5.8 变更
 
-- 修复 HY2、TUIC、AnyTLS、VLESS、Trojan、VMess 等分享链接在 v2rayN 的转义、TLS 钉扎和传输兼容
+- 修复 HY2、TUIC、AnyTLS、VLESS、Trojan、VMess、Naive 分享链接在 v2rayN 的转义、TLS 钉扎和传输兼容
 - Xray Hysteria2 改用官方 `users` 配置，并要求 Xray-core 26.7.11 或更新版本
 - 一键创建的 sing-box VLESS / Trojan 默认使用稳定的 RAW 传输，TUIC 自动补齐 H3 ALPN
 - 服务端面板增加反向代理状态与配置管理；安装器更新 Xray 后会安全重启服务加载新内核
 - 继续保留 1–100 批量节点、IPv6 出口验证和低内存安装保护
+- GitHub Release 提供 `amd64`、`arm64`、`armv5`、`armv6`、`armv7`、`386`、`s390x` 七种 Linux 架构包
 
 ---
 
@@ -248,11 +275,11 @@ opkg install ./s-ui-lite_1.5.7-1_x86_64.ipk
 
 ### Features
 
-**Panel:** inbounds/outbounds/endpoints/services/DNS/routes/users/admins; dual-core selection; quick add; TLS/ACME/ECH/Reality; subscriptions & v2rayN-friendly links; dashboard, logs, backup, traffic stats.
+**Panel:** inbounds/outbounds/endpoints/services/DNS/routes/users/admins; per-inbound core selection; 1–100 node quick add; TLS/ACME/ECH/Reality; subscriptions and v2rayN-tested links; reverse-proxy management; dashboard, logs, backup, traffic stats. The solid UI is the default, with optional custom backgrounds and glass styles.
 
 **Xray (v1.5):** VLESS, VMess, Trojan, Shadowsocks, SOCKS, HTTP, Mixed, Hysteria2, Dokodemo-door, WireGuard; transports XHTTP/RAW/mKCP/gRPC/WS/HTTPUpgrade; self-check UI.
 
-**Relay:** IPv6 pool or upstream SOCKS5; clients connect to the original VPS IPv4/hostname while each generated IPv6 is bound only to its matching egress; multi-protocol batch; BitBrowser Excel export; DAD plus per-address public IPv6 egress validation and rollback (no default-route changes). The provider must route or authorize the IPv6 prefix; adding random local `/64` addresses cannot bypass upstream source filtering.
+**Relay:** IPv6 pool or upstream SOCKS5; 1–100 nodes per batch with automatic used-port skipping; clients connect to the original VPS IPv4/hostname while each generated IPv6 is bound only to its matching egress; multi-protocol batch; BitBrowser Excel/plain-text export; DAD plus per-address public IPv6 egress validation and rollback (no default-route changes). The provider must route or authorize the IPv6 prefix; adding random local `/64` addresses cannot bypass upstream source filtering.
 
 **Agents (v1.5):** outbound HTTP + WebSocket; metrics; remote control (restart cores, exec, interval); interactive PTY terminal; multi-node batch commands. Control requires WebSocket online + panel login.
 
@@ -310,11 +337,13 @@ See [docs/openwrt-lite.md](docs/openwrt-lite.md).
 
 [S-UI](https://github.com/alireza0/s-ui) ベースのプロキシ管理パネル。標準は sing-box、入站ごとに Xray-core を選択可能。主に Ubuntu / Debian 向け。v1.5 では Agent による監視・遠隔操作・対話型ターミナルに対応。
 
+Linux の最新バージョンは `v1.5.8` です。1–100 件の一括ノード作成、IPv6 出口中継、Xray 自己診断、Caddy / Nginx リバースプロキシ管理に対応します。OpenWrt Lite は sing-box のみの `v1.5.7` を継続します。
+
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.8
 ```
 
-Docker: `ghcr.io/Hhz0823/1s-ui`（`network_mode: host` 推奨）。OpenWrt Lite は実験版（sing-box のみ）。詳細は上の English / 中文 を参照。
+Docker: `ghcr.io/Hhz0823/1s-ui`（`network_mode: host` 推奨）。詳細は上の English / 中文 を参照。
 
 ---
 
@@ -322,11 +351,13 @@ Docker: `ghcr.io/Hhz0823/1s-ui`（`network_mode: host` 推奨）。OpenWrt Lite 
 
 [S-UI](https://github.com/alireza0/s-ui) 기반 프록시 관리 패널. 기본 코어 sing-box, 인바운드별 Xray-core 선택. 주로 Ubuntu/Debian 지원. v1.5: Agent 모니터링·원격 제어·대화형 터미널·다중 노드 일괄 명령.
 
+최신 Linux 버전은 `v1.5.8`입니다. 1–100개 노드 일괄 생성, IPv6 출구 릴레이, Xray 자체 검사, Caddy / Nginx 리버스 프록시 관리를 지원합니다. OpenWrt Lite는 sing-box 전용 `v1.5.7`을 유지합니다.
+
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.8
 ```
 
-Docker: `ghcr.io/Hhz0823/1s-ui`. OpenWrt Lite는 실험 버전. 자세한 내용은 위 중문/영문 섹션 참고.
+Docker: `ghcr.io/Hhz0823/1s-ui`. 자세한 내용은 위 중문/영문 섹션 참고.
 
 ---
 
@@ -339,9 +370,13 @@ go build -o sui main.go
 ```
 
 ```bash
-go test ./...
+go test . ./agent ./api/... ./app/... ./cmd/... ./config/... ./core/... \
+  ./cronjob/... ./database/... ./logger/... ./middleware/... ./network/... \
+  ./service/... ./sub/... ./util/... ./web/...
 cd frontend && npm run build
 ```
+
+这里显式列出 Go 包，是为了避免前端 `node_modules` 中第三方示例 Go 文件被 `go test ./...` 误识别为项目包。
 
 ## 环境变量 Environment
 
