@@ -50,11 +50,14 @@ type AgentEnrollment struct {
 }
 
 type AgentMetricSample struct {
-	Time       int64   `json:"time"`
-	CPUPercent float64 `json:"cpu_percent"`
-	MemPercent float64 `json:"mem_percent"`
-	NetSent    uint64  `json:"net_sent_rate"`
-	NetRecv    uint64  `json:"net_recv_rate"`
+	Time         int64   `json:"time"`
+	CPUPercent   float64 `json:"cpu_percent"`
+	MemPercent   float64 `json:"mem_percent"`
+	SwapPercent  float64 `json:"swap_percent"`
+	DiskPercent  float64 `json:"disk_percent"`
+	ProcessCount int     `json:"process_count"`
+	NetSent      uint64  `json:"net_sent_rate"`
+	NetRecv      uint64  `json:"net_recv_rate"`
 }
 
 type AgentService struct {
@@ -257,13 +260,20 @@ func (s *AgentService) SetWSConnected(id uint, connected bool) {
 
 func appendAgentHistory(id uint, report agent.Report) {
 	sample := AgentMetricSample{
-		Time:       time.Now().Unix(),
-		CPUPercent: report.CPUPercent,
-		NetSent:    report.NetRate.Sent,
-		NetRecv:    report.NetRate.Recv,
+		Time:         time.Now().Unix(),
+		CPUPercent:   report.CPUPercent,
+		ProcessCount: report.ProcessCount,
+		NetSent:      report.NetRate.Sent,
+		NetRecv:      report.NetRate.Recv,
 	}
 	if report.Memory.Total > 0 {
 		sample.MemPercent = float64(report.Memory.Used) * 100 / float64(report.Memory.Total)
+	}
+	if report.Swap.Total > 0 {
+		sample.SwapPercent = float64(report.Swap.Used) * 100 / float64(report.Swap.Total)
+	}
+	if report.Disk.Total > 0 {
+		sample.DiskPercent = float64(report.Disk.Used) * 100 / float64(report.Disk.Total)
 	}
 	agentHistoryMu.Lock()
 	defer agentHistoryMu.Unlock()

@@ -84,7 +84,7 @@
   </v-dialog>
 
   <header class="remote-header">
-    <v-btn icon="mdi-arrow-left" variant="text" :title="$t('agent.backServers')" @click="router.push('/agents')" />
+    <v-btn icon="mdi-arrow-left" variant="text" :title="$t('agent.backDetail')" @click="router.push(`/agents/${nodeId}`)" />
     <div class="remote-title">
       <h1>{{ $t('agent.remoteInbounds') }}</h1>
       <div>{{ node?.name || ('#' + nodeId) }} · <span dir="ltr">{{ connectionHost || '-' }}</span></div>

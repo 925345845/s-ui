@@ -107,6 +107,10 @@ func TestAgentHeartbeatReplacesLiveMetricsAndKeepsHistory(t *testing.T) {
 	second := first
 	second.CPUPercent = 67.5
 	second.Memory.Used = 768
+	second.Swap = agent.ResourceUsage{Used: 128, Total: 512}
+	second.Disk = agent.ResourceUsage{Used: 300, Total: 1200}
+	second.ProcessCount = 42
+	second.NetRate = agent.NetworkUsage{Sent: 1234, Recv: 5678}
 	if _, err := service.Heartbeat(enrollment.Token, "203.0.113.40", second); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +126,7 @@ func TestAgentHeartbeatReplacesLiveMetricsAndKeepsHistory(t *testing.T) {
 		t.Fatalf("expected both metric samples, got %#v", detail.History)
 	}
 	last := detail.History[len(detail.History)-1]
-	if last.CPUPercent != second.CPUPercent || last.MemPercent != 75 {
+	if last.CPUPercent != second.CPUPercent || last.MemPercent != 75 || last.SwapPercent != 25 || last.DiskPercent != 25 || last.ProcessCount != 42 || last.NetSent != 1234 || last.NetRecv != 5678 {
 		t.Fatalf("latest history sample is stale: %#v", last)
 	}
 }

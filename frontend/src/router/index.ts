@@ -80,6 +80,11 @@ const routes = [
         component: () => import('@/views/Agents.vue'),
       },
       {
+        path: '/agents/:id',
+        name: 'agent.detail',
+        component: () => import('@/views/AgentDetail.vue'),
+      },
+      {
         path: '/agents/:id/inbounds',
         name: 'agent.remoteInbounds',
         component: () => import('@/views/AgentInbounds.vue'),
