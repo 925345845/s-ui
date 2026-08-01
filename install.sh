@@ -9,9 +9,10 @@ plain='\033[0m'
 cur_dir=$(pwd)
 
 # Decision flags
-INSTALL_KIND=""              # minimal | full  （极简 | 全面服务端）
+INSTALL_KIND=""              # minimal | managed | full
 INSTALL_PANEL=1
 INSTALL_XRAY=0
+DISABLE_XRAY=0              # 1 = low-resource runtime is sing-box only
 INSTALL_PROXY=0
 INSTALL_AGENT=0              # copy sui-agent binary + unit
 PROXY_ENGINE=""              # caddy | nginx | ""
@@ -32,6 +33,9 @@ FORCE_PROXY=""               # "" | 1 | 0
 SKIP_CORE=1                  # 1 = SUI_SKIP_CORE (panel web only)
 START_SERVICE=1
 REQUESTED_VERSION=""
+CONTROLLER_URL=""
+AGENT_TOKEN=""
+AGENT_INSECURE=0
 PORT80_FREE=1
 PORT443_FREE=1
 # Full/cluster recommendation
@@ -60,19 +64,23 @@ usage() {
     cat <<EOF
 用法: install.sh [版本号] [选项]
 
-安装模式（二选一，推荐显式指定）:
-  --minimal, --simple, -m   极简安装（类似 1.4.10：仅面板 + sing-box，无 Xray/反代/Agent）
+安装模式（三选一，推荐显式指定）:
+  --minimal, --simple, -m   轻量 Web 面板（完整 Web UI + sing-box，无 Xray/反代/Agent）
+  --managed-client          受管客户端（完整 Web UI + sing-box + Agent，低配 VPS）
   --full, --complete, --server
                             全面服务端（面板 + Xray + 反代 + Agent + 自动启内核）
 
 通用选项:
-  -y, --yes             非交互（未指定模式时默认 --minimal）
-  --with-xray           额外安装 Xray-core（可叠在极简上）
+  -y, --yes             自动确认安装（未指定模式时默认 --minimal）
+  --with-xray           额外安装 Xray-core（低配档位会忽略此项并只用 sing-box）
   --no-xray             跳过 Xray-core
   --with-proxy          安装反代（Caddy/Nginx）
   --no-proxy            不安装反代
   --domain DOMAIN       反代域名（HTTPS，多用于全面安装）
   --email EMAIL         ACME 邮箱（Caddy 可选）
+  --controller URL      受管客户端连接的中心面板 URL（包含面板路径）
+  --agent-token TOKEN   中心面板生成的 Agent 注册密钥
+  --agent-insecure      Agent 连接中心时跳过 TLS 证书校验
   --start-core          安装后自动启动代理内核
   --skip-core           仅面板 Web，不自动启内核（更安全）
   --no-start            只装文件，不 systemctl start
@@ -80,17 +88,20 @@ usage() {
   -h, --help            显示帮助
 
 对比:
-  极简  = 下载面板 → 解压 → 启动（像 1.4.10，低配友好）
+  轻量  = 完整 Web UI + sing-box（低配友好）
   全面  = 面板 + Xray + 反代 + Agent 二进制 + 自动启内核
           要求 ≥${CLUSTER_CPU_CORES} 核 / ≥${CLUSTER_MEM_MB}MB（硬门槛）
 
 示例:
-  # 极简（推荐日常/小机器）
+  # 轻量 Web 面板（推荐日常/小机器）
   bash install.sh -y --minimal
   bash install.sh v1.5.8 -y -m
 
   # 全面服务端（生产/多节点控制面）
   bash install.sh -y --full --domain panel.example.com --email a@b.com
+
+  # 受管客户端（完整 Web 面板，可从中心管理入站）
+  bash install.sh -y --managed-client --controller https://panel.example.com/app/ --agent-token TOKEN
 
   # 交互选择模式
   bash install.sh
@@ -111,6 +122,10 @@ parse_args() {
             ;;
         --full | --complete | --server)
             INSTALL_KIND="full"
+            shift
+            ;;
+        --managed-client | --managed | --client)
+            INSTALL_KIND="managed"
             shift
             ;;
         --with-xray)
@@ -136,6 +151,18 @@ parse_args() {
         --email)
             PROXY_EMAIL="${2:-}"
             shift 2
+            ;;
+        --controller)
+            CONTROLLER_URL="${2:-}"
+            shift 2
+            ;;
+        --agent-token)
+            AGENT_TOKEN="${2:-}"
+            shift 2
+            ;;
+        --agent-insecure)
+            AGENT_INSECURE=1
+            shift
             ;;
         --start-core)
             SKIP_CORE=0
@@ -329,19 +356,24 @@ choose_install_kind() {
     fi
     if [[ "$AUTO_YES" -eq 1 ]]; then
         INSTALL_KIND="minimal"
-        echo -e "${yellow}未指定模式且 -y：默认 ${green}极简安装 (--minimal)${plain}"
+        echo -e "${yellow}未指定模式且 -y：默认 ${green}轻量 Web 面板 (--minimal)${plain}"
         return 0
     fi
     echo -e "${blue}========== 选择安装模式 ==========${plain}"
-    echo -e "  ${green}1) 极简安装${plain}  —— 类似 1.4.10：只装面板 + sing-box"
+    echo -e "  ${green}1) 轻量 Web 面板${plain}  —— 完整 Web UI + sing-box"
     echo -e "                 不装 Xray / 反代 / Agent，流程短、低配友好"
     echo -e "  ${green}2) 全面服务端${plain} —— 面板 + Xray + 反代 + Agent + 自动启内核"
     echo -e "                 适合生产 / 多节点集群控制面（要求 ≥2核2G）"
+    echo -e "  ${green}3) 受管客户端${plain} —— 完整 Web UI + sing-box + Agent"
+    echo -e "                 适合由中心面板管理的 1核512MB VPS"
     echo -e "${blue}=================================${plain}"
-    read -r -p "请选择 [1/2]，默认 1: " kind_ans
+    read -r -p "请选择 [1/2/3]，默认 1: " kind_ans
     case "${kind_ans}" in
     2 | full | Full | FULL | f | F)
         INSTALL_KIND="full"
+        ;;
+    3 | managed | Managed | MANAGED | c | C)
+        INSTALL_KIND="managed"
         ;;
     *)
         INSTALL_KIND="minimal"
@@ -352,6 +384,11 @@ choose_install_kind() {
 # Apply component defaults from INSTALL_KIND, then honor FORCE_* overrides.
 apply_kind_defaults() {
     local xray_reason="" proxy_reason="" core_reason=""
+
+    DISABLE_XRAY=0
+    if [[ "$PROFILE" == "low" ]]; then
+        DISABLE_XRAY=1
+    fi
 
     if [[ "$INSTALL_KIND" == "full" ]]; then
         INSTALL_XRAY=1
@@ -364,7 +401,7 @@ apply_kind_defaults() {
         # Full server/Agent control plane is a hard 2c2G gate.
         if [[ "$CPU_CORES" -lt "$CLUSTER_CPU_CORES" || "$MEM_TOTAL_MB" -lt "$CLUSTER_MEM_MB" ]]; then
             echo -e "${red}全面服务端要求至少 ${CLUSTER_CPU_CORES} 核 / ${CLUSTER_MEM_MB}MB，当前 ${CPU_CORES} 核 / ${MEM_TOTAL_MB}MB。${plain}"
-            echo -e "${yellow}该配置只能安装极简面板：bash install.sh -y --minimal${plain}"
+            echo -e "${yellow}该配置只能安装轻量 Web 面板：bash install.sh -y --minimal${plain}"
             if [[ "$FORCE_INSTALL" -eq 1 ]]; then
                 echo -e "${yellow}--force 不会绕过服务器监控的 2核2G 门槛。${plain}"
             fi
@@ -373,6 +410,34 @@ apply_kind_defaults() {
         if [[ "$MEM_TOTAL_MB" -lt 1500 ]]; then
             SKIP_CORE=1
             core_reason="全面服务端+低内存：先启动面板，内核需稳定后手动启动"
+        fi
+    elif [[ "$INSTALL_KIND" == "managed" ]]; then
+        INSTALL_XRAY=0
+        INSTALL_PROXY=0
+        INSTALL_AGENT=1
+        if [[ "$MEM_TOTAL_MB" -lt 1500 ]]; then
+            SKIP_CORE=1
+            core_reason="受管客户端+低内存：先保证 Web 面板和 Agent 稳定，内核稍后从面板启动"
+        else
+            SKIP_CORE=0
+            core_reason="受管客户端：启动面板与 sing-box"
+        fi
+        xray_reason="受管客户端默认 sing-box（可用 --with-xray）"
+        proxy_reason="受管客户端默认不安装反代（可按需启用）"
+        if [[ -z "$CONTROLLER_URL" && "$AUTO_YES" -ne 1 ]]; then
+            read -r -p "中心面板 URL（例如 https://panel.example.com/app/）: " CONTROLLER_URL
+        fi
+        if [[ -z "$AGENT_TOKEN" && "$AUTO_YES" -ne 1 ]]; then
+            read -r -s -p "Agent 注册密钥: " AGENT_TOKEN
+            echo
+        fi
+        if [[ ! "$CONTROLLER_URL" =~ ^https?://[^[:space:]\'\"\\]+$ ]]; then
+            echo -e "${red}受管客户端需要有效的 --controller URL。${plain}"
+            return 1
+        fi
+        if [[ ! "$AGENT_TOKEN" =~ ^[A-Za-z0-9_-]{32,128}$ ]]; then
+            echo -e "${red}受管客户端需要有效的 --agent-token。${plain}"
+            return 1
         fi
     else
         # minimal — 1.4.10-style: panel + sing-box only
@@ -384,13 +449,13 @@ apply_kind_defaults() {
         # prevent sing-box from running. Only the memory safety budget does.
         if [[ "$MEM_TOTAL_MB" -lt 1500 ]]; then
             SKIP_CORE=1
-            core_reason="极简+内存不足：默认不启内核（防 OOM；可用 --start-core）"
+            core_reason="轻量模式+内存不足：默认不启内核（防 OOM；可用 --start-core）"
         else
             SKIP_CORE=0
-            core_reason="极简：启动面板时加载 sing-box（同 1.4.10）"
+            core_reason="轻量模式：启动面板时加载 sing-box"
         fi
-        xray_reason="极简：不装 Xray（可用 --with-xray）"
-        proxy_reason="极简：不装反代（可用 --with-proxy --domain ...）"
+        xray_reason="轻量模式：不装 Xray（可用 --with-xray）"
+        proxy_reason="轻量模式：不装反代（可用 --with-proxy --domain ...）"
     fi
 
     # Explicit core flags win over kind defaults
@@ -413,6 +478,10 @@ apply_kind_defaults() {
     if [[ -z "$(xray_asset)" && "$INSTALL_XRAY" -eq 1 ]]; then
         INSTALL_XRAY=0
         xray_reason="当前架构无自动 Xray 包"
+    fi
+    if [[ "$DISABLE_XRAY" -eq 1 ]]; then
+        INSTALL_XRAY=0
+        xray_reason="低配档位：仅使用 sing-box，禁止下载或启动 Xray-core"
     fi
 
     if [[ "$FORCE_PROXY" == "1" || ( "$INSTALL_KIND" == "full" && "$FORCE_PROXY" != "0" ) || -n "$PROXY_DOMAIN" ]]; then
@@ -475,10 +544,12 @@ apply_kind_defaults() {
     echo -e "档位：${PROFILE} | 面板：${INSTALL_MODE}"
     if [[ "$INSTALL_KIND" == "full" ]]; then
         echo -e "模式：${green}全面服务端 (--full)${plain}"
+    elif [[ "$INSTALL_KIND" == "managed" ]]; then
+        echo -e "模式：${green}受管客户端 (--managed-client)${plain}"
     else
-        echo -e "模式：${green}极简安装 (--minimal)${plain}"
+        echo -e "模式：${green}轻量 Web 面板 (--minimal)${plain}"
     fi
-    echo -e "组件：Xray=$([ "$INSTALL_XRAY" -eq 1 ] && echo 是 || echo 否)  反代=$([ "$INSTALL_PROXY" -eq 1 ] && echo "是(${PROXY_ENGINE:-?})" || echo 否)  Agent=$([ "$INSTALL_AGENT" -eq 1 ] && echo 是 || echo 否)  自动启内核=$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是)"
+    echo -e "组件：Xray=$(xray_summary_label)  反代=$([ "$INSTALL_PROXY" -eq 1 ] && echo "是(${PROXY_ENGINE:-?})" || echo 否)  Agent=$([ "$INSTALL_AGENT" -eq 1 ] && echo 是 || echo 否)  自动启内核=$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是)"
     echo -e "  Xray：${xray_reason}"
     echo -e "  反代：${proxy_reason}"
     echo -e "  内核：${core_reason}"
@@ -512,6 +583,7 @@ apply_systemd_optimize() {
 
     mkdir -p /etc/systemd/system/s-ui.service.d
     local skip_line="Environment=SUI_SKIP_CORE=false"
+    local xray_line="Environment=SUI_DISABLE_XRAY=false"
     local go_mem_lines=""
     if [[ "$SKIP_CORE" -eq 1 ]]; then
         skip_line="Environment=SUI_SKIP_CORE=true"
@@ -520,6 +592,14 @@ apply_systemd_optimize() {
         chmod 644 /usr/local/s-ui/db/.skip_core
     else
         rm -f /usr/local/s-ui/db/.skip_core
+    fi
+    if [[ "$DISABLE_XRAY" -eq 1 ]]; then
+        xray_line="Environment=SUI_DISABLE_XRAY=true"
+        mkdir -p /usr/local/s-ui/db
+        touch /usr/local/s-ui/db/.disable_xray
+        chmod 644 /usr/local/s-ui/db/.disable_xray
+    else
+        rm -f /usr/local/s-ui/db/.disable_xray
     fi
 
     # Cap Go heap so panel web UI does not balloon toward total RAM.
@@ -538,6 +618,7 @@ apply_systemd_optimize() {
 OOMScoreAdjust=800
 Nice=10
 ${skip_line}
+${xray_line}
 ${go_mem_lines}
 EOF
 
@@ -546,6 +627,9 @@ EOF
         echo -e "${yellow}需要代理时在面板配置入站后点「重启内核」${plain}"
     else
         echo -e "${yellow}已配置为自动启动代理内核（--start-core）${plain}"
+    fi
+    if [[ "$DISABLE_XRAY" -eq 1 ]]; then
+        echo -e "${green}低配档位仅启用 sing-box；Xray-core 不下载、不启动${plain}"
     fi
     [[ -n "$go_mem_lines" ]] && echo -e "${green}已限制面板 Go 内存（GOMEMLIMIT），降低 OOM 风险${plain}"
 }
@@ -761,6 +845,16 @@ proxy_summary_label() {
     fi
 }
 
+xray_summary_label() {
+    if [[ "$INSTALL_XRAY" -eq 1 ]]; then
+        echo "是"
+    elif [[ "$DISABLE_XRAY" -eq 1 ]]; then
+        echo "否（低配仅 sing-box）"
+    else
+        echo "否"
+    fi
+}
+
 install_reverse_proxy() {
     PROXY_READY=0
     if [[ "$INSTALL_PROXY" -ne 1 ]]; then
@@ -835,7 +929,11 @@ install_reverse_proxy() {
 install_xray() {
     if [[ "$INSTALL_XRAY" -ne 1 ]]; then
         echo -e "${yellow}按预检结果跳过 Xray-core 安装（面板默认使用 sing-box）。${plain}"
-        echo -e "${yellow}之后可在资源充足时重新执行安装脚本并加 --with-xray。${plain}"
+        if [[ "$DISABLE_XRAY" -eq 1 ]]; then
+            echo -e "${yellow}当前低配档位已禁用 Xray；升级 CPU/内存并重新检测为非低配后才可安装。${plain}"
+        else
+            echo -e "${yellow}之后可在资源充足时重新执行安装脚本并加 --with-xray。${plain}"
+        fi
         return 0
     fi
 
@@ -945,6 +1043,44 @@ prepare_services() {
         echo -e "###############################################################"
     fi
     systemctl daemon-reload
+}
+
+configure_managed_agent() {
+    [[ "$INSTALL_AGENT" -eq 1 ]] || return 0
+    [[ -n "$CONTROLLER_URL" && -n "$AGENT_TOKEN" ]] || return 0
+    if [[ ! -x /usr/local/s-ui/sui-agent || ! -f /etc/systemd/system/s-ui-agent.service ]]; then
+        echo -e "${red}受管客户端缺少 Agent 二进制或 systemd 服务。${plain}"
+        return 1
+    fi
+    mkdir -p /etc/default
+    umask 077
+    {
+        printf 'SUI_AGENT_PANEL=%s\n' "$CONTROLLER_URL"
+        printf 'SUI_AGENT_TOKEN=%s\n' "$AGENT_TOKEN"
+        printf 'SUI_AGENT_INTERVAL=15s\n'
+        printf 'SUI_AGENT_INSECURE=%s\n' "$([ "$AGENT_INSECURE" -eq 1 ] && echo true || echo false)"
+        printf 'SUI_AGENT_LOCAL_SOCKET=/run/s-ui/control.sock\n'
+    } > /etc/default/1s-ui-agent
+    chmod 0600 /etc/default/1s-ui-agent
+    systemctl daemon-reload
+    if [[ "$START_SERVICE" -ne 1 ]]; then
+        echo -e "${yellow}Agent 已配置但未启动；稍后执行 systemctl enable --now s-ui-agent${plain}"
+        return 0
+    fi
+    local check=(/usr/local/s-ui/sui-agent --panel "$CONTROLLER_URL" --token "$AGENT_TOKEN" --local-socket /run/s-ui/control.sock --interval 15s --once)
+    [[ "$AGENT_INSECURE" -eq 1 ]] && check+=(--insecure)
+    echo -e "${yellow}验证中心面板连接和本机 Web 面板控制通道...${plain}"
+    if [[ ! -S /run/s-ui/control.sock ]]; then
+        echo -e "${red}本机 1S-UI 控制通道不存在，请检查 s-ui 服务版本和日志。${plain}"
+        return 1
+    fi
+    if ! "${check[@]}"; then
+        echo -e "${red}Agent 无法连接中心面板，请检查 URL、Token、防火墙和证书。${plain}"
+        return 1
+    fi
+    systemctl enable --now s-ui-agent
+    systemctl is-active --quiet s-ui-agent || return 1
+    echo -e "${green}受管客户端已连接中心面板，本地 Web 面板保持可独立使用。${plain}"
 }
 
 # Reclaimable + swap free, in MB (best-effort).
@@ -1195,9 +1331,9 @@ install_s-ui() {
     local members=(s-ui/sui s-ui/s-ui.service s-ui/s-ui.sh)
     if [[ "$INSTALL_AGENT" -eq 1 ]]; then
         members+=(s-ui/sui-agent s-ui/s-ui-agent.service)
-        echo -e "${yellow}解压面板 + Agent（全面服务端）...${plain}"
+        echo -e "${yellow}解压面板 + Agent...${plain}"
     else
-        echo -e "${yellow}选择性解压（极简：仅 sui + service，跳过 agent）...${plain}"
+        echo -e "${yellow}选择性解压（轻量 Web 面板：sui + Web UI + service）...${plain}"
     fi
     local extract_ok=0
     if tar xzf "$tarball" -C /tmp/s-ui-extract "${members[@]}" 2>/dev/null; then
@@ -1240,7 +1376,7 @@ install_s-ui() {
         cp -f "$src_dir/sui-agent" /usr/local/s-ui/sui-agent
         chmod +x /usr/local/s-ui/sui-agent
         [[ -f "$src_dir/s-ui-agent.service" ]] && cp -f "$src_dir/s-ui-agent.service" /etc/systemd/system/
-        echo -e "${green}已安装 sui-agent 二进制（全面服务端）${plain}"
+        echo -e "${green}已安装 sui-agent 二进制${plain}"
     fi
     rm -rf /tmp/s-ui-extract
 
@@ -1328,11 +1464,16 @@ install_s-ui() {
         echo -e "${yellow}已按 --no-start 跳过启动。稍后：systemctl start s-ui${plain}"
     fi
 
+    if [[ "$INSTALL_KIND" == "managed" ]]; then
+        configure_managed_agent || exit 1
+    fi
+
     echo -e "${green}s-ui ${last_version}${plain} 安装完成"
-    local kind_label="极简"
+    local kind_label="轻量 Web 面板"
     [[ "$INSTALL_KIND" == "full" ]] && kind_label="全面服务端"
+    [[ "$INSTALL_KIND" == "managed" ]] && kind_label="受管客户端"
     echo -e "安装摘要：方案=${green}${kind_label}${plain} 升级=${INSTALL_MODE} 档位=${PROFILE}"
-    echo -e "  Xray=$([ "$INSTALL_XRAY" -eq 1 ] && echo 是 || echo 否) 反代=$(proxy_summary_label) Agent=$([ "$INSTALL_AGENT" -eq 1 ] && echo 是 || echo 否) 自动启内核=$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是) Swap=${SWAP_MB}MB"
+    echo -e "  Xray=$(xray_summary_label) 反代=$(proxy_summary_label) Agent=$([ "$INSTALL_AGENT" -eq 1 ] && echo 是 || echo 否) 自动启内核=$([ "$SKIP_CORE" -eq 1 ] && echo 否 || echo 是) Swap=${SWAP_MB}MB"
     echo -e "访问：浏览器打开 ${green}$(panel_access_url)${plain}（默认 admin/admin）"
     if [[ "$PROXY_READY" -eq 1 ]]; then
         echo -e "${yellow}安全说明：2095 仅监听本机，请勿使用公网 IP:2095；公网入口由 ${PROXY_ENGINE} 提供。${plain}"
@@ -1341,8 +1482,11 @@ install_s-ui() {
         echo -e "${yellow}安全模式：配置入站后在面板内重启内核再启用代理。${plain}"
     fi
     if [[ "$INSTALL_KIND" == "minimal" ]]; then
-        echo -e "${yellow}当前为极简安装。若需全面服务端可重新执行：${plain}"
+        echo -e "${yellow}当前为轻量 Web 面板，已包含完整可视化界面。若需全面服务端可重新执行：${plain}"
         echo -e "  bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --full --domain 你的域名"
+    fi
+    if [[ "$INSTALL_KIND" == "managed" ]]; then
+        echo -e "${yellow}当前服务器既可从中心管理，也可直接登录本机 Web 面板操作。${plain}"
     fi
     echo -e ""
     echo -e "${yellow}若仍关机： free -h; swapon --show; dmesg | grep -iE 'oom|kill' | tail -30; journalctl -u s-ui -n 80 --no-pager${plain}"

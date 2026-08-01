@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Hhz0823/1s-ui/config"
@@ -155,6 +156,17 @@ func (s *ServerService) GetSingboxInfo() map[string]interface{} {
 }
 
 func (s *ServerService) GetXrayInfo() map[string]interface{} {
+	if config.IsXrayDisabled() {
+		return map[string]interface{}{
+			"running":    false,
+			"disabled":   true,
+			"last_error": "",
+			"notice":     "Xray-core is disabled on this low-resource server; use sing-box",
+			"stats": map[string]interface{}{
+				"Uptime": uint32(0),
+			},
+		}
+	}
 	if xrayPtr == nil {
 		return map[string]interface{}{
 			"running":    false,
@@ -178,9 +190,16 @@ func (s *ServerService) GetXrayInfo() map[string]interface{} {
 // Cluster control-plane (multi-server Agent hub) recommended minimum.
 // Normal proxy panel has no hard host requirement.
 const (
-	MinClusterCPUCores = 2
-	MinClusterMemBytes = 2 * 1024 * 1024 * 1024 // 2 GiB
+	MinClusterCPUCores       = 2
+	MinClusterMemBytes       = 2 * 1024 * 1024 * 1024 // 2 GiB
+	hostRequirementsCacheTTL = 15 * time.Second
 )
+
+var hostRequirementsCache = struct {
+	sync.Mutex
+	loadedAt time.Time
+	value    map[string]interface{}
+}{}
 
 func currentClusterCapacity() (int, uint64) {
 	cpuCount := runtime.NumCPU()
@@ -195,27 +214,12 @@ func meetsClusterRequirements(cpuCount int, memTotal uint64) bool {
 	return cpuCount >= MinClusterCPUCores && memTotal >= MinClusterMemBytes
 }
 
-// GetHostRequirements reports host capacity vs the cluster-server minimum.
-// applies=true only when this panel is used as a cluster control plane (has Agent nodes).
-// Normal panel installs remain allowed, but creating the first Agent requires 2c2G.
-func (s *ServerService) GetHostRequirements() map[string]interface{} {
-	cpuCount, memTotal := currentClusterCapacity()
+func buildHostRequirements(cpuCount int, memTotal uint64, agentCount int) map[string]interface{} {
 	okCPU := cpuCount >= MinClusterCPUCores
 	okMem := memTotal >= MinClusterMemBytes
 	meetsCluster := meetsClusterRequirements(cpuCount, memTotal)
-	agentCount := 0
-	if db := database.GetDB(); db != nil {
-		var n int64
-		if err := db.Model(&model.AgentNode{}).Count(&n).Error; err == nil {
-			agentCount = int(n)
-		}
-	}
-	// Cluster mode: panel manages remote agents as control plane.
 	applies := agentCount > 0
-	ok := true
-	if applies {
-		ok = meetsCluster
-	}
+	ok := !applies || meetsCluster
 	return map[string]interface{}{
 		"mode":              map[bool]string{true: "cluster", false: "panel"}[applies],
 		"applies":           applies,
@@ -229,9 +233,47 @@ func (s *ServerService) GetHostRequirements() map[string]interface{} {
 		"ok_mem":            okMem,
 		"ok":                ok,
 		"can_enable_agents": meetsCluster,
-		// Kept for frontend/API compatibility; this is now a hard minimum.
 		"meets_cluster_rec": meetsCluster,
 	}
+}
+
+func cloneHostRequirements(value map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{}, len(value))
+	for key, item := range value {
+		result[key] = item
+	}
+	return result
+}
+
+func invalidateHostRequirementsCache() {
+	hostRequirementsCache.Lock()
+	hostRequirementsCache.loadedAt = time.Time{}
+	hostRequirementsCache.value = nil
+	hostRequirementsCache.Unlock()
+}
+
+// GetHostRequirements reports host capacity vs the cluster-server minimum.
+// applies=true only when this panel is used as a cluster control plane (has Agent nodes).
+// Normal panel installs remain allowed, but creating the first Agent requires 2c2G.
+func (s *ServerService) GetHostRequirements() map[string]interface{} {
+	hostRequirementsCache.Lock()
+	defer hostRequirementsCache.Unlock()
+	if hostRequirementsCache.value != nil && time.Since(hostRequirementsCache.loadedAt) < hostRequirementsCacheTTL {
+		return cloneHostRequirements(hostRequirementsCache.value)
+	}
+
+	cpuCount, memTotal := currentClusterCapacity()
+	agentCount := 0
+	if db := database.GetDB(); db != nil {
+		var n int64
+		if err := db.Model(&model.AgentNode{}).Count(&n).Error; err == nil {
+			agentCount = int(n)
+		}
+	}
+	value := buildHostRequirements(cpuCount, memTotal, agentCount)
+	hostRequirementsCache.value = value
+	hostRequirementsCache.loadedAt = time.Now()
+	return cloneHostRequirements(value)
 }
 
 func (s *ServerService) GetSystemInfo() map[string]interface{} {

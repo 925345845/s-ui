@@ -13,6 +13,9 @@
           <v-textarea :model-value="enroll.command" :label="$t('agent.command')" readonly dir="ltr" rows="3" hide-details>
             <template #append-inner><v-btn icon="mdi-content-copy" size="small" variant="text" @click="copy(enroll.command)" /></template>
           </v-textarea>
+          <v-textarea :model-value="enroll.managedCommand" :label="$t('agent.managedCommand')" readonly dir="ltr" rows="3" hide-details class="mt-3">
+            <template #append-inner><v-btn icon="mdi-content-copy" size="small" variant="text" @click="copy(enroll.managedCommand)" /></template>
+          </v-textarea>
         </template>
       </v-card-text>
       <v-card-actions class="justify-center">
@@ -22,23 +25,106 @@
     </v-card>
   </v-dialog>
 
-  <v-dialog v-model="detail.visible" width="min(920px, calc(100vw - 24px))">
-    <v-card v-if="detail.node">
-      <v-card-title class="text-center">{{ $t('agent.detail') }} · {{ detail.node.name }}</v-card-title>
+  <v-dialog v-model="edit.visible" width="min(520px, calc(100vw - 24px))">
+    <v-card>
+      <v-card-title class="text-center">{{ $t('agent.editNode') }}</v-card-title>
       <v-divider />
       <v-card-text>
-        <v-row dense>
-          <v-col cols="12" sm="6" md="4"><div class="metric-label">{{ $t('agent.status') }}</div><v-chip size="small" :color="detail.node.online ? 'success' : 'default'" variant="tonal">{{ detail.node.online ? $t('online') : $t('agent.offline') }}</v-chip></v-col>
-          <v-col cols="12" sm="6" md="4"><div class="metric-label">{{ $t('agent.connection') }}</div><strong>{{ connLabel(detail.node) }}</strong></v-col>
-          <v-col cols="12" sm="6" md="4"><div class="metric-label">{{ $t('agent.uptime') }}</div><strong>{{ formatUptime(detail.node.report.uptime) }}</strong></v-col>
-          <v-col cols="12" sm="6" md="4"><div class="metric-label">CPU</div><strong>{{ percent(detail.node.report.cpu_percent) }} ({{ detail.node.report.cpu_cores || '-' }} cores)</strong></v-col>
-          <v-col cols="12" sm="6" md="4"><div class="metric-label">{{ $t('agent.memory') }}</div><strong>{{ usage(detail.node.report.memory) }}</strong></v-col>
-          <v-col cols="12" sm="6" md="4"><div class="metric-label">{{ $t('agent.disk') }}</div><strong>{{ usage(detail.node.report.disk) }}</strong></v-col>
-          <v-col cols="12" sm="6" md="4"><div class="metric-label">{{ $t('agent.load') }}</div><strong dir="ltr">{{ loadAvg(detail.node.report.load) }}</strong></v-col>
-          <v-col cols="12" sm="6" md="4"><div class="metric-label">{{ $t('agent.netRate') }}</div><strong dir="ltr">↓ {{ rate(detail.node.report.net_rate?.recv) }} · ↑ {{ rate(detail.node.report.net_rate?.sent) }}</strong></v-col>
-          <v-col cols="12" sm="6" md="4"><div class="metric-label">{{ $t('agent.processes') }}</div><strong>{{ detail.node.report.process_count ?? '-' }}</strong></v-col>
-          <v-col cols="12"><div class="metric-label">{{ $t('agent.addresses') }}</div><div class="agent-muted" dir="ltr">{{ addressList(detail.node) }}</div></v-col>
-        </v-row>
+        <v-text-field v-model="edit.name" :label="$t('agent.name')" maxlength="80" hide-details class="mb-3" />
+        <v-text-field v-model="edit.publicHost" :label="$t('agent.publicHost')" :hint="$t('agent.publicHostHint')" persistent-hint dir="ltr" />
+      </v-card-text>
+      <v-card-actions class="justify-center">
+        <v-btn variant="outlined" @click="edit.visible = false">{{ $t('actions.close') }}</v-btn>
+        <v-btn color="primary" variant="tonal" :loading="edit.loading" :disabled="!edit.name.trim()" @click="saveNode">{{ $t('actions.save') }}</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+
+  <v-dialog v-model="detail.visible" width="min(980px, calc(100vw - 24px))">
+    <v-card v-if="detail.node" class="agent-detail-card">
+      <v-card-title class="detail-title">
+        <span>{{ $t('agent.detail') }} · {{ detail.node.name }}</span>
+        <v-progress-circular v-if="detail.refreshing" indeterminate size="18" width="2" color="primary" />
+      </v-card-title>
+      <v-divider />
+      <v-card-text class="detail-body">
+        <div class="detail-context">
+          <v-chip size="small" :color="detail.node.online ? 'success' : 'default'" variant="tonal">
+            {{ detail.node.online ? $t('online') : $t('agent.offline') }}
+          </v-chip>
+          <v-chip size="small" variant="outlined" prepend-icon="mdi-access-point-network">{{ connLabel(detail.node) }}</v-chip>
+          <span><v-icon size="16" icon="mdi-server" /> {{ platform(detail.node) }}</span>
+          <span><v-icon size="16" icon="mdi-clock-outline" /> {{ formatUptime(detail.node.report.uptime) }}</span>
+          <span><v-icon size="16" icon="mdi-update" /> {{ $t('agent.updated') }} {{ lastSeen(detail.node.last_seen) }}</span>
+        </div>
+
+        <div class="metric-grid">
+          <section class="metric-card">
+            <div class="metric-card-head">
+              <span><v-icon icon="mdi-cpu-64-bit" /> CPU</span>
+              <strong>{{ percent(detail.node.report.cpu_percent) }}</strong>
+            </div>
+            <v-progress-linear :model-value="clampPercent(detail.node.report.cpu_percent)" :color="metricColor(detail.node.report.cpu_percent)" height="6" rounded />
+            <div class="metric-card-meta">{{ detail.node.report.cpu_cores || '-' }} {{ $t('agent.cpuCores') }}</div>
+          </section>
+
+          <section class="metric-card">
+            <div class="metric-card-head">
+              <span><v-icon icon="mdi-memory" /> {{ $t('agent.memory') }}</span>
+              <strong>{{ percent(usagePercent(detail.node.report.memory)) }}</strong>
+            </div>
+            <v-progress-linear :model-value="usagePercent(detail.node.report.memory)" :color="metricColor(usagePercent(detail.node.report.memory))" height="6" rounded />
+            <div class="metric-card-meta">{{ usage(detail.node.report.memory) }}</div>
+          </section>
+
+          <section class="metric-card">
+            <div class="metric-card-head">
+              <span><v-icon icon="mdi-gauge" /> {{ $t('agent.load') }}</span>
+              <strong dir="ltr">{{ metricNumber(detail.node.report.load?.load1) }}</strong>
+            </div>
+            <v-progress-linear :model-value="loadPercent(detail.node)" :color="metricColor(loadPercent(detail.node))" height="6" rounded />
+            <div class="metric-card-meta" dir="ltr">5m {{ metricNumber(detail.node.report.load?.load5) }} · 15m {{ metricNumber(detail.node.report.load?.load15) }}</div>
+          </section>
+
+          <section class="metric-card">
+            <div class="metric-card-head">
+              <span><v-icon icon="mdi-lan-connect" /> Ping</span>
+              <strong dir="ltr">{{ latencyValue(detail.node) }}</strong>
+            </div>
+            <v-progress-linear :model-value="latencyProgress(detail.node)" :color="latencyColor(detail.node)" height="6" rounded />
+            <div class="metric-card-meta" dir="ltr">{{ latencyMeta(detail.node) }}</div>
+          </section>
+
+          <section class="metric-card">
+            <div class="metric-card-head">
+              <span><v-icon icon="mdi-application-cog-outline" /> {{ $t('agent.processes') }}</span>
+              <strong>{{ detail.node.report.process_count ?? '-' }}</strong>
+            </div>
+            <div class="metric-card-meta">{{ $t('agent.uptime') }} · {{ formatUptime(detail.node.report.uptime) }}</div>
+          </section>
+
+          <section class="metric-card">
+            <div class="metric-card-head">
+              <span><v-icon icon="mdi-harddisk" /> {{ $t('agent.disk') }}</span>
+              <strong>{{ percent(usagePercent(detail.node.report.disk)) }}</strong>
+            </div>
+            <v-progress-linear :model-value="usagePercent(detail.node.report.disk)" :color="metricColor(usagePercent(detail.node.report.disk))" height="6" rounded />
+            <div class="metric-card-meta">{{ usage(detail.node.report.disk) }}</div>
+          </section>
+
+          <section class="metric-card metric-card-wide">
+            <div class="metric-card-head">
+              <span><v-icon icon="mdi-swap-vertical" /> {{ $t('agent.netRate') }}</span>
+              <strong dir="ltr">↓ {{ rate(detail.node.report.net_rate?.recv) }}</strong>
+            </div>
+            <div class="metric-card-meta" dir="ltr">↑ {{ rate(detail.node.report.net_rate?.sent) }}</div>
+          </section>
+        </div>
+
+        <div class="detail-addresses">
+          <div class="metric-label">{{ $t('agent.addresses') }}</div>
+          <div class="agent-muted" dir="ltr">{{ addressList(detail.node) }}</div>
+        </div>
         <div class="metric-label mt-4">{{ $t('agent.history') }}</div>
         <div v-if="!detail.node.history?.length" class="agent-muted">{{ $t('noData') }}</div>
         <div v-else class="history-bars">
@@ -54,6 +140,7 @@
           <v-btn size="small" variant="tonal" :disabled="!detail.node.controllable || control.loading" @click="sendCmd('report_now')">{{ $t('agent.cmdReportNow') }}</v-btn>
           <v-btn size="small" variant="tonal" :disabled="!detail.node.controllable || control.loading" @click="sendCmd('ping')">{{ $t('agent.cmdPing') }}</v-btn>
           <v-btn size="small" color="primary" variant="tonal" :disabled="!detail.node.controllable" prepend-icon="mdi-console" @click="openTerminal(detail.node)">{{ $t('agent.terminal') }}</v-btn>
+          <v-btn size="small" color="primary" variant="tonal" :disabled="!detail.node.managed" prepend-icon="mdi-tune-vertical" @click="manageInbounds(detail.node)">{{ $t('agent.manageInbounds') }}</v-btn>
           <v-btn size="small" variant="tonal" color="warning" :disabled="!detail.node.controllable || control.loading" @click="sendCmd('restart_xray')">{{ $t('agent.cmdRestartXray') }}</v-btn>
           <v-btn size="small" variant="tonal" color="warning" :disabled="!detail.node.controllable || control.loading" @click="sendCmd('restart_singbox')">{{ $t('agent.cmdRestartSingBox') }}</v-btn>
           <v-btn size="small" variant="tonal" color="error" :disabled="!detail.node.controllable || control.loading" @click="sendCmd('restart_agent')">{{ $t('agent.cmdRestartAgent') }}</v-btn>
@@ -88,7 +175,7 @@
       </v-card-text>
       <v-card-actions class="justify-center">
         <v-btn variant="outlined" @click="detail.visible = false">{{ $t('actions.close') }}</v-btn>
-        <v-btn variant="tonal" :loading="control.loading" @click="refreshDetail">{{ $t('actions.update') }}</v-btn>
+        <v-btn variant="tonal" :loading="detail.refreshing" @click="refreshDetail(false)">{{ $t('actions.update') }}</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
@@ -197,6 +284,7 @@
             <th>{{ $t('agent.name') }}</th>
             <th>{{ $t('agent.status') }}</th>
             <th>{{ $t('agent.connection') }}</th>
+            <th>{{ $t('agent.latency') }}</th>
             <th>{{ $t('agent.platform') }}</th>
             <th>CPU</th>
             <th>{{ $t('agent.memory') }}</th>
@@ -217,6 +305,7 @@
             </td>
             <td @click="openDetail(node)"><v-chip size="small" :color="node.online ? 'success' : 'default'" variant="tonal">{{ node.online ? $t('online') : $t('agent.offline') }}</v-chip></td>
             <td @click="openDetail(node)"><v-chip size="x-small" variant="outlined">{{ connLabel(node) }}</v-chip></td>
+            <td dir="ltr" @click="openDetail(node)"><v-chip size="x-small" :color="latencyColor(node)" variant="tonal">{{ latencyLabel(node) }}</v-chip></td>
             <td dir="ltr" @click="openDetail(node)">{{ platform(node) }}</td>
             <td @click="openDetail(node)">{{ percent(node.report.cpu_percent) }}</td>
             <td @click="openDetail(node)">{{ usage(node.report.memory) }}</td>
@@ -228,8 +317,10 @@
             <td @click="openDetail(node)">{{ lastSeen(node.last_seen) }}</td>
             <td @click.stop>
               <div class="agent-actions">
+                <v-btn icon="mdi-tune-vertical" size="small" variant="text" :disabled="!node.managed" :title="$t('agent.manageInbounds')" @click="manageInbounds(node)" />
                 <v-btn icon="mdi-console" size="small" variant="text" :disabled="!node.controllable" :title="$t('agent.terminal')" @click="openTerminal(node)" />
                 <v-btn icon="mdi-information-outline" size="small" variant="text" :title="$t('agent.detail')" @click="openDetail(node)" />
+                <v-btn icon="mdi-pencil-outline" size="small" variant="text" :title="$t('agent.editNode')" @click="openEdit(node)" />
                 <v-btn icon="mdi-key-change" size="small" variant="text" :title="$t('agent.rotate')" @click="rotateNode(node)" />
                 <v-btn icon="mdi-delete-outline" size="small" variant="text" color="error" :title="$t('actions.del')" @click="askDelete(node)" />
               </div>
@@ -256,6 +347,7 @@
           <div><span>CPU</span><strong>{{ percent(node.report.cpu_percent) }}</strong></div>
           <div><span>{{ $t('agent.memory') }}</span><strong>{{ usage(node.report.memory) }}</strong></div>
           <div><span>{{ $t('agent.connection') }}</span><strong>{{ connLabel(node) }}</strong></div>
+          <div><span>{{ $t('agent.latency') }}</span><strong dir="ltr">{{ latencyLabel(node) }}</strong></div>
         </div>
         <div class="agent-mobile-footer" @click.stop>
           <div>
@@ -263,7 +355,9 @@
             <div class="core-status"><v-icon size="15" :color="node.report.cores?.xray_running ? 'success' : 'default'" icon="mdi-circle" /> Xray</div>
           </div>
           <div class="agent-actions">
+            <v-btn icon="mdi-tune-vertical" size="small" variant="text" :disabled="!node.managed" @click="manageInbounds(node)" />
             <v-btn icon="mdi-console" size="small" variant="text" :disabled="!node.controllable" @click="openTerminal(node)" />
+            <v-btn icon="mdi-pencil-outline" size="small" variant="text" @click="openEdit(node)" />
             <v-btn icon="mdi-key-change" size="small" variant="text" @click="rotateNode(node)" />
             <v-btn icon="mdi-delete-outline" size="small" variant="text" color="error" @click="askDelete(node)" />
           </div>
@@ -274,7 +368,8 @@
 </template>
 
 <script lang="ts" setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { push } from 'notivue'
 import { i18n } from '@/locales'
 import Data from '@/store/modules/data'
@@ -285,11 +380,14 @@ type AgentNode = {
   name: string
   last_seen: number
   remote_ip: string
+  public_host?: string
   version: string
   online: boolean
   conn_mode?: string
   ws_connected?: boolean
   controllable?: boolean
+  managed?: boolean
+  latency?: { last_ms?: number | null, average_ms?: number, p95_ms?: number, loss_pct?: number, samples?: number, updated_at?: number }
   commands?: { id: string, type: string, ok: boolean, output?: string, error?: string, elapsed_ms?: number }[]
   report: {
     hostname?: string
@@ -306,12 +404,14 @@ type AgentNode = {
     ipv4?: string[]
     ipv6?: string[]
     cores?: { singbox_running?: boolean, xray_running?: boolean, xray_version?: string }
+    panel?: { installed?: boolean, version?: string, control_available?: boolean, protocol_version?: number, capabilities?: string[] }
     conn_mode?: string
   }
   history?: { time: number, cpu_percent: number, mem_percent: number }[]
 }
 
 const nodes = ref<AgentNode[]>([])
+const router = useRouter()
 const loading = ref(false)
 const selected = ref<number[]>([])
 const dataStore = Data()
@@ -325,15 +425,17 @@ const serverRequirementText = computed(() => i18n.global.t('agent.hostRequiremen
   cpu: hostRequirements.value?.cpu_cores ?? '?',
   memory: currentHostMemoryGiB.value,
 }))
-const enroll = reactive({ visible: false, loading: false, name: '', token: '', command: '' })
+const enroll = reactive({ visible: false, loading: false, name: '', token: '', command: '', managedCommand: '' })
 const removeDialog = reactive<{ visible: boolean, loading: boolean, node?: AgentNode }>({ visible: false, loading: false })
-const detail = reactive<{ visible: boolean, node?: AgentNode }>({ visible: false })
+const edit = reactive<{ visible: boolean, loading: boolean, id: number, name: string, publicHost: string }>({ visible: false, loading: false, id: 0, name: '', publicHost: '' })
+const detail = reactive<{ visible: boolean, refreshing: boolean, node?: AgentNode }>({ visible: false, refreshing: false })
 const control = reactive({ loading: false, shell: '', interval: 15, lastOutput: '' })
 const batch = reactive<{ loading: boolean, shell: string, results: any[], resultVisible: boolean }>({ loading: false, shell: '', results: [], resultVisible: false })
 const term = reactive({ visible: false, connected: false, buffer: '', nodeName: '', nodeId: 0 })
 const termEl = ref<HTMLElement | null>(null)
 let termWs: WebSocket | null = null
 let refreshTimer: number | undefined
+let detailRefreshTimer: number | undefined
 
 const api = async (path: string, options?: RequestInit) => {
   const response = await fetch(path, {
@@ -347,13 +449,30 @@ const api = async (path: string, options?: RequestInit) => {
 }
 
 const loadNodes = async () => {
+  if (loading.value) return
   loading.value = true
   try {
-    nodes.value = await api('api/agents') || []
+    const latest: AgentNode[] = await api('api/agents') || []
+    nodes.value = latest
     selected.value = selected.value.filter(id => nodes.value.some(n => n.id === id && n.controllable))
+    if (detail.visible && detail.node) {
+      const current = latest.find(node => node.id === detail.node?.id)
+      if (current) {
+        detail.node = {
+          ...detail.node,
+          ...current,
+          history: detail.node.history,
+          commands: detail.node.commands,
+        }
+      }
+    }
   } catch (error: any) {
     push.error({ message: error?.message || i18n.global.t('agent.loadFailed') })
   } finally { loading.value = false }
+}
+
+const handleVisibilityChange = () => {
+  if (!document.hidden) void loadNodes()
 }
 
 const openEnrollment = () => {
@@ -361,7 +480,7 @@ const openEnrollment = () => {
     push.error({ message: serverRequirementText.value })
     return
   }
-  Object.assign(enroll, { visible: true, loading: false, name: '', token: '', command: '' })
+  Object.assign(enroll, { visible: true, loading: false, name: '', token: '', command: '', managedCommand: '' })
 }
 const closeEnrollment = () => { enroll.visible = false; if (enroll.command) loadNodes() }
 
@@ -371,6 +490,7 @@ const createNode = async () => {
     const result = await api('api/agents', { method: 'POST', body: JSON.stringify({ name: enroll.name.trim() }) })
     enroll.token = result.token
     enroll.command = result.command
+    enroll.managedCommand = result.managed_command || ''
   } catch (error: any) {
     push.error({ message: error?.message || i18n.global.t('agent.createFailed') })
   } finally { enroll.loading = false }
@@ -379,25 +499,56 @@ const createNode = async () => {
 const rotateNode = async (node: AgentNode) => {
   try {
     const result = await api(`api/agents/${node.id}/rotate`, { method: 'POST', body: '{}' })
-    Object.assign(enroll, { visible: true, loading: false, name: node.name, token: result.token, command: result.command })
+    Object.assign(enroll, { visible: true, loading: false, name: node.name, token: result.token, command: result.command, managedCommand: result.managed_command || '' })
   } catch (error: any) { push.error({ message: error?.message || i18n.global.t('agent.rotateFailed') }) }
+}
+
+const openEdit = (node: AgentNode) => {
+  Object.assign(edit, { visible: true, loading: false, id: node.id, name: node.name, publicHost: node.public_host || '' })
+}
+
+const saveNode = async () => {
+  if (!edit.id) return
+  edit.loading = true
+  try {
+    await api(`api/agents/${edit.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: edit.name.trim(), public_host: edit.publicHost.trim() }),
+    })
+    edit.visible = false
+    push.success({ message: i18n.global.t('agent.updateSuccess') })
+    await loadNodes()
+  } catch (error: any) {
+    push.error({ message: error?.message || i18n.global.t('agent.updateFailed') })
+  } finally { edit.loading = false }
+}
+
+const manageInbounds = (node: AgentNode) => {
+  if (!node.managed) return
+  detail.visible = false
+  void router.push(`/agents/${node.id}/inbounds`)
 }
 
 const openDetail = async (node: AgentNode) => {
   control.lastOutput = ''
   control.shell = ''
-  try {
-    detail.node = await api(`api/agents/${node.id}`)
-  } catch {
-    detail.node = node
-  }
+  detail.node = node
   detail.visible = true
+  await refreshDetail(true)
 }
 
-const refreshDetail = async () => {
-  if (!detail.node) return
-  try { detail.node = await api(`api/agents/${detail.node.id}`) }
-  catch (error: any) { push.error({ message: error?.message || i18n.global.t('agent.loadFailed') }) }
+const refreshDetail = async (silent = false) => {
+  if (!detail.node || detail.refreshing) return
+  const nodeId = detail.node.id
+  detail.refreshing = true
+  try {
+    const fresh = await api(`api/agents/${nodeId}`)
+    if (detail.visible && detail.node?.id === nodeId) detail.node = fresh
+  } catch (error: any) {
+    if (!silent) push.error({ message: error?.message || i18n.global.t('agent.loadFailed') })
+  } finally {
+    detail.refreshing = false
+  }
 }
 
 const sendCmd = async (type: string, args?: Record<string, any>) => {
@@ -562,10 +713,23 @@ const platform = (node: AgentNode) => {
   const arch = node.report.arch || ''
   return arch ? `${os}/${arch}` : os
 }
+const clampPercent = (value?: number) => Math.max(0, Math.min(100, Number(value) || 0))
 const percent = (value?: number) => value == null || Number.isNaN(value) ? '-' : `${value.toFixed(1)}%`
+const usagePercent = (value?: Usage) => value?.total ? (Number(value.used || 0) * 100 / value.total) : undefined
 const usage = (value?: Usage) => {
   if (!value?.total) return '-'
   return `${((value.used || 0) / (1024 ** 3)).toFixed(1)} / ${(value.total / (1024 ** 3)).toFixed(1)} GiB`
+}
+const metricNumber = (value?: number) => value == null || Number.isNaN(value) ? '-' : value.toFixed(2)
+const loadPercent = (node: AgentNode) => {
+  const cores = Math.max(1, Number(node.report.cpu_cores || 1))
+  return clampPercent((Number(node.report.load?.load1) || 0) * 100 / cores)
+}
+const metricColor = (value?: number) => {
+  const current = Number(value) || 0
+  if (current >= 90) return 'error'
+  if (current >= 70) return 'warning'
+  return 'success'
 }
 const rate = (bytesPerSec?: number) => {
   if (bytesPerSec == null) return '-'
@@ -591,6 +755,26 @@ const connLabel = (node: AgentNode) => {
   if (node.online) return i18n.global.t('agent.connHttp')
   return '-'
 }
+const latencyLabel = (node: AgentNode) => {
+  if (!node.online || node.latency?.last_ms == null) return '-'
+  const loss = Number(node.latency.loss_pct || 0)
+  return loss > 0 ? `${node.latency.last_ms} ms · ${loss.toFixed(0)}%` : `${node.latency.last_ms} ms`
+}
+const latencyColor = (node: AgentNode) => {
+  if (!node.online || node.latency?.last_ms == null) return 'default'
+  if ((node.latency.loss_pct || 0) >= 20 || node.latency.last_ms >= 250) return 'error'
+  if ((node.latency.loss_pct || 0) > 0 || node.latency.last_ms >= 100) return 'warning'
+  return 'success'
+}
+const latencyValue = (node: AgentNode) => node.online && node.latency?.last_ms != null ? `${node.latency.last_ms} ms` : '-'
+const latencyProgress = (node: AgentNode) => {
+  if (!node.online || node.latency?.last_ms == null) return 0
+  return clampPercent(node.latency.last_ms / 5)
+}
+const latencyMeta = (node: AgentNode) => {
+  if (!node.latency?.samples) return i18n.global.t('noData')
+  return `${i18n.global.t('agent.average')} ${metricNumber(node.latency.average_ms)} ms · P95 ${node.latency.p95_ms ?? '-'} ms · ${i18n.global.t('agent.loss')} ${Number(node.latency.loss_pct || 0).toFixed(0)}%`
+}
 const addressList = (node: AgentNode) => {
   const items = [...(node.report.ipv4 || []), ...(node.report.ipv6 || [])]
   return items.length ? items.join(', ') : '-'
@@ -604,12 +788,29 @@ const lastSeen = (value: number) => {
   return new Date(value * 1000).toLocaleString()
 }
 
+watch(() => detail.visible, (visible) => {
+  if (detailRefreshTimer) {
+    window.clearInterval(detailRefreshTimer)
+    detailRefreshTimer = undefined
+  }
+  if (visible) {
+    detailRefreshTimer = window.setInterval(() => {
+      if (!document.hidden) void refreshDetail(true)
+    }, 5000)
+  }
+})
+
 onMounted(() => {
-  loadNodes()
-  refreshTimer = window.setInterval(loadNodes, 15000)
+  void loadNodes()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  refreshTimer = window.setInterval(() => {
+    if (!document.hidden) void loadNodes()
+  }, 15000)
 })
 onBeforeUnmount(() => {
   if (refreshTimer) window.clearInterval(refreshTimer)
+  if (detailRefreshTimer) window.clearInterval(detailRefreshTimer)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
   closeTerminal()
 })
 </script>
@@ -623,11 +824,43 @@ onBeforeUnmount(() => {
   background: rgba(var(--v-theme-primary), 0.06);
 }
 .agent-table-wrap { overflow-x: auto; border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); border-radius: 16px; }
-.agent-table { min-width: 1120px; }
+.agent-table { min-width: 1300px; }
+.agent-table :deep(table) { table-layout: fixed; width: 100%; }
+.agent-table :deep(th) { white-space: nowrap; }
+.agent-table :deep(th:nth-child(1)) { width: 42px; }
+.agent-table :deep(th:nth-child(2)) { width: 200px; }
+.agent-table :deep(th:nth-child(3)) { width: 70px; }
+.agent-table :deep(th:nth-child(4)) { width: 130px; }
+.agent-table :deep(th:nth-child(5)) { width: 80px; }
+.agent-table :deep(th:nth-child(6)) { width: 110px; }
+.agent-table :deep(th:nth-child(7)) { width: 65px; }
+.agent-table :deep(th:nth-child(8)) { width: 105px; }
+.agent-table :deep(th:nth-child(9)) { width: 100px; }
+.agent-table :deep(th:nth-child(10)) { width: 100px; }
+.agent-table :deep(th:nth-child(11)) { width: 90px; }
+.agent-table :deep(th:nth-child(12)) { width: 208px; }
+.agent-table .agent-name,
+.agent-table .agent-muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal; }
 .agent-name { font-weight: 600; }
 .agent-muted { opacity: 0.7; font-size: 0.85rem; word-break: break-all; }
 .agent-actions { display: flex; justify-content: center; gap: 2px; }
 .core-status { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.agent-detail-card { max-height: min(90vh, 900px); }
+.detail-title { display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 1.05rem; }
+.detail-body { overflow-y: auto; }
+.detail-context { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; margin-bottom: 14px; }
+.detail-context > span { display: inline-flex; align-items: center; gap: 5px; color: rgba(var(--v-theme-on-surface), 0.72); font-size: 0.86rem; }
+.metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.metric-card {
+  min-width: 0; min-height: 102px; padding: 12px; border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 8px; background: rgba(var(--v-theme-surface-variant), 0.24); display: flex; flex-direction: column; gap: 10px;
+}
+.metric-card-wide { grid-column: span 3; }
+.metric-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.metric-card-head > span { display: inline-flex; align-items: center; gap: 7px; min-width: 0; color: rgba(var(--v-theme-on-surface), 0.72); font-size: 0.86rem; }
+.metric-card-head strong { white-space: nowrap; font-size: 1.08rem; }
+.metric-card-meta { margin-top: auto; color: rgba(var(--v-theme-on-surface), 0.66); font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.detail-addresses { margin-top: 12px; padding: 10px 12px; border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); border-radius: 8px; }
 .agent-mobile-list { display: none; gap: 12px; }
 .agent-mobile-item { border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); border-radius: 16px; padding: 14px; display: grid; gap: 12px; }
 .agent-mobile-header, .agent-mobile-footer { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
@@ -647,5 +880,13 @@ onBeforeUnmount(() => {
 @media (max-width: 960px) {
   .agent-table-wrap { display: none; }
   .agent-mobile-list { display: grid; }
+  .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metric-card-wide { grid-column: span 2; }
+}
+@media (max-width: 600px) {
+  .detail-body { padding: 14px !important; }
+  .detail-context { gap: 8px; }
+  .metric-grid { grid-template-columns: minmax(0, 1fr); }
+  .metric-card-wide { grid-column: auto; }
 }
 </style>

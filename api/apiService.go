@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Hhz0823/1s-ui/agent"
 	"github.com/Hhz0823/1s-ui/config"
 	"github.com/Hhz0823/1s-ui/database"
 	"github.com/Hhz0823/1s-ui/logger"
@@ -46,6 +48,11 @@ type createAgentRequest struct {
 	Name string `json:"name"`
 }
 
+type updateAgentRequest struct {
+	Name       string `json:"name"`
+	PublicHost string `json:"public_host"`
+}
+
 func (a *ApiService) GetAgents(c *gin.Context) {
 	nodes, err := a.AgentService.List()
 	jsonObj(c, nodes, err)
@@ -59,6 +66,134 @@ func (a *ApiService) GetAgent(c *gin.Context) {
 	}
 	node, err := a.AgentService.Get(uint(id))
 	jsonObj(c, node, err)
+}
+
+func (a *ApiService) UpdateAgent(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || id == 0 {
+		jsonObj(c, nil, common.NewError("invalid agent node id"))
+		return
+	}
+	var request updateAgentRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	node, err := a.AgentService.Update(uint(id), request.Name, request.PublicHost)
+	jsonObj(c, node, err)
+}
+
+func (a *ApiService) GetAgentInbounds(c *gin.Context) {
+	id, err := parseAgentNodeID(c)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	response, err := a.AgentService.DispatchRPC(id, agent.RPCMethodInboundList, map[string]interface{}{}, GetLoginUser(c))
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	var result service.RemoteInboundList
+	err = json.Unmarshal(response.Payload, &result)
+	jsonObj(c, result, err)
+}
+
+func (a *ApiService) GetAgentInboundEditor(c *gin.Context) {
+	id, err := parseAgentNodeID(c)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	inboundID, err := strconv.ParseUint(c.Query("id"), 10, 32)
+	if c.Query("id") == "" {
+		inboundID = 0
+		err = nil
+	}
+	if err != nil {
+		jsonObj(c, nil, common.NewError("invalid inbound id"))
+		return
+	}
+	response, err := a.AgentService.DispatchRPC(id, agent.RPCMethodInboundEdit, map[string]interface{}{"id": inboundID}, GetLoginUser(c))
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	var result service.RemoteInboundEditor
+	err = json.Unmarshal(response.Payload, &result)
+	jsonObj(c, result, err)
+}
+
+type saveAgentInboundRequest struct {
+	Action           string          `json:"action"`
+	Data             json.RawMessage `json:"data"`
+	InitUsers        []uint          `json:"init_users"`
+	ExpectedRevision uint64          `json:"expected_revision"`
+}
+
+func (a *ApiService) SaveAgentInbound(c *gin.Context) {
+	id, err := parseAgentNodeID(c)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	var request saveAgentInboundRequest
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 512<<10)
+	if err := c.ShouldBindJSON(&request); err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	node, err := a.AgentService.Get(id)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	publicHost := managedNodePublicHost(node)
+	payload := service.RemoteInboundSaveRequest{
+		Action: request.Action, Data: request.Data, InitUsers: request.InitUsers,
+		ExpectedRevision: request.ExpectedRevision, Actor: GetLoginUser(c), PublicHost: publicHost,
+	}
+	response, err := a.AgentService.DispatchRPC(id, agent.RPCMethodInboundSave, payload, GetLoginUser(c))
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	var result service.RemoteInboundSaveResponse
+	err = json.Unmarshal(response.Payload, &result)
+	jsonObj(c, result, err)
+}
+
+func parseAgentNodeID(c *gin.Context) (uint, error) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || id == 0 {
+		return 0, common.NewError("invalid agent node id")
+	}
+	return uint(id), nil
+}
+
+func managedNodePublicHost(node *service.AgentNodeView) string {
+	if node == nil {
+		return ""
+	}
+	if value := strings.TrimSpace(node.PublicHost); value != "" {
+		return strings.Trim(value, "[]")
+	}
+	candidates := append([]string{node.RemoteIP}, node.Report.IPv4...)
+	candidates = append(candidates, node.Report.IPv6...)
+	for _, candidate := range candidates {
+		candidate = strings.Trim(strings.TrimSpace(candidate), "[]")
+		ip := net.ParseIP(candidate)
+		if ip != nil && ip.IsGlobalUnicast() && !ip.IsPrivate() {
+			return candidate
+		}
+	}
+	for _, candidate := range candidates {
+		candidate = strings.Trim(strings.TrimSpace(candidate), "[]")
+		if candidate != "" {
+			return candidate
+		}
+	}
+	return ""
 }
 
 type agentCommandRequest struct {
@@ -159,9 +294,11 @@ func (a *ApiService) agentEnrollmentResponse(c *gin.Context, enrollment *service
 	panelURL := scheme + "://" + c.Request.Host + webPath
 	command := "bash <(curl -fsSL https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install-agent.sh) --panel " +
 		shellQuote(panelURL) + " --token " + shellQuote(enrollment.Token) + " --version " + shellQuote(config.GetVersion())
+	managedCommand := "bash <(curl -fsSL https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) --managed-client -y --controller " +
+		shellQuote(panelURL) + " --agent-token " + shellQuote(enrollment.Token) + " " + shellQuote(config.GetVersion())
 	return map[string]interface{}{
 		"node": enrollment.Node, "token": enrollment.Token,
-		"panel_url": panelURL, "command": command,
+		"panel_url": panelURL, "command": command, "managed_command": managedCommand,
 	}
 }
 

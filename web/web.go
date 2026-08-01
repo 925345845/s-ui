@@ -32,11 +32,14 @@ import (
 var content embed.FS
 
 type Server struct {
-	httpServer     *http.Server
-	listener       net.Listener
-	ctx            context.Context
-	cancel         context.CancelFunc
-	settingService service.SettingService
+	httpServer        *http.Server
+	listener          net.Listener
+	controlServer     *http.Server
+	controlListener   net.Listener
+	controlSocketPath string
+	ctx               context.Context
+	cancel            context.CancelFunc
+	settingService    service.SettingService
 }
 
 func NewServer() *Server {
@@ -240,16 +243,20 @@ func (s *Server) Start() (err error) {
 	s.httpServer = &http.Server{
 		Handler: engine,
 	}
+	if err := s.startControlSocket(); err != nil {
+		logger.Warning("local managed-node control is unavailable: ", err)
+	}
 
 	go func() {
 		s.httpServer.Serve(listener)
 	}()
 
-	return nil
+	return err
 }
 
 func (s *Server) Stop() error {
 	var err error
+	controlErr := s.stopControlSocket()
 	if s.httpServer != nil {
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
 		err = s.httpServer.Shutdown(shutdownCtx)
@@ -269,7 +276,10 @@ func (s *Server) Stop() error {
 		}
 	}
 	s.cancel()
-	return nil
+	if err == nil {
+		err = controlErr
+	}
+	return err
 }
 
 func (s *Server) GetCtx() context.Context {

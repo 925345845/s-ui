@@ -29,15 +29,15 @@ A modern proxy panel forked from S-UI: sing-box first, optional Xray-core per in
 
 | 使用场景 | 建议 | 要求 |
 | --- | --- | --- |
-| 单机代理、小内存 VPS | **极简安装** `--minimal` | 无硬性最低配置；低于 1.5GB 内存默认只启动面板 |
+| 单机代理、小内存 VPS | **轻量 Web 面板** `--minimal` | 完整可视化 Web UI；最低目标 1 核 CPU + 512MB 内存；低于 1.5GB 默认安全模式只启动面板 |
 | Xray、反向代理、多服务器 Agent | **全面服务端** `--full` | 最低 2 核 CPU + 2GB 内存 |
 | OpenWrt | **Lite v1.5.7** | 仅 sing-box；本轮 Linux 更新不包含新的 IPK |
 
 ```bash
-# 推荐：交互选择极简或全面服务端
+# 推荐：交互选择轻量 Web 面板或全面服务端
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 
-# 极简非交互安装
+# 轻量 Web 面板自动安装（包含完整 Web UI）
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.8 -y --minimal
 ```
 
@@ -62,11 +62,13 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 | 上游 | [alireza0/s-ui](https://github.com/alireza0/s-ui) |
 | 默认内核 | [sing-box](https://github.com/SagerNet/sing-box) |
 | 可选内核 | [Xray-core](https://github.com/XTLS/Xray-core)（按入站选择） |
-| 普通面板 | **无硬性最低配置**；极简模式内存 ≥1500MB 时会自动启动 sing-box，低于该值默认只启面板 |
+| 普通面板 | **最低性能目标 1 核 CPU + 512MB 内存**；低配档位仅安装/允许 sing-box，不下载或启动 Xray-core；内存 ≥1500MB 时自动启动 sing-box，低于该值默认只启 Web 面板 |
 | **集群服务端**（多服务器 Agent 控制面） | **最低 2 核 CPU + 2GB 内存**（安装与 Agent 创建均硬性校验） |
 | 推荐配置 | 2 核 4GB + 1GB Swap |
 | 主维护平台 | Linux：Ubuntu、Debian、Docker |
 | 暂停 / 实验 | Windows 暂停维护；OpenWrt Lite 实验版 |
+
+低配基线以 Web 管理流畅和安全启动为准：入站列表按 20 条分页，后台标签页暂停轮询，首页状态每 5 秒刷新且不并发请求。只要检测为低配档位（包括 1 核 VPS），安装器就会强制使用 sing-box，并通过运行时保护阻止旧版本残留的 Xray 自动启动；512MB 机器还会检查 cgroup、可用内存、Swap 和磁盘，并默认使用安全模式避免 OOM。代理内核吞吐量仍取决于实际协议、连接数和线路。
 
 ### 功能特性
 
@@ -113,43 +115,49 @@ Agent **主动出站**连面板，节点上不开放控制端口。
 | 连接 | HTTP 心跳 + **WebSocket 长连接**（优先 WS） |
 | 监控 | CPU、内存、磁盘、负载、进程数、实时带宽、地址、sing-box/Xray 状态 |
 | 远程控制 | 刷新指标、Ping、改上报间隔、重启 Xray / sing-box / Agent、执行 Shell（需 WS） |
+| 实时延迟 | 中心到 Agent 的 WebSocket RTT、平均值、P95 与丢包率，不使用本机假 `pong` 耗时 |
+| 受管入站 | 远程查看、创建、编辑和删除客户端入站；仍由客户端本地面板校验并更新内核 |
 | 交互终端 | 浏览器 PTY 终端，经面板桥接到远端 Shell |
 | 批量控制 | 勾选多节点，统一下发指令并汇总结果 |
 | 鉴权 | 面板登录 Session；Agent Token 仅创建/轮换时显示一次 |
 
-仅 HTTP 在线：可监控，不可控制。WebSocket 在线：可控制 / 终端 / 批量。
+一个 Agent 代表一台 VPS/服务器，不代表单条代理节点；一台受管客户端可以包含多条入站。仅 HTTP 在线时可监控；WebSocket 在线且检测到本地 1S-UI 控制通道时，可管理入站。远端入站通过权限为 `0600` 的 Unix Socket 交给客户端本地面板处理，不开放额外控制端口，也不直接写 SQLite。
 
 ### 快速安装
 
-安装脚本提供两种方案（也可交互选择）：
+安装脚本提供三种方案（也可交互选择）：
 
 | 模式 | 参数 | 包含 | 适用 |
 | --- | --- | --- | --- |
-| **极简安装** | `--minimal` / `-m` | 面板 + sing-box | 日常 / 小机器 / 只做代理面板 |
+| **轻量 Web 面板** | `--minimal` / `-m` | 完整 Web UI + sing-box | 日常 / 小机器 / 只做代理面板 |
+| **受管客户端** | `--managed-client` | 完整 Web UI + sing-box + Agent | 由中心管理的低配 VPS，目标 1核512MB |
 | **全面服务端** | `--full` | 面板 + Xray + 反代 + Agent + 自动启内核 | 生产 / 多节点控制面（要求 ≥2核2G） |
 
 ```bash
-# 交互选择：1 极简 / 2 全面
+# 交互选择：1 轻量 Web 面板 / 2 全面服务端 / 3 受管客户端
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 
-# 极简（推荐，非交互；-y 未指定模式时也默认极简）
+# 轻量 Web 面板自动安装（推荐；-y 未指定模式时也默认轻量模式）
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --minimal
 
-# 指定版本极简
+# 指定版本安装轻量 Web 面板
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.8 -y -m
 
 # 全面服务端 + 域名 HTTPS
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --full --domain panel.example.com --email a@b.com
+
+# 全新受管客户端；实际 URL 和 Token 可直接从“服务器监控”页面复制
+bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) -y --managed-client --controller https://panel.example.com/app/ --agent-token TOKEN
 ```
 
-| 组件 | 极简 | 全面 |
-| --- | --- | --- |
-| 面板 Web / sing-box | 是 | 是 |
-| Xray-core | 否（可加 `--with-xray`） | 是 |
-| Caddy/Nginx 反代 | 否（可加 `--with-proxy`） | 是 |
-| sui-agent 二进制 | 否 | 是 |
-| 自动启动代理内核 | 内存 ≥1500MB 自动启动；更低配置默认 skip | 是 |
-| 最低配置 | 任意 | ≥2 核 2G（不可用 `--force` 绕过） |
+| 组件 | 轻量 Web 面板 | 受管客户端 | 全面服务端 |
+| --- | --- | --- | --- |
+| 面板 Web / sing-box | 是 | 是 | 是 |
+| Xray-core | 仅非低配档位可选 | 仅非低配档位可选 | 是 |
+| Caddy/Nginx 反代 | 可选 | 可选 | 是 |
+| sui-agent 二进制 | 否 | 是并自动绑定 | 是 |
+| 自动启动代理内核 | 低内存默认安全模式 | 低内存默认安全模式 | 是 |
+| 最低配置 | 1 核 512MB | 1 核 512MB | ≥2 核 2G |
 
 其它开关：`--no-xray` / `--no-proxy` / `--skip-core` / `--start-core` / `--domain`。旧命令中的 `--force` 仍兼容，但不会绕过 2核2G、OOM 或磁盘保护。
 
@@ -157,7 +165,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 
 | 安装结果 | 正确访问地址 |
 | --- | --- |
-| 极简 / 未启用反代 | `http://服务器IP:2095/app/` |
+| 轻量 Web 面板 / 未启用反代 | `http://服务器IP:2095/app/` |
 | 全面服务端、未填写域名 | `http://服务器IP/app/` |
 | 全面服务端、Caddy + 域名 | `https://你的域名/app/` |
 
@@ -267,7 +275,7 @@ opkg install ./s-ui-lite_1.5.7-1_x86_64.ipk
 | Upstream | [alireza0/s-ui](https://github.com/alireza0/s-ui) |
 | Default core | [sing-box](https://github.com/SagerNet/sing-box) |
 | Optional core | [Xray-core](https://github.com/XTLS/Xray-core) (per inbound) |
-| Normal panel | **No hard minimum**; minimal mode auto-starts sing-box with at least 1500MB RAM and otherwise starts panel-only |
+| Normal panel | **Performance floor: 1 vCPU + 512MB RAM**; low-resource profiles install and permit sing-box only, without downloading or starting Xray-core; minimal mode auto-starts sing-box with at least 1500MB RAM and otherwise starts panel-only safe mode |
 | **Cluster control plane** (Agent hub) | **Minimum 2 vCPU + 2GB RAM** (hard-gated by installer and Agent API) |
 | Recommended | 2 vCPU + 4GB RAM + 1GB Swap |
 | Primary OS | Linux (Ubuntu, Debian), Docker |
@@ -281,7 +289,9 @@ opkg install ./s-ui-lite_1.5.7-1_x86_64.ipk
 
 **Relay:** IPv6 pool or upstream SOCKS5; 1–100 nodes per batch with automatic used-port skipping; clients connect to the original VPS IPv4/hostname while each generated IPv6 is bound only to its matching egress; multi-protocol batch; BitBrowser Excel/plain-text export; DAD plus per-address public IPv6 egress validation and rollback (no default-route changes). The provider must route or authorize the IPv6 prefix; adding random local `/64` addresses cannot bypass upstream source filtering.
 
-**Agents (v1.5):** outbound HTTP + WebSocket; metrics; remote control (restart cores, exec, interval); interactive PTY terminal; multi-node batch commands. Control requires WebSocket online + panel login.
+**Agents (v1.5):** outbound HTTP + WebSocket; metrics; real control-plane RTT, averages, P95 and loss; editable server names/public hosts; remote control and PTY terminal; managed-client inbound CRUD with optimistic revision checks. One Agent represents one server, and each managed server can contain many inbounds. Remote configuration is applied by the client's own panel through a root-only Unix socket, never by direct SQLite writes.
+
+**Low-resource baseline:** inbound cards render 20 per page, background tabs stop polling, dashboard metrics refresh every 5 seconds without overlapping requests, and the installer retains cgroup/Swap/OOM guards. The 1 vCPU / 512MB target covers a responsive minimal Web panel; proxy throughput still depends on protocol, concurrent traffic, and network quality.
 
 ### Install
 
@@ -302,6 +312,8 @@ s-ui / s-ui status / s-ui log / s-ui update
 ```bash
 sui agent --panel 'https://host/app/' --token '<token>'
 ```
+
+For a fresh managed server that must retain its own full Web UI, use the generated `--managed-client` command instead of installing an Agent alone.
 
 ### Docker
 
@@ -330,6 +342,7 @@ See [docs/openwrt-lite.md](docs/openwrt-lite.md).
 - Use stable RAW defaults for one-click sing-box VLESS/Trojan and add the required H3 ALPN for TUIC
 - Add reverse-proxy management under Server Panel and restart 1S-UI after an Xray binary update
 - Preserve 1–100 batch creation, IPv6 egress validation, and low-memory install guards
+- Keep the minimal panel responsive on the 1 vCPU / 512MB baseline with paginated inbounds and reduced polling
 
 ---
 
@@ -388,6 +401,7 @@ cd frontend && npm run build
 | `SUI_BIN_FOLDER` | 程序目录下 `bin` | 运行时二进制 |
 | `SUI_XRAY_PATH` | `$SUI_BIN_FOLDER/xray` | Xray 路径 |
 | `SUI_XRAY_CONFIG` | `$SUI_BIN_FOLDER/xray.json` | Xray 配置路径 |
+| `SUI_DISABLE_XRAY` | `false` | 设为 `true` 时禁止 Xray 启动和创建 Xray 入站；低配安装器自动设置 |
 
 ## 目录结构 Structure
 

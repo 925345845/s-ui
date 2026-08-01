@@ -52,6 +52,16 @@ func TestAgentEnrollmentHeartbeatAndRotation(t *testing.T) {
 	if len(detail.History) == 0 {
 		t.Fatal("expected metric history after heartbeat")
 	}
+	updated, err := service.Update(enrollment.Node.Id, "edge-renamed", "node.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "edge-renamed" || updated.PublicHost != "node.example.com" {
+		t.Fatalf("unexpected updated node: %#v", updated)
+	}
+	if _, err := service.AuthenticateToken(enrollment.Token); err != nil {
+		t.Fatalf("renaming disconnected or rotated the agent token: %v", err)
+	}
 
 	rotated, err := service.Rotate(enrollment.Node.Id)
 	if err != nil {
@@ -72,11 +82,112 @@ func TestAgentEnrollmentHeartbeatAndRotation(t *testing.T) {
 	}
 }
 
+func TestAgentHeartbeatReplacesLiveMetricsAndKeepsHistory(t *testing.T) {
+	dir := t.TempDir()
+	if err := database.InitDB(filepath.Join(dir, "agent-live-metrics.db")); err != nil {
+		t.Fatal(err)
+	}
+	service := AgentService{
+		capacityProvider: func() (int, uint64) {
+			return MinClusterCPUCores, MinClusterMemBytes
+		},
+	}
+	enrollment, err := service.Create("live-metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := agent.Report{
+		Hostname: "metrics-vps", CPUPercent: 10,
+		Memory: agent.ResourceUsage{Used: 256, Total: 1024},
+	}
+	if _, err := service.Heartbeat(enrollment.Token, "203.0.113.40", first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.CPUPercent = 67.5
+	second.Memory.Used = 768
+	if _, err := service.Heartbeat(enrollment.Token, "203.0.113.40", second); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := service.Get(enrollment.Node.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Report.CPUPercent != second.CPUPercent || detail.Report.Memory.Used != second.Memory.Used {
+		t.Fatalf("detail returned stale metrics: %#v", detail.Report)
+	}
+	if len(detail.History) < 2 {
+		t.Fatalf("expected both metric samples, got %#v", detail.History)
+	}
+	last := detail.History[len(detail.History)-1]
+	if last.CPUPercent != second.CPUPercent || last.MemPercent != 75 {
+		t.Fatalf("latest history sample is stale: %#v", last)
+	}
+}
+
+func TestAgentListAcceptsLegacyTextReport(t *testing.T) {
+	dir := t.TempDir()
+	if err := database.InitDB(filepath.Join(dir, "agents-text-report.db")); err != nil {
+		t.Fatal(err)
+	}
+	result := database.GetDB().Exec(`INSERT INTO agent_nodes
+		(name, token_hash, created_at, last_seen, remote_ip, version, report)
+		VALUES (?, ?, ?, ?, ?, ?, CAST(? AS TEXT))`,
+		"legacy-agent", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		time.Now().Unix(), time.Now().Unix(), "203.0.113.20", "legacy",
+		`{"hostname":"legacy-vps","conn_mode":"http"}`)
+	if result.Error != nil {
+		t.Fatal(result.Error)
+	}
+
+	nodes, err := (&AgentService{}).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 || nodes[0].Report.Hostname != "legacy-vps" || nodes[0].ConnMode != "http" {
+		t.Fatalf("unexpected legacy node: %#v", nodes)
+	}
+}
+
 func TestAgentNameValidation(t *testing.T) {
 	for _, name := range []string{"", "\n", string(make([]byte, 81))} {
 		if _, err := normalizeAgentName(name); err == nil {
 			t.Fatalf("accepted invalid agent name %q", name)
 		}
+	}
+}
+
+func TestAgentPublicHostValidation(t *testing.T) {
+	for _, value := range []string{"https://example.com", "example.com:443", "example.com/path", "bad host"} {
+		if _, err := normalizeAgentPublicHost(value); err == nil {
+			t.Fatalf("accepted invalid public host %q", value)
+		}
+	}
+	for _, value := range []string{"example.com", "203.0.113.10", "[2001:db8::10]", ""} {
+		if _, err := normalizeAgentPublicHost(value); err != nil {
+			t.Fatalf("rejected valid public host %q: %v", value, err)
+		}
+	}
+}
+
+func TestAgentLatencyAggregation(t *testing.T) {
+	const nodeID = uint(987654)
+	agentLatencyMu.Lock()
+	delete(agentLatencies, nodeID)
+	agentLatencyMu.Unlock()
+	t.Cleanup(func() {
+		agentLatencyMu.Lock()
+		delete(agentLatencies, nodeID)
+		agentLatencyMu.Unlock()
+	})
+	appendAgentLatency(nodeID, 20, true)
+	appendAgentLatency(nodeID, 40, true)
+	appendAgentLatency(nodeID, 0, false)
+	view := getAgentLatency(nodeID)
+	if view.LastMS == nil || *view.LastMS != 40 || view.AverageMS != 30 || view.LossPct < 33 || view.LossPct > 34 {
+		t.Fatalf("unexpected latency aggregate: %#v", view)
 	}
 }
 
@@ -97,6 +208,16 @@ func TestClusterRequirementBoundary(t *testing.T) {
 				t.Fatalf("meetsClusterRequirements(%d, %d) = %v, want %v", test.cpu, test.mem, got, test.ok)
 			}
 		})
+	}
+}
+
+func TestBuildHostRequirementsKeepsMinimalPanelAvailable(t *testing.T) {
+	requirements := buildHostRequirements(1, 512*1024*1024, 0)
+	if requirements["mode"] != "panel" || requirements["applies"] != false || requirements["ok"] != true {
+		t.Fatalf("minimal panel should remain available on 1c512m: %#v", requirements)
+	}
+	if requirements["can_enable_agents"] != false {
+		t.Fatalf("1c512m must not enable the Agent control plane: %#v", requirements)
 	}
 }
 

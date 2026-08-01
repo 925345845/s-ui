@@ -98,6 +98,26 @@ func TestSaveKeepsCoreStoppedInSafeMode(t *testing.T) {
 	}
 }
 
+func TestLowResourceProfileDisablesXrayRuntime(t *testing.T) {
+	t.Setenv("SUI_DB_FOLDER", t.TempDir())
+	t.Setenv("SUI_DISABLE_XRAY", "true")
+
+	oldXray := xrayPtr
+	xrayPtr = core.NewXrayRuntime()
+	t.Cleanup(func() { xrayPtr = oldXray })
+
+	service := ConfigService{}
+	if err := service.ensureXrayCore(false, false); err != nil {
+		t.Fatalf("automatic Xray check should be a no-op when disabled: %v", err)
+	}
+	if err := service.ensureXrayCore(false, true); err == nil {
+		t.Fatal("manual Xray start was accepted while disabled")
+	}
+	if xrayPtr.IsRunning() {
+		t.Fatal("disabled Xray runtime is running")
+	}
+}
+
 func TestInboundChangeAffectsOnlySelectedCore(t *testing.T) {
 	dbDir := t.TempDir()
 	t.Setenv("SUI_DB_FOLDER", dbDir)

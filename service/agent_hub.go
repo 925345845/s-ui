@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"sync"
 	"time"
 
@@ -15,8 +16,11 @@ import (
 )
 
 const (
-	agentCommandTimeout = 45 * time.Second
-	agentCommandHistory = 50
+	agentCommandTimeout  = 45 * time.Second
+	agentCommandHistory  = 50
+	agentLatencyInterval = 10 * time.Second
+	agentLatencyTimeout  = 5 * time.Second
+	agentLatencyHistory  = 120
 )
 
 // browserTerminal bridges a panel browser WebSocket to a remote agent PTY session.
@@ -30,53 +34,76 @@ type browserTerminal struct {
 
 // agentSession holds a live WebSocket to a remote agent for control + telemetry.
 type agentSession struct {
-	nodeID    uint
-	conn      *websocket.Conn
-	writeMu   sync.Mutex
-	pending   map[string]chan agent.CommandResult
-	pendingMu sync.Mutex
-	terms     map[string]*browserTerminal
-	termsMu   sync.Mutex
-	cancel    context.CancelFunc
+	nodeID       uint
+	conn         *websocket.Conn
+	writeMu      sync.Mutex
+	pending      map[string]chan agent.CommandResult
+	pendingMu    sync.Mutex
+	rpcPending   map[string]chan agent.RPCResponse
+	rpcPendingMu sync.Mutex
+	pings        map[string]time.Time
+	pingMu       sync.Mutex
+	terms        map[string]*browserTerminal
+	termsMu      sync.Mutex
+	cancel       context.CancelFunc
 }
 
 // BatchCommandResult is one node's outcome in a multi-node control fan-out.
 type BatchCommandResult struct {
-	NodeID   uint                 `json:"node_id"`
-	Name     string               `json:"name,omitempty"`
-	OK       bool                 `json:"ok"`
-	Error    string               `json:"error,omitempty"`
-	Result   *agent.CommandResult `json:"result,omitempty"`
+	NodeID uint                 `json:"node_id"`
+	Name   string               `json:"name,omitempty"`
+	OK     bool                 `json:"ok"`
+	Error  string               `json:"error,omitempty"`
+	Result *agent.CommandResult `json:"result,omitempty"`
 }
 
 type agentCommandLog struct {
-	ID        string    `json:"id"`
-	Type      string    `json:"type"`
+	ID        string                 `json:"id"`
+	Type      string                 `json:"type"`
 	Args      map[string]interface{} `json:"args,omitempty"`
-	OK        bool      `json:"ok"`
-	Output    string    `json:"output,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	Code      int       `json:"code,omitempty"`
-	Elapsed   int64     `json:"elapsed_ms,omitempty"`
-	CreatedAt int64     `json:"created_at"`
-	Actor     string    `json:"actor,omitempty"`
+	OK        bool                   `json:"ok"`
+	Output    string                 `json:"output,omitempty"`
+	Error     string                 `json:"error,omitempty"`
+	Code      int                    `json:"code,omitempty"`
+	Elapsed   int64                  `json:"elapsed_ms,omitempty"`
+	CreatedAt int64                  `json:"created_at"`
+	Actor     string                 `json:"actor,omitempty"`
+}
+
+type agentLatencySample struct {
+	Time int64
+	MS   int64
+	OK   bool
+}
+
+type AgentLatencyView struct {
+	LastMS    *int64  `json:"last_ms"`
+	AverageMS float64 `json:"average_ms"`
+	P95MS     int64   `json:"p95_ms"`
+	LossPct   float64 `json:"loss_pct"`
+	Samples   int     `json:"samples"`
+	UpdatedAt int64   `json:"updated_at"`
 }
 
 var (
-	agentHubMu       sync.RWMutex
-	agentSessions    = map[uint]*agentSession{}
-	agentCmdLogMu    sync.RWMutex
-	agentCmdLogs     = map[uint][]agentCommandLog{}
+	agentHubMu     sync.RWMutex
+	agentSessions  = map[uint]*agentSession{}
+	agentCmdLogMu  sync.RWMutex
+	agentCmdLogs   = map[uint][]agentCommandLog{}
+	agentLatencyMu sync.RWMutex
+	agentLatencies = map[uint][]agentLatencySample{}
 )
 
 func (s *AgentService) RegisterSession(nodeID uint, conn *websocket.Conn) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	session := &agentSession{
-		nodeID:  nodeID,
-		conn:    conn,
-		pending: make(map[string]chan agent.CommandResult),
-		terms:   make(map[string]*browserTerminal),
-		cancel:  cancel,
+		nodeID:     nodeID,
+		conn:       conn,
+		pending:    make(map[string]chan agent.CommandResult),
+		rpcPending: make(map[string]chan agent.RPCResponse),
+		pings:      make(map[string]time.Time),
+		terms:      make(map[string]*browserTerminal),
+		cancel:     cancel,
 	}
 	agentHubMu.Lock()
 	if old, ok := agentSessions[nodeID]; ok {
@@ -86,6 +113,7 @@ func (s *AgentService) RegisterSession(nodeID uint, conn *websocket.Conn) (conte
 	agentSessions[nodeID] = session
 	agentHubMu.Unlock()
 	s.SetWSConnected(nodeID, true)
+	go s.runLatencyProbe(ctx, session)
 
 	unregister := func() {
 		agentHubMu.Lock()
@@ -95,11 +123,36 @@ func (s *AgentService) RegisterSession(nodeID uint, conn *websocket.Conn) (conte
 		}
 		agentHubMu.Unlock()
 		session.failPending("agent disconnected")
+		session.failRPCPending("agent disconnected")
+		session.failPings()
 		session.closeAllTerminals("agent disconnected")
 		s.SetWSConnected(nodeID, false)
 		cancel()
 	}
 	return ctx, unregister
+}
+
+func (s *agentSession) failRPCPending(msg string) {
+	s.rpcPendingMu.Lock()
+	defer s.rpcPendingMu.Unlock()
+	for id, ch := range s.rpcPending {
+		select {
+		case ch <- agent.RPCResponse{ID: id, OK: false, Error: msg, Code: 503}:
+		default:
+		}
+		close(ch)
+		delete(s.rpcPending, id)
+	}
+}
+
+func (s *agentSession) failPings() {
+	s.pingMu.Lock()
+	count := len(s.pings)
+	s.pings = make(map[string]time.Time)
+	s.pingMu.Unlock()
+	for i := 0; i < count; i++ {
+		appendAgentLatency(s.nodeID, 0, false)
+	}
 }
 
 func (s *agentSession) closeAllTerminals(reason string) {
@@ -170,6 +223,142 @@ func (s *AgentService) HandleCommandResult(result agent.CommandResult) {
 	close(ch)
 }
 
+func (s *AgentService) HandlePong(nodeID uint, id string) {
+	if id == "" {
+		return
+	}
+	agentHubMu.RLock()
+	session := agentSessions[nodeID]
+	agentHubMu.RUnlock()
+	if session == nil {
+		return
+	}
+	session.pingMu.Lock()
+	started, ok := session.pings[id]
+	if ok {
+		delete(session.pings, id)
+	}
+	session.pingMu.Unlock()
+	if !ok {
+		return
+	}
+	elapsed := time.Since(started).Milliseconds()
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	appendAgentLatency(nodeID, elapsed, true)
+}
+
+func (s *AgentService) HandleRPCResponse(nodeID uint, response agent.RPCResponse) {
+	agentHubMu.RLock()
+	session := agentSessions[nodeID]
+	agentHubMu.RUnlock()
+	if session == nil || response.ID == "" {
+		return
+	}
+	session.rpcPendingMu.Lock()
+	ch, ok := session.rpcPending[response.ID]
+	if ok {
+		delete(session.rpcPending, response.ID)
+	}
+	session.rpcPendingMu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case ch <- response:
+	default:
+	}
+	close(ch)
+}
+
+func (s *AgentService) runLatencyProbe(ctx context.Context, session *agentSession) {
+	probe := func() {
+		now := time.Now()
+		session.pingMu.Lock()
+		for id, started := range session.pings {
+			if now.Sub(started) >= agentLatencyTimeout {
+				delete(session.pings, id)
+				appendAgentLatency(session.nodeID, 0, false)
+			}
+		}
+		if len(session.pings) > 0 {
+			session.pingMu.Unlock()
+			return
+		}
+		id := uuid.Must(uuid.NewV4()).String()
+		session.pings[id] = now
+		session.pingMu.Unlock()
+		if err := session.WriteJSON(ctx, map[string]interface{}{
+			"type": agent.MsgTypePing,
+			"id":   id,
+			"time": now.UnixMilli(),
+		}); err != nil {
+			session.pingMu.Lock()
+			delete(session.pings, id)
+			session.pingMu.Unlock()
+			appendAgentLatency(session.nodeID, 0, false)
+		}
+	}
+
+	probe()
+	ticker := time.NewTicker(agentLatencyInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			probe()
+		}
+	}
+}
+
+func appendAgentLatency(nodeID uint, ms int64, ok bool) {
+	agentLatencyMu.Lock()
+	defer agentLatencyMu.Unlock()
+	samples := append(agentLatencies[nodeID], agentLatencySample{Time: time.Now().Unix(), MS: ms, OK: ok})
+	if len(samples) > agentLatencyHistory {
+		samples = samples[len(samples)-agentLatencyHistory:]
+	}
+	agentLatencies[nodeID] = samples
+}
+
+func getAgentLatency(nodeID uint) AgentLatencyView {
+	agentLatencyMu.RLock()
+	samples := append([]agentLatencySample(nil), agentLatencies[nodeID]...)
+	agentLatencyMu.RUnlock()
+	view := AgentLatencyView{Samples: len(samples)}
+	if len(samples) == 0 {
+		return view
+	}
+	view.UpdatedAt = samples[len(samples)-1].Time
+	values := make([]int64, 0, len(samples))
+	failed := 0
+	for _, sample := range samples {
+		if !sample.OK {
+			failed++
+			continue
+		}
+		value := sample.MS
+		values = append(values, value)
+		view.LastMS = &value
+		view.AverageMS += float64(value)
+	}
+	view.LossPct = float64(failed) * 100 / float64(len(samples))
+	if len(values) == 0 {
+		return view
+	}
+	view.AverageMS /= float64(len(values))
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	index := (95*len(values)+99)/100 - 1
+	if index < 0 {
+		index = 0
+	}
+	view.P95MS = values[index]
+	return view
+}
+
 // DispatchCommand sends a control command to an online agent and waits for the result.
 func (s *AgentService) DispatchCommand(nodeID uint, cmdType string, args map[string]interface{}, actor string) (*agent.CommandResult, error) {
 	if err := validateAgentCommand(cmdType, args); err != nil {
@@ -183,6 +372,7 @@ func (s *AgentService) DispatchCommand(nodeID uint, cmdType string, args map[str
 	}
 
 	id := uuid.Must(uuid.NewV4()).String()
+	started := time.Now()
 	resultCh := make(chan agent.CommandResult, 1)
 	session.pendingMu.Lock()
 	session.pending[id] = resultCh
@@ -212,6 +402,9 @@ func (s *AgentService) DispatchCommand(nodeID uint, cmdType string, args map[str
 	case result := <-resultCh:
 		result.ID = id
 		result.Type = cmdType
+		if cmdType == agent.CmdPing {
+			result.Elapsed = time.Since(started).Milliseconds()
+		}
 		appendAgentCommandLog(nodeID, agentCommandLog{
 			ID: id, Type: cmdType, Args: args, OK: result.OK, Output: result.Output,
 			Error: result.Error, Code: result.Code, Elapsed: result.Elapsed,
@@ -227,6 +420,81 @@ func (s *AgentService) DispatchCommand(nodeID uint, cmdType string, args map[str
 			CreatedAt: time.Now().Unix(), Actor: actor,
 		})
 		return nil, common.NewError("agent command timed out")
+	}
+}
+
+func (s *AgentService) DispatchRPC(nodeID uint, method string, payload interface{}, actor string) (*agent.RPCResponse, error) {
+	if !validAgentRPCMethod(method) {
+		return nil, common.NewError("unsupported managed-node RPC method")
+	}
+	agentHubMu.RLock()
+	session := agentSessions[nodeID]
+	agentHubMu.RUnlock()
+	if session == nil {
+		return nil, common.NewError("managed server is offline or not connected via WebSocket")
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > 512*1024 {
+		return nil, common.NewError("managed-node RPC payload is too large")
+	}
+	id := uuid.Must(uuid.NewV4()).String()
+	resultCh := make(chan agent.RPCResponse, 1)
+	session.rpcPendingMu.Lock()
+	session.rpcPending[id] = resultCh
+	session.rpcPendingMu.Unlock()
+	request := map[string]interface{}{
+		"type": agent.MsgTypeRPCRequest, "id": id, "method": method,
+		"payload": json.RawMessage(raw), "time": time.Now().Unix(),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	err = session.WriteJSON(ctx, request)
+	cancel()
+	if err != nil {
+		session.rpcPendingMu.Lock()
+		delete(session.rpcPending, id)
+		session.rpcPendingMu.Unlock()
+		close(resultCh)
+		return nil, common.NewErrorf("failed to send managed-node RPC: %v", err)
+	}
+	timer := time.NewTimer(agentCommandTimeout)
+	defer timer.Stop()
+	select {
+	case response := <-resultCh:
+		response.ID = id
+		if method == agent.RPCMethodInboundSave || !response.OK {
+			appendAgentCommandLog(nodeID, agentCommandLog{
+				ID: id, Type: "rpc/" + method, OK: response.OK, Error: response.Error,
+				CreatedAt: time.Now().Unix(), Actor: actor,
+			})
+		}
+		if !response.OK {
+			if response.Error == "" {
+				response.Error = "managed-node RPC failed"
+			}
+			return &response, common.NewError(response.Error)
+		}
+		return &response, nil
+	case <-timer.C:
+		session.rpcPendingMu.Lock()
+		delete(session.rpcPending, id)
+		session.rpcPendingMu.Unlock()
+		appendAgentCommandLog(nodeID, agentCommandLog{
+			ID: id, Type: "rpc/" + method, OK: false, Error: "managed-node RPC timed out",
+			CreatedAt: time.Now().Unix(), Actor: actor,
+		})
+		return nil, common.NewError("managed-node RPC timed out")
+	}
+}
+
+func validAgentRPCMethod(method string) bool {
+	switch method {
+	case agent.RPCMethodCapabilities, agent.RPCMethodInboundList, agent.RPCMethodInboundEdit, agent.RPCMethodInboundSave:
+		return true
+	default:
+		return false
 	}
 }
 

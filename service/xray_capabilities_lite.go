@@ -13,6 +13,7 @@ type XrayCapability struct {
 
 type XraySelfCheck struct {
 	Healthy         bool             `json:"healthy"`
+	Disabled        bool             `json:"disabled"`
 	BinaryAvailable bool             `json:"binary_available"`
 	Version         string           `json:"version,omitempty"`
 	Path            string           `json:"path,omitempty"`
@@ -25,5 +26,5 @@ type XraySelfCheck struct {
 }
 
 func (s *ConfigService) CheckXray() XraySelfCheck {
-	return XraySelfCheck{Error: "Xray-core is disabled in OpenWrt Lite build"}
+	return XraySelfCheck{Disabled: true, Error: "Xray-core is disabled in OpenWrt Lite build"}
 }

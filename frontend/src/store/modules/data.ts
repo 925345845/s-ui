@@ -5,6 +5,8 @@ import { i18n } from '@/locales'
 import { Inbound } from '@/types/inbounds'
 import { Client } from '@/types/clients'
 
+let pendingLoadData: Promise<void> | null = null
+
 const Data = defineStore('Data', {
   state: () => ({ 
     lastLoad: 0,
@@ -33,26 +35,34 @@ const Data = defineStore('Data', {
   },
   actions: {
     async loadData() {
-      const msg = await HttpUtils.get('api/load', this.lastLoad >0 ? {lu: this.lastLoad} : {} )
-      if(msg.success) {
-        if (msg.obj.lastUpdate) this.lastLoad = msg.obj.lastUpdate
-        this.onlines = msg.obj.onlines
-        if (msg.obj.hostRequirements) {
-          this.hostRequirements = msg.obj.hostRequirements
+      if (pendingLoadData) return pendingLoadData
+      pendingLoadData = (async () => {
+        const msg = await HttpUtils.get('api/load', this.lastLoad > 0 ? { lu: this.lastLoad } : {})
+        if (msg.success) {
+          if (msg.obj.lastUpdate) this.lastLoad = msg.obj.lastUpdate
+          this.onlines = msg.obj.onlines
+          if (msg.obj.hostRequirements) {
+            this.hostRequirements = msg.obj.hostRequirements
+          }
+          const lastCoreLog = msg.obj.lastLog || ""
+          if (lastCoreLog && lastCoreLog !== this.lastCoreLog) {
+            push.error({
+              title: i18n.global.t('error.core'),
+              duration: 5000,
+              message: lastCoreLog
+            })
+          }
+          this.lastCoreLog = lastCoreLog
+
+          if (msg.obj.config) {
+            this.setNewData(msg.obj)
+          }
         }
-        const lastCoreLog = msg.obj.lastLog || ""
-        if (lastCoreLog && lastCoreLog !== this.lastCoreLog) {
-          push.error({
-            title: i18n.global.t('error.core'),
-            duration: 5000,
-            message: lastCoreLog
-          })
-        }
-        this.lastCoreLog = lastCoreLog
-        
-        if (msg.obj.config) {
-          this.setNewData(msg.obj)
-        }
+      })()
+      try {
+        await pendingLoadData
+      } finally {
+        pendingLoadData = null
       }
     },
     setNewData(data: any) {

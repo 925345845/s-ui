@@ -79,6 +79,11 @@ const routes = [
         name: 'pages.agents',
         component: () => import('@/views/Agents.vue'),
       },
+      {
+        path: '/agents/:id/inbounds',
+        name: 'agent.remoteInbounds',
+        component: () => import('@/views/AgentInbounds.vue'),
+      },
     ],
   },
 ]
@@ -88,7 +93,12 @@ const router = createRouter({
   routes,
 })
 
-let intervalId:any
+const DATA_REFRESH_MS = 15000
+let intervalId: ReturnType<typeof setInterval> | undefined
+
+const refreshData = () => {
+  if (!document.hidden) void Data().loadData()
+}
 
 router.beforeEach((to) => {
   // The server and API own authentication. The session cookie is HttpOnly and
@@ -105,10 +115,12 @@ router.beforeEach((to) => {
 
 const loadDataInterval = () => {
   if (intervalId) return
-  Data().loadData()
-  intervalId = setInterval(() => {
-    Data().loadData()
-  }, 10000)
+  refreshData()
+  intervalId = setInterval(refreshData, DATA_REFRESH_MS)
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (intervalId && !document.hidden) refreshData()
+})
 
 export default router

@@ -80,6 +80,9 @@ func (s *ConfigService) validateXrayConfig(db *gorm.DB) error {
 	if err != nil || !hasXray {
 		return err
 	}
+	if config.IsXrayDisabled() {
+		return common.NewError("Xray-core is disabled on this low-resource server; choose sing-box for the inbound")
+	}
 	rawConfig, err := s.getXrayConfig(db)
 	if err != nil {
 		return err

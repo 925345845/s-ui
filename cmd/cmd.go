@@ -7,6 +7,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	monitoragent "github.com/Hhz0823/1s-ui/agent"
 	"github.com/Hhz0823/1s-ui/cmd/migration"
 	"github.com/Hhz0823/1s-ui/config"
 )
@@ -32,6 +33,7 @@ func ParseCmd() {
 	var show bool
 	var agentPanel string
 	var agentToken string
+	var agentLocalSocket string
 	var agentInterval time.Duration
 	var agentInsecure bool
 	var agentOnce bool
@@ -51,6 +53,7 @@ func ParseCmd() {
 	adminCmd.StringVar(&password, "password", "", "set login password")
 	agentCmd.StringVar(&agentPanel, "panel", os.Getenv("SUI_AGENT_PANEL"), "panel base URL, including its path")
 	agentCmd.StringVar(&agentToken, "token", os.Getenv("SUI_AGENT_TOKEN"), "agent enrollment token")
+	agentCmd.StringVar(&agentLocalSocket, "local-socket", monitoragent.DefaultLocalControlSocket(), "local 1S-UI control socket")
 	agentCmd.DurationVar(&agentInterval, "interval", 15*time.Second, "heartbeat interval (5s-5m)")
 	agentCmd.BoolVar(&agentInsecure, "insecure", false, "skip panel TLS certificate verification")
 	agentCmd.BoolVar(&agentOnce, "once", false, "send one heartbeat and exit")
@@ -131,7 +134,7 @@ func ParseCmd() {
 			fmt.Println(err)
 			return
 		}
-		runAgent(agentPanel, agentToken, agentInterval, agentInsecure, agentOnce)
+		runAgent(agentPanel, agentToken, agentLocalSocket, agentInterval, agentInsecure, agentOnce)
 	default:
 		fmt.Println("Invalid subcommands")
 		flag.Usage()

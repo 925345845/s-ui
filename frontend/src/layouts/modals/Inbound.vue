@@ -140,7 +140,7 @@ import Data from '@/store/modules/data'
 const isOpenWrtLite = import.meta.env.VITE_OPENWRT_LITE === 'true'
 
 export default {
-  props: ['visible', 'id', 'inTags', 'tlsConfigs'],
+  props: ['visible', 'id', 'inTags', 'tlsConfigs', 'dataSource', 'connectionHost'],
   emits: ['close'],
   data() {
     return {
@@ -211,7 +211,9 @@ export default {
   methods: {
     async loadData(id: number) {
       this.loading = true
-      const inboundArray = await Data().loadInbounds([id])
+      const inboundArray = this.dataSource?.loadInbounds
+        ? await this.dataSource.loadInbounds([id])
+        : await Data().loadInbounds([id])
       this.inbound = inboundArray[0]
       if (this.HasInData.includes(this.inbound.type) && this.inbound.out_json == null) {
         this.inbound.out_json = {}
@@ -225,7 +227,7 @@ export default {
       }
       else {
         const port = RandomUtil.randomIntRange(10000, 60000)
-        this.inbound = createInbound("direct",{ id: 0, core_type: CoreTypes.SingBox, tag: "direct-"+port ,listen: "::", listen_port: port })
+        this.inbound = createInbound("direct",{ id: 0, core_type: CoreTypes.SingBox, tag: "direct-"+port ,listen: "::", listen_port: port }, this.effectiveHost)
         if (this.HasInData.includes(this.inbound.type)){
           this.inbound.addrs = []
           this.inbound.out_json = {}
@@ -255,7 +257,7 @@ export default {
       const tag = this.$props.id > 0 ? this.inbound.tag : this.inbound.type + "-" + this.inbound.listen_port
       // Use previous data
       const prevConfig = { id: this.inbound.id, core_type: this.inbound.core_type, tag: tag, listen: this.inbound.listen?? "::", listen_port: this.inbound.listen_port }
-      this.inbound = createInbound(this.inbound.type, this.inbound.type != this.inTypes.Tun ? prevConfig : { tag: tag })
+      this.inbound = createInbound(this.inbound.type, this.inbound.type != this.inTypes.Tun ? prevConfig : { tag: tag }, this.effectiveHost)
       if (this.HasInData.includes(this.inbound.type)){
         this.inbound.addrs = []
         this.inbound.out_json = {}
@@ -266,7 +268,7 @@ export default {
       this.side = "s"
     },
     add_addr() {
-      this.inbound.addrs?.push(<Addr>{ server: location.hostname, server_port: this.inbound.listen_port })
+      this.inbound.addrs?.push(<Addr>{ server: this.effectiveHost, server_port: this.inbound.listen_port })
     },
     closeModal() {
       this.updateData(0) // reset
@@ -275,7 +277,9 @@ export default {
     async saveChanges() {
       if (!this.$props.visible) return
       // check duplicate tag
-      const isDuplicatedTag = Data().checkTag("inbound", this.inbound.id, this.inbound.tag)
+      const isDuplicatedTag = this.dataSource?.checkTag
+        ? this.dataSource.checkTag(this.inbound.id, this.inbound.tag)
+        : Data().checkTag("inbound", this.inbound.id, this.inbound.tag)
       if (isDuplicatedTag) return
 
       // save data
@@ -293,7 +297,9 @@ export default {
             clientIds = this.initUsers.values
         }
       }
-      const success = await Data().save("inbounds", this.$props.id == 0 ? "new" : "edit", this.inbound, clientIds)
+      const success = this.dataSource?.save
+        ? await this.dataSource.save(this.$props.id == 0 ? "new" : "edit", this.inbound, clientIds)
+        : await Data().save("inbounds", this.$props.id == 0 ? "new" : "edit", this.inbound, clientIds)
       if (success) this.closeModal()
       this.loading = false
     },
@@ -325,7 +331,10 @@ export default {
       return this.HasTls.includes(this.inbound.type)
     },
     clients() {
-      return Data().clients?? []
+      return this.dataSource?.clients ?? Data().clients ?? []
+    },
+    effectiveHost() {
+      return this.connectionHost || location.hostname
     },
     hasUser() {
       if (this.$props.id > 0) return false

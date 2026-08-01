@@ -312,11 +312,18 @@ const reloadItems = computed({
 })
 
 const reloadData = async () => {
-  const request = [...new Set(reloadItems.value.map(r => r.split('-')[1]))]
-  if (tilesData.value?.sys?.appVersion) request.filter(r => r != 'sys')
-  const data = await HttpUtils.get('api/status',{ r: request.join(',')})
-  if (data.success) {
-    tilesData.value = data.obj
+  if (statusLoadPending) return
+  let request = [...new Set(reloadItems.value.map(r => r.split('-')[1]))]
+  if (tilesData.value?.sys?.appVersion) request = request.filter(r => r != 'sys')
+  if (request.length === 0) return
+  statusLoadPending = true
+  try {
+    const data = await HttpUtils.get('api/status',{ r: request.join(',')})
+    if (data.success) {
+      tilesData.value = { ...tilesData.value, ...data.obj }
+    }
+  } finally {
+    statusLoadPending = false
   }
 }
 
@@ -328,11 +335,13 @@ const reloadSys = async () => {
 }
 
 let intervalId: ReturnType<typeof setInterval> | null = null
+let statusLoadPending = false
 
 const startTimer = () => {
+  if (intervalId) return
   intervalId = setInterval(() => {
-    reloadData()
-  }, 2000)
+    if (!document.hidden) void reloadData()
+  }, 5000)
 }
 
 const stopTimer = () => {
@@ -342,7 +351,12 @@ const stopTimer = () => {
   }
 }
 
+const handleVisibilityChange = () => {
+  if (!document.hidden && intervalId) void reloadData()
+}
+
 onMounted(async () => {
+  document.addEventListener('visibilitychange', handleVisibilityChange)
   loading.value = true
   if (isOpenWrtLite && Data().reloadItems.includes("i-xry")) {
     reloadItems.value = Data().reloadItems
@@ -356,6 +370,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopTimer()
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 
 const logModal = ref({ visible: false })

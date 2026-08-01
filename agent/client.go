@@ -30,32 +30,52 @@ import (
 )
 
 type ClientConfig struct {
-	PanelURL string
-	Token    string
-	Interval time.Duration
-	Insecure bool
-	// PreferWS enables WebSocket long-connection mode (falls back to HTTP).
+	PanelURL    string
+	Token       string
+	Interval    time.Duration
+	Insecure    bool
+	LocalSocket string
+	// PreferWS enables WebSocket control with HTTP heartbeats during reconnects.
 	PreferWS bool
 }
 
 var (
-	lastNetMu   sync.Mutex
-	lastNetSent uint64
-	lastNetRecv uint64
-	lastNetAt   time.Time
+	lastNetMu              sync.Mutex
+	lastNetSent            uint64
+	lastNetRecv            uint64
+	lastNetAt              time.Time
+	webSocketReconnectWait = 5 * time.Second
+	xrayVersionCache       = struct {
+		sync.Mutex
+		path      string
+		modTime   time.Time
+		size      int64
+		checkedAt time.Time
+		version   string
+	}{}
 )
 
 func Run(ctx context.Context, cfg ClientConfig) error {
-	if cfg.PreferWS {
-		if err := runWebSocket(ctx, cfg); err == nil {
+	if !cfg.PreferWS {
+		return runHTTP(ctx, cfg)
+	}
+	for {
+		err := runWebSocket(ctx, cfg)
+		if ctx.Err() != nil || err == nil {
 			return nil
-		} else if ctx.Err() != nil {
-			return ctx.Err()
-		} else {
-			fmt.Fprintf(os.Stderr, "agent websocket failed, falling back to HTTP: %v\n", err)
+		}
+		fmt.Fprintf(os.Stderr, "agent websocket disconnected, retrying: %v\n", err)
+		if heartbeatErr := SendOnce(ctx, cfg); heartbeatErr != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "agent fallback heartbeat failed: %v\n", heartbeatErr)
+		}
+		timer := time.NewTimer(webSocketReconnectWait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
 		}
 	}
-	return runHTTP(ctx, cfg)
 }
 
 func SendOnce(ctx context.Context, cfg ClientConfig) error {
@@ -63,7 +83,7 @@ func SendOnce(ctx context.Context, cfg ClientConfig) error {
 	if err != nil {
 		return err
 	}
-	_, err = sendHeartbeat(ctx, client, endpoint, cfg.Token)
+	_, err = sendHeartbeat(ctx, client, endpoint, cfg.Token, cfg.LocalSocket)
 	return err
 }
 
@@ -72,7 +92,7 @@ func runHTTP(ctx context.Context, cfg ClientConfig) error {
 	if err != nil {
 		return err
 	}
-	if _, err := sendHeartbeat(ctx, client, endpoint, cfg.Token); err != nil {
+	if _, err := sendHeartbeat(ctx, client, endpoint, cfg.Token, cfg.LocalSocket); err != nil {
 		return err
 	}
 	ticker := time.NewTicker(cfg.Interval)
@@ -82,7 +102,7 @@ func runHTTP(ctx context.Context, cfg ClientConfig) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if _, err := sendHeartbeat(ctx, client, endpoint, cfg.Token); err != nil {
+			if _, err := sendHeartbeat(ctx, client, endpoint, cfg.Token, cfg.LocalSocket); err != nil {
 				fmt.Fprintf(os.Stderr, "agent heartbeat failed: %v\n", err)
 			}
 		}
@@ -130,7 +150,7 @@ func runWebSocket(ctx context.Context, cfg ClientConfig) error {
 		return err
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "bye")
-	conn.SetReadLimit(512 << 10)
+	conn.SetReadLimit(2 << 20)
 
 	var writeMu sync.Mutex
 	write := func(v interface{}) error {
@@ -140,7 +160,7 @@ func runWebSocket(ctx context.Context, cfg ClientConfig) error {
 	}
 
 	// Initial report
-	if err := wsSendReport(ctx, write); err != nil {
+	if err := wsSendReport(ctx, write, cfg.LocalSocket); err != nil {
 		return err
 	}
 
@@ -181,6 +201,8 @@ func runWebSocket(ctx context.Context, cfg ClientConfig) error {
 				Data            string                 `json:"data"`
 				Cols            int                    `json:"cols"`
 				Rows            int                    `json:"rows"`
+				Method          string                 `json:"method"`
+				Payload         json.RawMessage        `json:"payload"`
 			}
 			if json.Unmarshal(data, &msg) != nil {
 				continue
@@ -195,7 +217,7 @@ func runWebSocket(ctx context.Context, cfg ClientConfig) error {
 					}
 				}
 			case MsgTypePing:
-				_ = write(map[string]interface{}{"type": MsgTypePong, "time": time.Now().Unix()})
+				_ = write(map[string]interface{}{"type": MsgTypePong, "id": msg.ID, "time": time.Now().UnixMilli()})
 			case MsgTypeCommand:
 				cmd := Command{ID: msg.ID, Type: msg.Command, Args: msg.Args}
 				// Apply set_interval immediately on the loop side.
@@ -230,6 +252,18 @@ func runWebSocket(ctx context.Context, cfg ClientConfig) error {
 					default:
 					}
 				}
+			case MsgTypeRPCRequest:
+				request := RPCRequest{ID: msg.ID, Method: msg.Method, Payload: msg.Payload}
+				result := CallLocalRPC(ctx, cfg.LocalSocket, request)
+				_ = write(map[string]interface{}{
+					"type":    MsgTypeRPCResponse,
+					"id":      result.ID,
+					"ok":      result.OK,
+					"payload": json.RawMessage(result.Payload),
+					"error":   result.Error,
+					"code":    result.Code,
+					"time":    time.Now().Unix(),
+				})
 			case MsgTypeTerminalOpen:
 				cols := uint16(msg.Cols)
 				rows := uint16(msg.Rows)
@@ -299,11 +333,11 @@ func runWebSocket(ctx context.Context, cfg ClientConfig) error {
 			os.Exit(0)
 			return nil
 		case <-reportNow:
-			if err := wsSendReport(ctx, write); err != nil {
+			if err := wsSendReport(ctx, write, cfg.LocalSocket); err != nil {
 				return err
 			}
 		case <-ticker.C:
-			if err := wsSendReport(ctx, write); err != nil {
+			if err := wsSendReport(ctx, write, cfg.LocalSocket); err != nil {
 				return err
 			}
 		}
@@ -326,8 +360,8 @@ func numberArg(v interface{}) (int, bool) {
 	}
 }
 
-func wsSendReport(ctx context.Context, write func(interface{}) error) error {
-	report := CollectReport()
+func wsSendReport(ctx context.Context, write func(interface{}) error, localSocket string) error {
+	report := CollectReportWithSocket(localSocket)
 	report.ConnMode = "ws"
 	payload, err := json.Marshal(report)
 	if err != nil {
@@ -369,8 +403,8 @@ func newHTTPClient(cfg ClientConfig) (*http.Client, string, error) {
 	return &http.Client{Timeout: 15 * time.Second, Transport: transport}, panel.String(), nil
 }
 
-func sendHeartbeat(ctx context.Context, client *http.Client, endpoint, token string) (*HeartbeatResponse, error) {
-	report := CollectReport()
+func sendHeartbeat(ctx context.Context, client *http.Client, endpoint, token, localSocket string) (*HeartbeatResponse, error) {
+	report := CollectReportWithSocket(localSocket)
 	report.ConnMode = "http"
 	payload, err := json.Marshal(report)
 	if err != nil {
@@ -408,6 +442,10 @@ func sendHeartbeat(ctx context.Context, client *http.Client, endpoint, token str
 }
 
 func CollectReport() Report {
+	return CollectReportWithSocket("")
+}
+
+func CollectReportWithSocket(localSocket string) Report {
 	report := Report{OS: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: config.GetVersion()}
 	report.Hostname, _ = os.Hostname()
 	report.Uptime, _ = host.Uptime()
@@ -434,12 +472,19 @@ func CollectReport() Report {
 	if value, err := load.Avg(); err == nil {
 		report.Load = LoadAverage{Load1: value.Load1, Load5: value.Load5, Load15: value.Load15}
 	}
-	if procs, err := process.Processes(); err == nil {
-		report.ProcessCount = len(procs)
-	}
+	report.ProcessCount, report.Cores = collectProcessStatus()
 	report.IPv4, report.IPv6 = localAddresses()
-	report.Cores = detectCoreStatus()
+	report.Panel = probeLocalPanel(localSocket)
+	applyPanelCoreStatus(&report)
 	return report
+}
+
+func applyPanelCoreStatus(report *Report) {
+	if report == nil || report.Panel.Cores == nil {
+		return
+	}
+	report.Cores.SingBoxRunning = report.Panel.Cores.SingBoxRunning
+	report.Cores.XrayRunning = report.Panel.Cores.XrayRunning
 }
 
 func estimateNetRate(sent, recv uint64) NetworkUsage {
@@ -481,7 +526,7 @@ func localAddresses() ([]string, []string) {
 	return ipv4, ipv6
 }
 
-func detectCoreStatus() CoreStatus {
+func collectProcessStatus() (int, CoreStatus) {
 	status := CoreStatus{}
 	processes, _ := process.Processes()
 	for _, item := range processes {
@@ -499,20 +544,40 @@ func detectCoreStatus() CoreStatus {
 	if version, err := xrayVersion(); err == nil {
 		status.XrayVersion = version
 	}
-	return status
+	return len(processes), status
 }
 
 func xrayVersion() (string, error) {
 	path := config.GetXrayPath()
-	if info, err := os.Stat(path); err != nil || info.IsDir() {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
 		return "", fmt.Errorf("xray binary unavailable")
+	}
+	xrayVersionCache.Lock()
+	defer xrayVersionCache.Unlock()
+	if xrayVersionCache.path == path && xrayVersionCache.modTime.Equal(info.ModTime()) &&
+		xrayVersionCache.size == info.Size() && time.Since(xrayVersionCache.checkedAt) < 10*time.Minute {
+		if xrayVersionCache.version == "" {
+			return "", fmt.Errorf("xray version unavailable")
+		}
+		return xrayVersionCache.version, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, path, "version").CombinedOutput()
 	if err != nil {
+		xrayVersionCache.path = path
+		xrayVersionCache.modTime = info.ModTime()
+		xrayVersionCache.size = info.Size()
+		xrayVersionCache.checkedAt = time.Now()
+		xrayVersionCache.version = ""
 		return "", err
 	}
 	line, _, _ := strings.Cut(strings.TrimSpace(string(output)), "\n")
+	xrayVersionCache.path = path
+	xrayVersionCache.modTime = info.ModTime()
+	xrayVersionCache.size = info.Size()
+	xrayVersionCache.checkedAt = time.Now()
+	xrayVersionCache.version = line
 	return line, nil
 }

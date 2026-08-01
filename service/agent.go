@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ type AgentNodeView struct {
 	CreatedAt    int64               `json:"created_at"`
 	LastSeen     int64               `json:"last_seen"`
 	RemoteIP     string              `json:"remote_ip"`
+	PublicHost   string              `json:"public_host"`
 	Version      string              `json:"version"`
 	Online       bool                `json:"online"`
 	ConnMode     string              `json:"conn_mode,omitempty"`
@@ -38,6 +40,8 @@ type AgentNodeView struct {
 	WSConnected  bool                `json:"ws_connected,omitempty"`
 	Controllable bool                `json:"controllable"`
 	Commands     []agentCommandLog   `json:"commands,omitempty"`
+	Latency      AgentLatencyView    `json:"latency"`
+	Managed      bool                `json:"managed"`
 }
 
 type AgentEnrollment struct {
@@ -112,6 +116,7 @@ func (s *AgentService) Create(name string) (*AgentEnrollment, error) {
 	if err := database.GetDB().Create(&node).Error; err != nil {
 		return nil, err
 	}
+	invalidateHostRequirementsCache()
 	view := agentNodeView(node, time.Now(), false)
 	return &AgentEnrollment{Node: view, Token: token}, nil
 }
@@ -134,6 +139,30 @@ func (s *AgentService) Rotate(id uint) (*AgentEnrollment, error) {
 	return &AgentEnrollment{Node: view, Token: token}, nil
 }
 
+func (s *AgentService) Update(id uint, name, publicHost string) (*AgentNodeView, error) {
+	name, err := normalizeAgentName(name)
+	if err != nil {
+		return nil, err
+	}
+	publicHost, err = normalizeAgentPublicHost(publicHost)
+	if err != nil {
+		return nil, err
+	}
+	var node model.AgentNode
+	if err := database.GetDB().First(&node, id).Error; err != nil {
+		return nil, err
+	}
+	if err := database.GetDB().Model(&node).Updates(map[string]interface{}{
+		"name": name, "public_host": publicHost,
+	}).Error; err != nil {
+		return nil, err
+	}
+	node.Name = name
+	node.PublicHost = publicHost
+	view := agentNodeView(node, time.Now(), true)
+	return &view, nil
+}
+
 func (s *AgentService) Delete(id uint) error {
 	result := database.GetDB().Delete(&model.AgentNode{}, id)
 	if result.Error != nil {
@@ -142,6 +171,7 @@ func (s *AgentService) Delete(id uint) error {
 	if result.RowsAffected == 0 {
 		return common.NewError("agent node not found")
 	}
+	invalidateHostRequirementsCache()
 	agentHistoryMu.Lock()
 	delete(agentHistory, id)
 	agentHistoryMu.Unlock()
@@ -151,6 +181,9 @@ func (s *AgentService) Delete(id uint) error {
 	agentCmdLogMu.Lock()
 	delete(agentCmdLogs, id)
 	agentCmdLogMu.Unlock()
+	agentLatencyMu.Lock()
+	delete(agentLatencies, id)
+	agentLatencyMu.Unlock()
 	return nil
 }
 
@@ -256,7 +289,7 @@ func getAgentHistory(id uint) []AgentMetricSample {
 func agentNodeView(node model.AgentNode, now time.Time, withHistory bool) AgentNodeView {
 	view := AgentNodeView{
 		Id: node.Id, Name: node.Name, CreatedAt: node.CreatedAt, LastSeen: node.LastSeen,
-		RemoteIP: node.RemoteIP, Version: node.Version,
+		RemoteIP: node.RemoteIP, PublicHost: node.PublicHost, Version: node.Version,
 	}
 	if len(node.Report) > 0 {
 		_ = json.Unmarshal(node.Report, &view.Report)
@@ -268,10 +301,34 @@ func agentNodeView(node model.AgentNode, now time.Time, withHistory bool) AgentN
 	agentHubMu.RUnlock()
 	view.WSConnected = live
 	view.Controllable = live
+	view.Managed = live && view.Report.Panel.ControlAvailable
+	view.Latency = getAgentLatency(node.Id)
 	if withHistory {
 		view.History = getAgentHistory(node.Id)
 	}
 	return view
+}
+
+func normalizeAgentPublicHost(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if len(value) > 255 || strings.ContainsAny(value, " /?#@\t\r\n") {
+		return "", common.NewError("public host must be a hostname or IP address without scheme, path, or port")
+	}
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		value = strings.TrimSuffix(strings.TrimPrefix(value, "["), "]")
+	}
+	if strings.Contains(value, ":") && net.ParseIP(value) == nil {
+		return "", common.NewError("public host must not include a port")
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return "", common.NewError("public host contains control characters")
+		}
+	}
+	return value, nil
 }
 
 func normalizeAgentName(value string) (string, error) {

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,5 +33,18 @@ func TestRenderDynamicIndexReadsLatestBuild(t *testing.T) {
 	files["index.html"] = &fstest.MapFile{Data: []byte(`<script>window.BASE_URL = "{{ .BASE_URL }}"</script><script src="assets/new.js"></script>`)}
 	if body := render(); !strings.Contains(body, `assets/new.js`) || strings.Contains(body, `assets/old.js`) {
 		t.Fatalf("dynamic index did not pick up the latest build: %q", body)
+	}
+}
+
+func TestEmbeddedIndexDefinesBaseBeforeAssets(t *testing.T) {
+	data, err := fs.ReadFile(content, "html/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := string(data)
+	basePos := strings.Index(index, `<base href="{{ .BASE_URL }}"`)
+	assetPos := strings.Index(index, `src="./assets/`)
+	if basePos < 0 || assetPos < 0 || basePos > assetPos {
+		t.Fatalf("embedded index must define the configured base before assets")
 	}
 }

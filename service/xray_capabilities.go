@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/Hhz0823/1s-ui/config"
 	"github.com/Hhz0823/1s-ui/core"
 )
 
@@ -20,6 +21,7 @@ type XrayCapability struct {
 
 type XraySelfCheck struct {
 	Healthy         bool             `json:"healthy"`
+	Disabled        bool             `json:"disabled"`
 	BinaryAvailable bool             `json:"binary_available"`
 	Version         string           `json:"version,omitempty"`
 	Path            string           `json:"path,omitempty"`
@@ -74,6 +76,13 @@ func (s *ConfigService) CheckXray() XraySelfCheck {
 		Protocols:  xrayProtocolCapabilities(),
 		Transports: xrayTransportCapabilities(),
 		Checks:     []string{},
+	}
+	if config.IsXrayDisabled() {
+		result.Disabled = true
+		result.Error = "Xray-core is disabled on this low-resource server; use sing-box"
+		result.Checks = append(result.Checks, "runtime: disabled by low-resource profile")
+		result.HasInbounds, _ = s.HasXrayInbounds()
+		return result
 	}
 	if xrayPtr == nil {
 		xrayPtr = core.NewXrayRuntime()

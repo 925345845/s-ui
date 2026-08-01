@@ -21,6 +21,7 @@ var (
 	corePtr             *core.Core
 	xrayPtr             *core.XrayRuntime
 	startCoreMu         sync.Mutex
+	configSaveMu        sync.Mutex
 	startCoreInProgress bool
 	lastStartFailTime   time.Time
 	startCooldown       = 15 * time.Second
@@ -34,6 +35,15 @@ type ConfigService struct {
 	OutboundService
 	ServicesService
 	EndpointService
+}
+
+type ConfigRevisionConflictError struct {
+	Expected uint64
+	Current  uint64
+}
+
+func (e *ConfigRevisionConflictError) Error() string {
+	return "configuration changed on the managed server; reload before saving"
 }
 
 type SingBoxConfig struct {
@@ -278,6 +288,17 @@ func (s *ConfigService) StartXrayCoreIfNeeded() error {
 }
 
 func (s *ConfigService) ensureXrayCore(restart bool, manual bool) error {
+	if config.IsXrayDisabled() {
+		if xrayPtr != nil && xrayPtr.IsRunning() {
+			if err := xrayPtr.Stop(); err != nil {
+				return err
+			}
+		}
+		if manual {
+			return common.NewError("Xray-core is disabled on this low-resource server; use sing-box")
+		}
+		return nil
+	}
 	if xrayPtr == nil {
 		xrayPtr = core.NewXrayRuntime()
 	}
@@ -386,7 +407,37 @@ func tlsChangeAffectsXray(tx *gorm.DB, act string, data json.RawMessage) (bool, 
 	return count > 0, err
 }
 
+func (s *ConfigService) CurrentRevision() (uint64, error) {
+	var revision uint64
+	err := database.GetDB().Model(&model.Changes{}).Select("COALESCE(MAX(id), 0)").Scan(&revision).Error
+	return revision, err
+}
+
+func (s *ConfigService) SaveWithRevision(expected uint64, obj string, act string, data json.RawMessage, initUsers string, loginUser string, hostname string) ([]string, uint64, error) {
+	configSaveMu.Lock()
+	defer configSaveMu.Unlock()
+	current, err := s.CurrentRevision()
+	if err != nil {
+		return nil, current, err
+	}
+	if current != expected {
+		return nil, current, &ConfigRevisionConflictError{Expected: expected, Current: current}
+	}
+	objs, err := s.saveLocked(obj, act, data, initUsers, loginUser, hostname)
+	if err != nil {
+		return nil, current, err
+	}
+	current, err = s.CurrentRevision()
+	return objs, current, err
+}
+
 func (s *ConfigService) Save(obj string, act string, data json.RawMessage, initUsers string, loginUser string, hostname string) (objs []string, err error) {
+	configSaveMu.Lock()
+	defer configSaveMu.Unlock()
+	return s.saveLocked(obj, act, data, initUsers, loginUser, hostname)
+}
+
+func (s *ConfigService) saveLocked(obj string, act string, data json.RawMessage, initUsers string, loginUser string, hostname string) (objs []string, err error) {
 	objs = []string{obj}
 	restartXray := false
 	restartWithConfig := false

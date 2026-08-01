@@ -196,6 +196,20 @@ FORCE_START_CORE=0
 apply_kind_defaults >/dev/null
 assert_eq 0 "$INSTALL_AGENT" "single-core minimal mode Agent exclusion"
 assert_eq 0 "$SKIP_CORE" "single-core minimal mode core startup with sufficient memory"
+assert_eq 1 "$DISABLE_XRAY" "single-core low profile Xray runtime guard"
+
+INSTALL_KIND="minimal"
+MEM_TOTAL_MB=1967
+MEM_AVAIL_MB=1400
+CPU_CORES=1
+PROFILE="low"
+FORCE_XRAY=1
+FORCE_PROXY=0
+FORCE_SKIP_CORE=0
+FORCE_START_CORE=0
+apply_kind_defaults >/dev/null
+assert_eq 0 "$INSTALL_XRAY" "low profile ignores --with-xray"
+assert_eq 1 "$DISABLE_XRAY" "low profile remains sing-box only"
 
 INSTALL_KIND="minimal"
 MEM_TOTAL_MB=1024
@@ -208,6 +222,29 @@ FORCE_SKIP_CORE=0
 FORCE_START_CORE=0
 apply_kind_defaults >/dev/null
 assert_eq 1 "$SKIP_CORE" "low-memory minimal mode core guard"
+
+INSTALL_KIND="managed"
+MEM_TOTAL_MB=512
+MEM_AVAIL_MB=320
+CPU_CORES=1
+PROFILE="low"
+CONTROLLER_URL="https://panel.example.com/app/"
+AGENT_TOKEN="abcdefghijklmnopqrstuvwxyzABCDEFGH12345678"
+FORCE_XRAY=0
+FORCE_PROXY=0
+FORCE_SKIP_CORE=0
+FORCE_START_CORE=0
+apply_kind_defaults >/dev/null
+assert_eq 1 "$INSTALL_AGENT" "1c512 managed-client Agent enablement"
+assert_eq 1 "$SKIP_CORE" "1c512 managed-client safe core startup"
+assert_eq 1 "$DISABLE_XRAY" "1c512 managed-client Xray runtime guard"
+
+INSTALL_KIND="managed"
+CONTROLLER_URL=""
+AGENT_TOKEN=""
+if apply_kind_defaults >/dev/null; then
+    fail "managed-client mode accepted missing controller credentials"
+fi
 
 if grep -Eq '^[[:space:]]*swapoff([[:space:]]|$)' "$installer"; then
     fail "installer contains an executable swapoff command"

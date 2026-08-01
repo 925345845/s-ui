@@ -22,8 +22,16 @@ type CoreStatus struct {
 	XrayVersion    string `json:"xray_version,omitempty"`
 }
 
-// Report is the payload agents push to the panel (Nezha/Komari-style monitoring).
-// It remains telemetry-only: no remote shell or command channel.
+type PanelStatus struct {
+	Installed        bool        `json:"installed"`
+	Version          string      `json:"version,omitempty"`
+	ControlAvailable bool        `json:"control_available"`
+	ProtocolVersion  int         `json:"protocol_version,omitempty"`
+	Capabilities     []string    `json:"capabilities,omitempty"`
+	Cores            *CoreStatus `json:"cores,omitempty"`
+}
+
+// Report is the telemetry and capability payload agents push to the panel.
 type Report struct {
 	Hostname     string        `json:"hostname"`
 	OS           string        `json:"os"`
@@ -43,6 +51,7 @@ type Report struct {
 	IPv4         []string     `json:"ipv4,omitempty"`
 	IPv6         []string     `json:"ipv6,omitempty"`
 	Cores        CoreStatus   `json:"cores"`
+	Panel        PanelStatus  `json:"panel,omitempty"`
 	// ConnMode is set by the agent: "http" or "ws".
 	ConnMode string `json:"conn_mode,omitempty"`
 }

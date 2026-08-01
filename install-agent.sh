@@ -100,10 +100,22 @@ umask 077
     printf 'SUI_AGENT_TOKEN=%s\n' "$token"
     printf 'SUI_AGENT_INTERVAL=15s\n'
     printf 'SUI_AGENT_INSECURE=%s\n' "$insecure"
+    printf 'SUI_AGENT_LOCAL_SOCKET=/run/s-ui/control.sock\n'
 } > /etc/default/1s-ui-agent
 
 echo "Validating the panel connection..."
-/usr/local/s-ui/sui-agent --once
+agent_check=(
+    /usr/local/s-ui/sui-agent
+    --panel "$panel_url"
+    --token "$token"
+    --interval 15s
+    --local-socket /run/s-ui/control.sock
+    --once
+)
+if [[ "$insecure" == "true" ]]; then
+    agent_check+=(--insecure)
+fi
+"${agent_check[@]}"
 systemctl daemon-reload
 systemctl enable --now s-ui-agent
 systemctl is-active --quiet s-ui-agent

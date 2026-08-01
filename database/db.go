@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 	"time"
 
@@ -68,7 +69,7 @@ func OpenDB(dbPath string) error {
 	if err != nil {
 		return err
 	}
-	sqlDB.SetMaxOpenConns(25)
+	sqlDB.SetMaxOpenConns(maxOpenConnections(runtime.GOMAXPROCS(0)))
 	sqlDB.SetMaxIdleConns(2)
 	sqlDB.SetConnMaxLifetime(time.Hour)
 	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
@@ -77,6 +78,13 @@ func OpenDB(dbPath string) error {
 		db = db.Debug()
 	}
 	return nil
+}
+
+func maxOpenConnections(processors int) int {
+	if processors <= 1 {
+		return 4
+	}
+	return 8
 }
 
 func InitDB(dbPath string) error {

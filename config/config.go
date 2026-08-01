@@ -65,6 +65,24 @@ func IsSkipCore() bool {
 	return false
 }
 
+// IsXrayDisabled reports whether Xray-core is unavailable for this panel.
+// Low-resource Linux installations use this guard to prevent an Xray binary
+// left by an older release from being started alongside sing-box.
+//
+// Set with environment variable SUI_DISABLE_XRAY=true|1|yes
+// or create an empty marker file next to the DB: <db-folder>/.disable_xray
+func IsXrayDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("SUI_DISABLE_XRAY"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	marker := filepath.Join(GetDBFolderPath(), ".disable_xray")
+	if _, err := os.Stat(marker); err == nil {
+		return true
+	}
+	return false
+}
+
 func GetDBFolderPath() string {
 	dbFolderPath := os.Getenv("SUI_DB_FOLDER")
 	if dbFolderPath == "" {

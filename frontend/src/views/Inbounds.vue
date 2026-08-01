@@ -199,6 +199,19 @@
     :visible="relayModal.visible"
     @close="relayModal.visible = false"
   />
+  <v-dialog v-model="deleteDialog.visible" width="min(420px, calc(100vw - 24px))">
+    <v-card :title="$t('actions.del')" rounded="lg">
+      <v-divider />
+      <v-card-text>
+        {{ $t('confirm') }}
+        <div class="delete-target-tag">{{ deleteDialog.tag }}</div>
+      </v-card-text>
+      <v-card-actions class="justify-end">
+        <v-btn color="secondary" variant="outlined" :disabled="deleteDialog.loading" @click="closeDeleteDialog">{{ $t('no') }}</v-btn>
+        <v-btn color="error" variant="tonal" :loading="deleteDialog.loading" @click="confirmDelete">{{ $t('yes') }}</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
   <v-row class="page-toolbar" align="center" justify="start">
     <v-col cols="auto" class="page-toolbar__actions">
       <v-btn color="primary" prepend-icon="mdi-plus" @click="showModal(0)">{{ $t('actions.add') }}</v-btn>
@@ -214,9 +227,37 @@
       </v-btn>
     </v-col>
   </v-row>
+  <v-row v-if="showListControls" class="inbound-list-controls" align="center">
+    <v-col cols="12" md="7">
+      <v-text-field
+        v-model="inboundQuery"
+        :label="$t('inboundList.search')"
+        prepend-inner-icon="mdi-magnify"
+        clearable
+        density="compact"
+        hide-details
+      />
+    </v-col>
+    <v-col cols="12" md="5" class="inbound-list-controls__meta">
+      <span class="inbound-list-summary">
+        {{ $t('inboundList.summary', { start: visibleStart, end: visibleEnd, total: filteredInbounds.length }) }}
+      </span>
+      <v-select
+        v-model="itemsPerPage"
+        :items="pageSizeOptions"
+        :label="$t('inboundList.pageSize')"
+        density="compact"
+        hide-details
+        class="inbound-page-size"
+      />
+    </v-col>
+  </v-row>
+  <v-alert v-if="filteredInbounds.length === 0" type="info" variant="tonal" class="inbound-empty-state">
+    {{ $t('inboundList.noMatch') }}
+  </v-alert>
   <v-row class="resource-grid">
-    <v-col cols="12" sm="6" md="4" lg="3" xl="2" v-for="(item, index) in <any[]>inbounds" :key="item.tag" class="resource-col">
-      <v-card rounded="lg" elevation="1" :title="item.tag" class="resource-card">
+    <v-col cols="12" sm="6" md="4" lg="3" xl="2" v-for="item in visibleInbounds" :key="item.id || item.tag" class="resource-col inbound-card-col">
+      <v-card rounded="lg" elevation="1" :title="item.tag" class="resource-card inbound-resource-card">
         <v-card-subtitle>{{ item.core_type || 'sing-box' }} / {{ item.type }}</v-card-subtitle>
         <v-card-text class="resource-card__body">
           <v-row class="resource-row" no-gutters>
@@ -239,11 +280,8 @@
           </v-row>
           <v-row class="resource-row" no-gutters>
             <v-col cols="5" class="resource-label">{{ $t('pages.clients') }}</v-col>
-            <v-col cols="7" class="resource-value">
+            <v-col cols="7" class="resource-value" :title="item.users?.length ? item.users.join('\n') : undefined">
               <template v-if="item.users">
-                <v-tooltip activator="parent" dir="ltr" location="bottom" v-if="item.users.length > 0">
-                  <span v-for="u in item.users" :key="u">{{ u }}<br /></span>
-                </v-tooltip>
                 {{ item.users.length }}
               </template>
               <template v-else>-</template>
@@ -252,7 +290,7 @@
           <v-row class="resource-row" no-gutters>
             <v-col cols="5" class="resource-label">{{ $t('online') }}</v-col>
             <v-col cols="7" class="resource-value">
-              <template v-if="onlines.includes(item.tag)">
+              <template v-if="onlineTags.has(item.tag)">
                 <v-chip density="comfortable" size="small" color="success" variant="flat">{{ $t('online') }}</v-chip>
               </template>
               <template v-else>-</template>
@@ -261,40 +299,17 @@
         </v-card-text>
         <v-divider></v-divider>
         <v-card-actions class="resource-actions">
-          <v-btn icon="mdi-file-edit" size="small" variant="text" @click="showModal(item.id)">
-            <v-icon />
-            <v-tooltip activator="parent" location="top" :text="$t('actions.edit')"></v-tooltip>
-          </v-btn>
-          <v-btn icon="mdi-file-remove" size="small" variant="text" color="warning" @click="delOverlay[index] = true">
-            <v-icon />
-            <v-tooltip activator="parent" location="top" :text="$t('actions.del')"></v-tooltip>
-          </v-btn>
-          <v-overlay
-            v-model="delOverlay[index]"
-            contained
-            class="align-center justify-center"
-          >
-            <v-card :title="$t('actions.del')" rounded="lg">
-              <v-divider></v-divider>
-              <v-card-text>{{ $t('confirm') }}</v-card-text>
-              <v-card-actions>
-                <v-btn color="error" variant="outlined" @click="delInbound(item.id)">{{ $t('yes') }}</v-btn>
-                <v-btn color="success" variant="outlined" @click="delOverlay[index] = false">{{ $t('no') }}</v-btn>
-              </v-card-actions>
-            </v-card>
-          </v-overlay>
-          <v-btn icon="mdi-content-duplicate" size="small" variant="text" :loading="cloneLoading" @click="clone(item.id)">
-            <v-icon />
-            <v-tooltip activator="parent" location="top" :text="$t('actions.clone')"></v-tooltip>
-          </v-btn>
-          <v-btn icon="mdi-chart-line" size="small" variant="text" @click="showStats(item.tag)" v-if="Data().enableTraffic">
-            <v-icon />
-            <v-tooltip activator="parent" location="top" :text="$t('stats.graphTitle')"></v-tooltip>
-          </v-btn>
+          <v-btn icon="mdi-file-edit" size="small" variant="text" :title="$t('actions.edit')" :aria-label="$t('actions.edit')" @click="showModal(item.id)" />
+          <v-btn icon="mdi-file-remove" size="small" variant="text" color="warning" :title="$t('actions.del')" :aria-label="$t('actions.del')" @click="requestDelete(item)" />
+          <v-btn icon="mdi-content-duplicate" size="small" variant="text" :title="$t('actions.clone')" :aria-label="$t('actions.clone')" :loading="cloneLoadingId === item.id" @click="clone(item.id)" />
+          <v-btn v-if="trafficEnabled" icon="mdi-chart-line" size="small" variant="text" :title="$t('stats.graphTitle')" :aria-label="$t('stats.graphTitle')" @click="showStats(item.tag)" />
         </v-card-actions>
       </v-card>
     </v-col>
   </v-row>
+  <div v-if="pageCount > 1" class="inbound-pagination">
+    <v-pagination v-model="currentPage" :length="pageCount" :total-visible="7" density="comfortable" />
+  </div>
 </template>
 
 <script lang="ts" setup>
@@ -328,8 +343,45 @@ const inTags = computed((): string[] => {
   return [...inbounds.value?.map(i => i.tag), ...Data().endpoints?.filter((e:any) => e.listen_port > 0).map((e:any) => e.tag)]
 })
 
-const onlines = computed(() => {
-  return Data().onlines.inbound?? []
+const onlineTags = computed(() => new Set<string>(Data().onlines.inbound ?? []))
+const trafficEnabled = computed(() => Data().enableTraffic)
+
+const pageSizeOptions = [20, 40, 80]
+const savedPageSize = Number(localStorage.getItem('inboundsPageSize'))
+const itemsPerPage = ref(pageSizeOptions.includes(savedPageSize) ? savedPageSize : 20)
+const currentPage = ref(1)
+const inboundQuery = ref('')
+
+const filteredInbounds = computed<any[]>(() => {
+  const query = (inboundQuery.value || '').trim().toLocaleLowerCase()
+  if (!query) return inbounds.value
+  return inbounds.value.filter((item: any) => [
+    item.tag,
+    item.core_type || 'sing-box',
+    item.type,
+    item.listen,
+    item.listen_port,
+  ].some((value) => String(value ?? '').toLocaleLowerCase().includes(query)))
+})
+
+const pageCount = computed(() => Math.max(1, Math.ceil(filteredInbounds.value.length / itemsPerPage.value)))
+const visibleInbounds = computed<any[]>(() => {
+  const start = (currentPage.value - 1) * itemsPerPage.value
+  return filteredInbounds.value.slice(start, start + itemsPerPage.value)
+})
+const visibleStart = computed(() => filteredInbounds.value.length === 0 ? 0 : (currentPage.value - 1) * itemsPerPage.value + 1)
+const visibleEnd = computed(() => Math.min(currentPage.value * itemsPerPage.value, filteredInbounds.value.length))
+const showListControls = computed(() => inbounds.value.length > pageSizeOptions[0] || Boolean(inboundQuery.value))
+
+watch(inboundQuery, () => {
+  currentPage.value = 1
+})
+watch(itemsPerPage, (value) => {
+  localStorage.setItem('inboundsPageSize', String(value))
+  currentPage.value = 1
+})
+watch(pageCount, (value) => {
+  if (currentPage.value > value) currentPage.value = value
 })
 
 const modal = ref({
@@ -339,7 +391,12 @@ const modal = ref({
 
 const relayModal = ref({ visible: false })
 
-let delOverlay = ref(new Array<boolean>)
+const deleteDialog = ref({
+  visible: false,
+  loading: false,
+  id: 0,
+  tag: '',
+})
 
 const showModal = (id: number) => {
   modal.value.id = id
@@ -428,28 +485,46 @@ const closeModal = () => {
   modal.value.visible = false
 }
 
-const delInbound = async (id: number) => {
-  const index = inbounds.value.findIndex(i => i.id == id)
-  const tag = inbounds.value[index].tag
-
-  const success = await Data().save("inbounds", "del", tag)
-  if (success) delOverlay.value[index] = false
+const requestDelete = (item: Inbound) => {
+  deleteDialog.value.id = item.id
+  deleteDialog.value.tag = item.tag
+  deleteDialog.value.visible = true
 }
 
-let cloneLoading = ref(false)
+const closeDeleteDialog = () => {
+  if (deleteDialog.value.loading) return
+  deleteDialog.value.visible = false
+}
+
+const confirmDelete = async () => {
+  if (!deleteDialog.value.id || !deleteDialog.value.tag) return
+  deleteDialog.value.loading = true
+  try {
+    const success = await Data().save('inbounds', 'del', deleteDialog.value.tag)
+    if (success) deleteDialog.value.visible = false
+  } finally {
+    deleteDialog.value.loading = false
+  }
+}
+
+const cloneLoadingId = ref(0)
 
 const clone = async (id: number) => {
-  cloneLoading.value = true
-  const inboundArray = await Data().loadInbounds([id])
-  const inbound = inboundArray[0]
-  let newTag = inbound.type + "-" + RandomUtil.randomSeq(3)
-  const newInbound = createInbound(inbound.type, { ...inbound,
-    id: 0,
-    tag: newTag,
-    listen_port: RandomUtil.randomIntRange(10000, 60000),
-  })
-  await Data().save("inbounds", "new", newInbound)
-  cloneLoading.value = false
+  cloneLoadingId.value = id
+  try {
+    const inboundArray = await Data().loadInbounds([id])
+    const inbound = inboundArray[0]
+    if (!inbound) return
+    const newTag = inbound.type + "-" + RandomUtil.randomSeq(3)
+    const newInbound = createInbound(inbound.type, { ...inbound,
+      id: 0,
+      tag: newTag,
+      listen_port: RandomUtil.randomIntRange(10000, 60000),
+    })
+    await Data().save("inbounds", "new", newInbound)
+  } finally {
+    cloneLoadingId.value = 0
+  }
 }
 
 
@@ -807,5 +882,56 @@ const closeStats = () => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.inbound-list-controls {
+  max-width: 980px;
+  margin-inline: auto !important;
+}
+
+.inbound-list-controls__meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.inbound-list-summary {
+  color: rgba(var(--v-theme-on-surface), 0.68);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.inbound-page-size {
+  flex: 0 0 132px;
+  max-width: 132px;
+}
+
+.inbound-empty-state {
+  max-width: 720px;
+  margin: 20px auto;
+}
+
+.inbound-card-col {
+  content-visibility: auto;
+  contain-intrinsic-size: 266px 264px;
+}
+
+.inbound-pagination {
+  display: flex;
+  justify-content: center;
+  padding: 18px 0 2px;
+}
+
+.delete-target-tag {
+  margin-top: 8px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .inbound-list-controls__meta {
+    justify-content: space-between;
+  }
 }
 </style>

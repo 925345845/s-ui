@@ -308,7 +308,7 @@ const defaultValues: Record<InType, Inbound> = {
   },
 }
 
-export function createInbound<T extends Inbound>(type: InType,json?: Partial<T>): Inbound {
+export function createInbound<T extends Inbound>(type: InType,json?: Partial<T>, host = location.hostname): Inbound {
   const defaultObject: Inbound = { ...defaultValues[type] ?? {}, ...(json ?? {}) }
   defaultObject.core_type = defaultObject.core_type || CoreTypes.SingBox
   if (defaultObject.core_type == CoreTypes.Xray && [InTypes.VLESS, InTypes.VMess, InTypes.Trojan, InTypes.Hysteria2].includes(type)) {
@@ -316,7 +316,7 @@ export function createInbound<T extends Inbound>(type: InType,json?: Partial<T>)
     if (!inbound.transport || Object.keys(inbound.transport).length == 0) {
       if (type == InTypes.VLESS) inbound.transport = { type: 'xhttp', path: '/xhttp', mode: 'auto' }
       else if (type == InTypes.Hysteria2) inbound.transport = { type: 'hysteria', udp_idle_timeout: 60 }
-      else inbound.transport = { type: 'ws', path: '/', host: location.hostname }
+      else inbound.transport = { type: 'ws', path: '/', host }
     }
   }
   if (type == InTypes.Shadowsocks && !(<Shadowsocks>defaultObject).password) {

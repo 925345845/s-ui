@@ -62,7 +62,7 @@ func (h *AgentHandler) WebSocket(c *gin.Context) {
 		logger.Warning("agent websocket accept failed: ", err)
 		return
 	}
-	conn.SetReadLimit(512 << 10)
+	conn.SetReadLimit(2 << 20)
 
 	sessionCtx, unregister := h.AgentService.RegisterSession(nodeID, conn)
 	defer func() {
@@ -96,6 +96,7 @@ func (h *AgentHandler) WebSocket(c *gin.Context) {
 			Payload json.RawMessage `json:"payload"`
 			ID      string          `json:"id"`
 			Command string          `json:"command"`
+			Method  string          `json:"method"`
 			OK      bool            `json:"ok"`
 			Output  string          `json:"output"`
 			Error   string          `json:"error"`
@@ -136,12 +137,17 @@ func (h *AgentHandler) WebSocket(c *gin.Context) {
 				Code:    envelope.Code,
 				Elapsed: envelope.Elapsed,
 			})
+		case agent.MsgTypeRPCResponse:
+			h.AgentService.HandleRPCResponse(nodeID, agent.RPCResponse{
+				ID: envelope.ID, OK: envelope.OK, Payload: envelope.Payload,
+				Error: envelope.Error, Code: envelope.Code,
+			})
 		case agent.MsgTypeTerminalOpened, agent.MsgTypeTerminalOutput, agent.MsgTypeTerminalClosed:
 			h.AgentService.HandleTerminalFromAgent(nodeID, envelope.Type, envelope.ID, envelope.Data, envelope.Error)
 		case agent.MsgTypePing:
-			_ = write(map[string]interface{}{"type": agent.MsgTypePong, "server_time": time.Now().Unix()})
+			_ = write(map[string]interface{}{"type": agent.MsgTypePong, "id": envelope.ID, "server_time": time.Now().Unix()})
 		case agent.MsgTypePong:
-			// ignore
+			h.AgentService.HandlePong(nodeID, envelope.ID)
 		default:
 			_ = write(map[string]interface{}{"type": agent.MsgTypeError, "error": "unknown type"})
 		}
