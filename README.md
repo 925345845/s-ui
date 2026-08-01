@@ -116,12 +116,15 @@ Agent **主动出站**连面板，节点上不开放控制端口。
 | 监控 | CPU、内存、磁盘、负载、进程数、实时带宽、地址、sing-box/Xray 状态 |
 | 远程控制 | 刷新指标、Ping、改上报间隔、重启 Xray / sing-box / Agent、执行 Shell（需 WS） |
 | 实时延迟 | 中心到 Agent 的 WebSocket RTT、平均值、P95 与丢包率，不使用本机假 `pong` 耗时 |
-| 受管入站 | 远程查看、创建、编辑和删除客户端入站；仍由客户端本地面板校验并更新内核 |
+| 受管入站 | 远程查看、创建、编辑和删除客户端入站，并可一键创建 1–100 条节点 |
+| 受管中转 | 从服务端打开客户端入站后，可远程创建 IPv6 出口或上游 SOCKS5 中转 |
 | 交互终端 | 浏览器 PTY 终端，经面板桥接到远端 Shell |
 | 批量控制 | 勾选多节点，统一下发指令并汇总结果 |
 | 鉴权 | 面板登录 Session；Agent Token 仅创建/轮换时显示一次 |
 
 一个 Agent 代表一台 VPS/服务器，不代表单条代理节点；一台受管客户端可以包含多条入站。仅 HTTP 在线时可监控；WebSocket 在线且检测到本地 1S-UI 控制通道时，可管理入站。远端入站通过权限为 `0600` 的 Unix Socket 交给客户端本地面板处理，不开放额外控制端口，也不直接写 SQLite。
+
+客户端不需要单独获取 WebSocket 地址。安装受管客户端或 Agent 时，安装器会把面板 URL 和一次性 Token 写入权限为 `0600` 的 `/etc/default/1s-ui-agent`；Agent 自动将 `http(s)://面板地址/面板路径/` 转换为 `ws(s)://面板地址/面板路径/agent/v1/ws`，并使用 `Authorization: Bearer <Token>` 主动出站连接。WS 暂时断开时会回退到 `/agent/v1/heartbeat` 上报，并自动重连。
 
 ### 快速安装
 
@@ -289,7 +292,7 @@ opkg install ./s-ui-lite_1.5.7-1_x86_64.ipk
 
 **Relay:** IPv6 pool or upstream SOCKS5; 1–100 nodes per batch with automatic used-port skipping; clients connect to the original VPS IPv4/hostname while each generated IPv6 is bound only to its matching egress; multi-protocol batch; BitBrowser Excel/plain-text export; DAD plus per-address public IPv6 egress validation and rollback (no default-route changes). The provider must route or authorize the IPv6 prefix; adding random local `/64` addresses cannot bypass upstream source filtering.
 
-**Agents (v1.5):** outbound HTTP + WebSocket; metrics; real control-plane RTT, averages, P95 and loss; editable server names/public hosts; remote control and PTY terminal; managed-client inbound CRUD with optimistic revision checks. One Agent represents one server, and each managed server can contain many inbounds. Remote configuration is applied by the client's own panel through a root-only Unix socket, never by direct SQLite writes.
+**Agents (v1.5):** outbound HTTP + WebSocket; metrics; real control-plane RTT, averages, P95 and loss; editable server names/public hosts; remote control and PTY terminal; managed-client inbound CRUD, 1–100 node quick-add, and IPv6/upstream relay creation with optimistic revision checks. The installer stores the panel URL and token in `/etc/default/1s-ui-agent`; the Agent derives `/agent/v1/ws` automatically and falls back to `/agent/v1/heartbeat` during reconnects. One Agent represents one server, and each managed server can contain many inbounds. Remote configuration is applied by the client's own panel through a root-only Unix socket, never by direct SQLite writes.
 
 **Low-resource baseline:** inbound cards render 20 per page, background tabs stop polling, dashboard metrics refresh every 5 seconds without overlapping requests, and the installer retains cgroup/Swap/OOM guards. The 1 vCPU / 512MB target covers a responsive minimal Web panel; proxy throughput still depends on protocol, concurrent traffic, and network quality.
 

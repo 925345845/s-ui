@@ -222,8 +222,16 @@ interface RelayItem { listen_port: number; username: string; password: string; i
 interface RelayPool { id: number; name: string; source?: string; mode: string; protocol?: string; domain_strategy?: string; listen_host: string; port_start: number; count: number; items: RelayItem[] }
 interface RelayCapabilities { os: string; can_add_system_ipv6: boolean; unavailable_reason?: string }
 
-const props = defineProps<{ visible: boolean }>()
-const emit = defineEmits<{ (event: 'close'): void }>()
+const props = defineProps<{
+  visible: boolean
+  agentId?: number
+  connectionHost?: string
+  tlsConfigs?: any[]
+}>()
+const emit = defineEmits<{
+  (event: 'close'): void
+  (event: 'changed'): void
+}>()
 const tab = ref('ipv6')
 const advancedPanel = ref<string>()
 const loading = ref(false)
@@ -233,6 +241,7 @@ const downloading = ref(0)
 const ipv6 = ref<IPv6Item[]>([])
 const pools = ref<RelayPool[]>([])
 const capabilities = ref<RelayCapabilities | null>(null)
+const isRemote = computed(() => Number.isInteger(props.agentId) && Number(props.agentId) > 0)
 const form = reactive({
   name: '', public_host: window.location.hostname, port_start: 30000, count: 10,
   username_prefix: 'relay', password_length: 12, interface: '', base_ipv6: '', prefix: 64,
@@ -263,7 +272,7 @@ const transportItems = computed(() => ['vless', 'vmess', 'trojan'].includes(form
   : [])
 const requiresTls = computed(() => ['trojan', 'hysteria2', 'tuic', 'naive', 'anytls'].includes(form.protocol))
 const supportsOptionalTls = computed(() => ['vless', 'vmess'].includes(form.protocol))
-const tlsItems = computed(() => (Data().tlsConfigs ?? []).map((tls: any) => ({ title: tls.name, value: tls.id })))
+const tlsItems = computed(() => ((isRemote.value ? props.tlsConfigs : Data().tlsConfigs) ?? []).map((tls: any) => ({ title: tls.name, value: tls.id })))
 const optionalTlsItems = computed(() => [{ title: i18n.global.t('disable'), value: 0 }, ...tlsItems.value])
 const domainStrategyItems = computed(() => [
   { title: i18n.global.t('relay.ipv6Only'), value: 'ipv6_only' },
@@ -282,13 +291,28 @@ watch(() => form.protocol, (protocol) => {
 
 const loadData = async () => {
   refreshing.value = true
-  const msg = await HttpUtils.get('api/relay')
-  if (msg.success) {
-    ipv6.value = msg.obj?.ipv6 ?? []
-    pools.value = (msg.obj?.pools ?? []).map((pool: any) => ({ ...pool, items: parseItems(pool.items) }))
-    capabilities.value = msg.obj?.capabilities ?? null
+  try {
+    let data: any
+    if (isRemote.value) {
+      const response = await fetch(`api/agents/${props.agentId}/relay`, {
+        credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      })
+      const msg = await response.json()
+      if (!response.ok || !msg.success) throw new Error(msg.msg || response.statusText)
+      data = msg.obj
+    } else {
+      const msg = await HttpUtils.get('api/relay')
+      if (!msg.success) throw new Error(msg.msg || i18n.global.t('failed'))
+      data = msg.obj
+    }
+    ipv6.value = data?.ipv6 ?? []
+    pools.value = (data?.pools ?? []).map((pool: any) => ({ ...pool, items: parseItems(pool.items) }))
+    capabilities.value = data?.capabilities ?? null
+  } catch (error: any) {
+    push.error({ message: error?.message || i18n.global.t('agent.loadFailed') })
+  } finally {
+    refreshing.value = false
   }
-  refreshing.value = false
 }
 
 const parseItems = (items: any): RelayItem[] => {
@@ -328,7 +352,8 @@ const create = async (mode: 'ipv6' | 'upstream', quick = false) => {
     payload.upstreams = []
     payload.upstream_text = form.upstream_text
     delete payload.ipv6_text
-    const response = await fetch('api/relay/create', {
+    const endpoint = isRemote.value ? `api/agents/${props.agentId}/relay/create` : 'api/relay/create'
+    const response = await fetch(endpoint, {
       method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
       body: JSON.stringify(payload),
@@ -350,7 +375,8 @@ const create = async (mode: 'ipv6' | 'upstream', quick = false) => {
       form.ipv6_text = ''
       form.upstream_text = ''
       await loadData()
-      await Data().loadData()
+      if (isRemote.value) emit('changed')
+      else await Data().loadData()
     } else {
       const egressMatch = String(msg.msg || '').match(/relay_ipv6_egress_unreachable\|([^|]+)\|/)
       push.error({
@@ -380,7 +406,10 @@ const supportsBitBrowser = (pool: RelayPool) => {
 const downloadBitBrowser = async (pool: RelayPool) => {
   downloading.value = pool.id
   try {
-    const response = await fetch(`api/relay/${pool.id}/bitbrowser.xlsx`, {
+    const endpoint = isRemote.value
+      ? `api/agents/${props.agentId}/relay/${pool.id}/bitbrowser.xlsx`
+      : `api/relay/${pool.id}/bitbrowser.xlsx`
+    const response = await fetch(endpoint, {
       credentials: 'include',
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
     })
@@ -416,13 +445,17 @@ const remove = async (id: number) => {
   if (!window.confirm(i18n.global.t('relay.deleteConfirm'))) return
   deleting.value = id
   try {
-    const response = await fetch(`api/relay/${id}/delete`, { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    const endpoint = isRemote.value
+      ? `api/agents/${props.agentId}/relay/${id}/delete`
+      : `api/relay/${id}/delete`
+    const response = await fetch(endpoint, { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     let msg: any
     try { msg = await response.json() } catch { msg = { success: false, msg: i18n.global.t('relay.invalidResponse') } }
     if (msg.success) {
       push.success({ message: i18n.global.t('relay.deleted') })
       await loadData()
-      await Data().loadData()
+      if (isRemote.value) emit('changed')
+      else await Data().loadData()
     } else {
       push.error({ message: msg.msg || i18n.global.t('relay.deleteFailed') })
     }
@@ -434,7 +467,14 @@ const remove = async (id: number) => {
 }
 
 const close = () => emit('close')
-watch(() => props.visible, (visible) => { if (visible) loadData() })
+watch(() => props.visible, (visible) => {
+  if (!visible) return
+  if (isRemote.value && props.connectionHost) form.public_host = props.connectionHost
+  loadData()
+})
+watch(() => props.connectionHost, (host) => {
+  if (isRemote.value && host) form.public_host = host
+})
 </script>
 
 <style scoped>

@@ -105,6 +105,8 @@
     remoteInboundHint: "設定透過 Agent 傳送，並由客戶端自己的 sing-box/Xray 驗證後套用。",
     notManaged: "此伺服器目前僅能監控。請安裝完整 Web 面板、更新 Agent 並確認本機控制通道。",
     publicHostRequired: "修改入站前，請先在伺服器監控頁填寫公網連線位址。",
+    remoteUpgradeRequired: "請更新客戶端面板與 Agent，才能遠端快速新增節點及建立 IPv6 中轉。",
+    remoteQuickAddCreated: "已在客戶端建立 {count} 條節點",
     backServers: "返回伺服器列表",
     updateSuccess: "伺服器資訊已更新",
     updateFailed: "更新伺服器資訊失敗",

@@ -105,6 +105,8 @@
     remoteInboundHint: "Cấu hình được gửi qua Agent và áp dụng sau khi sing-box/Xray trên máy khách kiểm tra.",
     notManaged: "Máy chủ này chỉ có thể giám sát. Hãy cài Web panel đầy đủ, cập nhật Agent và kiểm tra điều khiển cục bộ.",
     publicHostRequired: "Hãy đặt địa chỉ kết nối công khai trước khi thay đổi inbound.",
+    remoteUpgradeRequired: "Cập nhật panel và Agent máy khách để thêm nhanh và tạo chuyển tiếp IPv6 từ xa.",
+    remoteQuickAddCreated: "Đã tạo {count} nút trên máy khách",
     backServers: "Quay lại danh sách máy chủ",
     updateSuccess: "Đã cập nhật máy chủ",
     updateFailed: "Không thể cập nhật máy chủ",

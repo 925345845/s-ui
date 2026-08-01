@@ -105,6 +105,8 @@
     remoteInboundHint: "پیکربندی از طریق Agent ارسال و پس از بررسی sing-box/Xray محلی اعمال می‌شود.",
     notManaged: "این سرور فقط قابل پایش است. پنل کامل وب را نصب، Agent را به‌روز و کنترل محلی را بررسی کنید.",
     publicHostRequired: "پیش از تغییر ورودی‌ها، نشانی عمومی اتصال کلاینت را تنظیم کنید.",
+    remoteUpgradeRequired: "برای افزودن سریع و ساخت رله IPv6، پنل و Agent کلاینت را به‌روز کنید.",
+    remoteQuickAddCreated: "{count} گره روی کلاینت ایجاد شد",
     backServers: "بازگشت به سرورها",
     updateSuccess: "اطلاعات سرور به‌روزرسانی شد",
     updateFailed: "به‌روزرسانی سرور ناموفق بود",

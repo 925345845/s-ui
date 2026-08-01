@@ -117,6 +117,8 @@
     remoteInboundHint: "配置通过 Agent 安全传给客户端本地面板，并由客户端自己的 sing-box/Xray 校验后生效。",
     notManaged: "该服务器当前只能监控。请确认已安装完整 1S-UI Web 面板、Agent 已更新且本机控制通道可用。",
     publicHostRequired: "创建或修改入站前，请回到服务器监控页面填写该客户端的公网连接地址。",
+    remoteUpgradeRequired: "客户端面板或 Agent 版本过旧，更新后才能远程一键添加节点和创建 IPv6 中转。",
+    remoteQuickAddCreated: "已在客户端创建 {count} 条节点",
     backServers: "返回服务器列表",
     updateSuccess: "服务器信息已更新",
     updateFailed: "更新服务器信息失败",

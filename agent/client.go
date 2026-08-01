@@ -171,6 +171,7 @@ func runWebSocket(ctx context.Context, cfg ClientConfig) error {
 	reportNow := make(chan struct{}, 1)
 	errCh := make(chan error, 1)
 	restartAgent := make(chan struct{}, 1)
+	rpcSlots := make(chan struct{}, 4)
 
 	var termMu sync.Mutex
 	terminals := map[string]*localTerminal{}
@@ -254,16 +255,28 @@ func runWebSocket(ctx context.Context, cfg ClientConfig) error {
 				}
 			case MsgTypeRPCRequest:
 				request := RPCRequest{ID: msg.ID, Method: msg.Method, Payload: msg.Payload}
-				result := CallLocalRPC(ctx, cfg.LocalSocket, request)
-				_ = write(map[string]interface{}{
-					"type":    MsgTypeRPCResponse,
-					"id":      result.ID,
-					"ok":      result.OK,
-					"payload": json.RawMessage(result.Payload),
-					"error":   result.Error,
-					"code":    result.Code,
-					"time":    time.Now().Unix(),
-				})
+				select {
+				case rpcSlots <- struct{}{}:
+					go func(request RPCRequest) {
+						defer func() { <-rpcSlots }()
+						result := CallLocalRPC(ctx, cfg.LocalSocket, request)
+						_ = write(map[string]interface{}{
+							"type":    MsgTypeRPCResponse,
+							"id":      result.ID,
+							"ok":      result.OK,
+							"payload": json.RawMessage(result.Payload),
+							"error":   result.Error,
+							"code":    result.Code,
+							"time":    time.Now().Unix(),
+						})
+					}(request)
+				default:
+					_ = write(map[string]interface{}{
+						"type": MsgTypeRPCResponse, "id": request.ID, "ok": false,
+						"error": "managed-node RPC queue is busy", "code": http.StatusTooManyRequests,
+						"time": time.Now().Unix(),
+					})
+				}
 			case MsgTypeTerminalOpen:
 				cols := uint16(msg.Cols)
 				rows := uint16(msg.Rows)

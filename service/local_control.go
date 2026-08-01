@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/Hhz0823/1s-ui/agent"
 	"github.com/Hhz0823/1s-ui/config"
@@ -23,6 +22,7 @@ type LocalControlService struct {
 type RemoteInboundList struct {
 	Revision uint64                   `json:"revision"`
 	Inbounds []map[string]interface{} `json:"inbounds"`
+	TLS      []model.Tls              `json:"tls"`
 }
 
 type RemoteInboundEditor struct {
@@ -66,6 +66,8 @@ func (s *LocalControlService) Capabilities() agent.PanelStatus {
 			agent.CapabilityLatencyV1,
 			agent.CapabilityInboundReadV1,
 			agent.CapabilityInboundWriteV1,
+			agent.CapabilityQuickAddV1,
+			agent.CapabilityRelayV1,
 		},
 	}
 }
@@ -83,7 +85,14 @@ func (s *LocalControlService) ListInbounds() (*RemoteInboundList, error) {
 	if inbounds != nil {
 		items = *inbounds
 	}
-	return &RemoteInboundList{Revision: revision, Inbounds: items}, nil
+	tlsConfigs, err := s.TlsService.GetAll()
+	if err != nil {
+		return nil, err
+	}
+	if tlsConfigs == nil {
+		tlsConfigs = []model.Tls{}
+	}
+	return &RemoteInboundList{Revision: revision, Inbounds: items, TLS: tlsConfigs}, nil
 }
 
 func (s *LocalControlService) InboundEditor(id uint) (*RemoteInboundEditor, error) {
@@ -155,17 +164,9 @@ func (s *LocalControlService) SaveInbound(request RemoteInboundSaveRequest) (*Re
 	if len(request.Data) == 0 || len(request.Data) > 512*1024 {
 		return nil, common.NewError("invalid inbound payload")
 	}
-	actor := strings.TrimSpace(request.Actor)
-	if actor == "" {
-		actor = "remote-panel"
-	}
-	if len([]rune(actor)) > 100 {
-		return nil, common.NewError("actor is too long")
-	}
-	for _, r := range actor {
-		if unicode.IsControl(r) {
-			return nil, common.NewError("actor contains control characters")
-		}
+	actor, err := normalizeRemoteActor(request.Actor)
+	if err != nil {
+		return nil, err
 	}
 	publicHost, err := normalizeAgentPublicHost(request.PublicHost)
 	if err != nil {

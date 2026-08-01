@@ -117,6 +117,8 @@
     remoteInboundHint: "Configuration is sent through the Agent and applied by the client's own sing-box/Xray validation flow.",
     notManaged: "This server is monitoring-only. Install the full 1S-UI Web panel, update the Agent, and verify local control.",
     publicHostRequired: "Set this client's public connection host on the Server Agents page before changing inbounds.",
+    remoteUpgradeRequired: "Update the client panel and Agent to enable remote quick add and IPv6 relay creation.",
+    remoteQuickAddCreated: "Created {count} node(s) on the client",
     backServers: "Back to servers",
     updateSuccess: "Server details updated",
     updateFailed: "Could not update server details",

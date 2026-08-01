@@ -163,6 +163,142 @@ func (a *ApiService) SaveAgentInbound(c *gin.Context) {
 	jsonObj(c, result, err)
 }
 
+func (a *ApiService) QuickAddAgentInbounds(c *gin.Context) {
+	id, err := parseAgentNodeID(c)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	var request service.RemoteQuickAddRequest
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
+	if err = c.ShouldBindJSON(&request); err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	node, err := a.AgentService.Get(id)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	request.Actor = GetLoginUser(c)
+	request.PublicHost = managedNodePublicHost(node)
+	response, err := a.AgentService.DispatchRPC(id, agent.RPCMethodInboundQuickAdd, request, request.Actor)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	var result service.RemoteQuickAddResponse
+	err = json.Unmarshal(response.Payload, &result)
+	jsonObj(c, result, err)
+}
+
+func (a *ApiService) GetAgentRelayData(c *gin.Context) {
+	id, err := parseAgentNodeID(c)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	response, err := a.AgentService.DispatchRPC(id, agent.RPCMethodRelayGet, map[string]interface{}{}, GetLoginUser(c))
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	var result service.RelayData
+	err = json.Unmarshal(response.Payload, &result)
+	jsonObj(c, result, err)
+}
+
+func (a *ApiService) CreateAgentRelay(c *gin.Context) {
+	id, err := parseAgentNodeID(c)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	var request service.RelayCreateRequest
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 512<<10)
+	if err = c.ShouldBindJSON(&request); err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	node, err := a.AgentService.Get(id)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	actor := GetLoginUser(c)
+	payload := service.RemoteRelayCreateRequest{
+		Request: request, Actor: actor, PublicHost: managedNodePublicHost(node),
+	}
+	response, err := a.AgentService.DispatchRPC(id, agent.RPCMethodRelayCreate, payload, actor)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	var result map[string]interface{}
+	err = json.Unmarshal(response.Payload, &result)
+	jsonObj(c, result, err)
+}
+
+func (a *ApiService) DeleteAgentRelay(c *gin.Context) {
+	id, err := parseAgentNodeID(c)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	relayID, err := parseAgentRelayID(c)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	actor := GetLoginUser(c)
+	response, err := a.AgentService.DispatchRPC(id, agent.RPCMethodRelayDelete, service.RemoteRelayDeleteRequest{ID: relayID, Actor: actor}, actor)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	var result map[string]bool
+	err = json.Unmarshal(response.Payload, &result)
+	jsonObj(c, result, err)
+}
+
+func (a *ApiService) ExportAgentRelayBitBrowser(c *gin.Context) {
+	id, err := parseAgentNodeID(c)
+	if err != nil {
+		c.String(http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	relayID, err := parseAgentRelayID(c)
+	if err != nil {
+		c.String(http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	response, err := a.AgentService.DispatchRPC(id, agent.RPCMethodRelayExport, service.RemoteRelayExportRequest{ID: relayID}, GetLoginUser(c))
+	if err != nil {
+		c.String(http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	var result service.RemoteRelayExportResponse
+	if err = json.Unmarshal(response.Payload, &result); err != nil {
+		c.String(http.StatusBadGateway, "%s", err.Error())
+		return
+	}
+	data, err := base64.StdEncoding.DecodeString(result.ContentBase64)
+	if err != nil {
+		c.String(http.StatusBadGateway, "invalid managed relay export")
+		return
+	}
+	c.Header("Content-Disposition", "attachment; filename=1s-ui-bitbrowser-relay-"+strconv.FormatUint(uint64(relayID), 10)+".xlsx")
+	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", data)
+}
+
+func parseAgentRelayID(c *gin.Context) (uint, error) {
+	id, err := strconv.ParseUint(c.Param("relayId"), 10, 32)
+	if err != nil || id == 0 {
+		return 0, common.NewError("invalid relay pool id")
+	}
+	return uint(id), nil
+}
+
 func parseAgentNodeID(c *gin.Context) (uint, error) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil || id == 0 {

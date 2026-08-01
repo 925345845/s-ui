@@ -459,12 +459,12 @@ func (s *AgentService) DispatchRPC(nodeID uint, method string, payload interface
 		close(resultCh)
 		return nil, common.NewErrorf("failed to send managed-node RPC: %v", err)
 	}
-	timer := time.NewTimer(agentCommandTimeout)
+	timer := time.NewTimer(agentRPCTimeout(method))
 	defer timer.Stop()
 	select {
 	case response := <-resultCh:
 		response.ID = id
-		if method == agent.RPCMethodInboundSave || !response.OK {
+		if agentRPCMutatesConfig(method) || !response.OK {
 			appendAgentCommandLog(nodeID, agentCommandLog{
 				ID: id, Type: "rpc/" + method, OK: response.OK, Error: response.Error,
 				CreatedAt: time.Now().Unix(), Actor: actor,
@@ -491,7 +491,33 @@ func (s *AgentService) DispatchRPC(nodeID uint, method string, payload interface
 
 func validAgentRPCMethod(method string) bool {
 	switch method {
-	case agent.RPCMethodCapabilities, agent.RPCMethodInboundList, agent.RPCMethodInboundEdit, agent.RPCMethodInboundSave:
+	case agent.RPCMethodCapabilities,
+		agent.RPCMethodInboundList,
+		agent.RPCMethodInboundEdit,
+		agent.RPCMethodInboundSave,
+		agent.RPCMethodInboundQuickAdd,
+		agent.RPCMethodRelayGet,
+		agent.RPCMethodRelayCreate,
+		agent.RPCMethodRelayDelete,
+		agent.RPCMethodRelayExport:
+		return true
+	default:
+		return false
+	}
+}
+
+func agentRPCTimeout(method string) time.Duration {
+	switch method {
+	case agent.RPCMethodInboundQuickAdd, agent.RPCMethodRelayCreate, agent.RPCMethodRelayDelete:
+		return 10 * time.Minute
+	default:
+		return agentCommandTimeout
+	}
+}
+
+func agentRPCMutatesConfig(method string) bool {
+	switch method {
+	case agent.RPCMethodInboundSave, agent.RPCMethodInboundQuickAdd, agent.RPCMethodRelayCreate, agent.RPCMethodRelayDelete:
 		return true
 	default:
 		return false

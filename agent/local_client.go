@@ -59,7 +59,7 @@ func CallLocalRPC(ctx context.Context, socketPath string, request RPCRequest) RP
 		},
 	}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 45 * time.Second}
+	client := &http.Client{Transport: transport, Timeout: localRPCTimeout(request.Method)}
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://local/v1/rpc", bytes.NewReader(payload))
 	if err != nil {
 		response.Error = err.Error()
@@ -87,6 +87,15 @@ func CallLocalRPC(ctx context.Context, socketPath string, request RPCRequest) RP
 		response.Error = "invalid response from local 1S-UI control"
 	}
 	return response
+}
+
+func localRPCTimeout(method string) time.Duration {
+	switch method {
+	case RPCMethodInboundQuickAdd, RPCMethodRelayCreate, RPCMethodRelayDelete:
+		return 10 * time.Minute
+	default:
+		return 45 * time.Second
+	}
 }
 
 func probeLocalPanel(socketPath string) PanelStatus {

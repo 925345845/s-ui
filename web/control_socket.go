@@ -90,6 +90,33 @@ func (s *Server) startControlSocket() error {
 			if callErr == nil {
 				result, callErr = local.SaveInbound(payload)
 			}
+		case agent.RPCMethodInboundQuickAdd:
+			var payload service.RemoteQuickAddRequest
+			callErr = decodeLocalRPCPayload(request.Payload, &payload)
+			if callErr == nil {
+				result, callErr = local.QuickAddInbounds(payload)
+			}
+		case agent.RPCMethodRelayGet:
+			result, callErr = local.ConfigService.GetRelayData()
+		case agent.RPCMethodRelayCreate:
+			var payload service.RemoteRelayCreateRequest
+			callErr = decodeLocalRPCPayload(request.Payload, &payload)
+			if callErr == nil {
+				result, callErr = local.CreateRemoteRelay(payload)
+			}
+		case agent.RPCMethodRelayDelete:
+			var payload service.RemoteRelayDeleteRequest
+			callErr = decodeLocalRPCPayload(request.Payload, &payload)
+			if callErr == nil {
+				callErr = local.DeleteRemoteRelay(payload)
+				result = map[string]bool{"deleted": callErr == nil}
+			}
+		case agent.RPCMethodRelayExport:
+			var payload service.RemoteRelayExportRequest
+			callErr = decodeLocalRPCPayload(request.Payload, &payload)
+			if callErr == nil {
+				result, callErr = local.ExportRemoteRelay(payload)
+			}
 		default:
 			callErr = errors.New("unsupported local RPC method")
 		}
@@ -120,7 +147,7 @@ func (s *Server) startControlSocket() error {
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      45 * time.Second,
+		WriteTimeout:      10 * time.Minute,
 		IdleTimeout:       30 * time.Second,
 	}
 	go func() {

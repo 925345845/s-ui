@@ -4,7 +4,7 @@ package agent
 // All control requires an authenticated WebSocket session.
 
 const (
-	ProtocolVersion = 2
+	ProtocolVersion = 3
 
 	MsgTypeReport        = "report"
 	MsgTypePing          = "ping"
@@ -32,13 +32,20 @@ const (
 	CapabilityLatencyV1      = "latency.v1"
 	CapabilityInboundReadV1  = "inbounds.read.v1"
 	CapabilityInboundWriteV1 = "inbounds.write.v1"
+	CapabilityQuickAddV1     = "inbounds.quick_add.v1"
+	CapabilityRelayV1        = "relay.v1"
 )
 
 const (
-	RPCMethodCapabilities = "capabilities.get"
-	RPCMethodInboundList  = "inbounds.list"
-	RPCMethodInboundEdit  = "inbounds.editor"
-	RPCMethodInboundSave  = "inbounds.save"
+	RPCMethodCapabilities    = "capabilities.get"
+	RPCMethodInboundList     = "inbounds.list"
+	RPCMethodInboundEdit     = "inbounds.editor"
+	RPCMethodInboundSave     = "inbounds.save"
+	RPCMethodInboundQuickAdd = "inbounds.quick_add"
+	RPCMethodRelayGet        = "relay.get"
+	RPCMethodRelayCreate     = "relay.create"
+	RPCMethodRelayDelete     = "relay.delete"
+	RPCMethodRelayExport     = "relay.bitbrowser_export"
 )
 
 // Command types the panel may send to an online agent.
