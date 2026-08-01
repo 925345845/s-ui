@@ -44,6 +44,9 @@ var (
 	lastNetSent            uint64
 	lastNetRecv            uint64
 	lastNetAt              time.Time
+	lastCPUMu              sync.Mutex
+	lastCPUTime            cpu.TimesStat
+	lastCPUReady           bool
 	webSocketReconnectWait = 5 * time.Second
 	xrayVersionCache       = struct {
 		sync.Mutex
@@ -465,9 +468,7 @@ func CollectReportWithSocket(localSocket string) Report {
 	if count, err := cpu.Counts(true); err == nil {
 		report.CPUCores = count
 	}
-	if values, err := cpu.Percent(200*time.Millisecond, false); err == nil && len(values) > 0 {
-		report.CPUPercent = values[0]
-	}
+	report.CPUPercent = sampleCPUPercent()
 	if value, err := mem.VirtualMemory(); err == nil {
 		report.Memory = ResourceUsage{Used: value.Used, Total: value.Total}
 	}
@@ -490,6 +491,61 @@ func CollectReportWithSocket(localSocket string) Report {
 	report.Panel = probeLocalPanel(localSocket)
 	applyPanelCoreStatus(&report)
 	return report
+}
+
+func sampleCPUPercent() float64 {
+	values, err := cpu.Times(false)
+	if err != nil || len(values) == 0 {
+		return 0
+	}
+
+	current := values[0]
+	lastCPUMu.Lock()
+	if lastCPUReady {
+		previous := lastCPUTime
+		lastCPUTime = current
+		lastCPUMu.Unlock()
+		return cpuPercentBetween(previous, current)
+	}
+	lastCPUTime = current
+	lastCPUReady = true
+
+	// Seed the first report with a short sample. Later reports use the full
+	// heartbeat interval, which is much more stable on idle VPS instances.
+	percent, err := cpu.Percent(500*time.Millisecond, false)
+	if err != nil || len(percent) == 0 {
+		lastCPUMu.Unlock()
+		return 0
+	}
+	if end, endErr := cpu.Times(false); endErr == nil && len(end) > 0 {
+		lastCPUTime = end[0]
+	}
+	lastCPUMu.Unlock()
+	return percent[0]
+}
+
+func cpuPercentBetween(previous, current cpu.TimesStat) float64 {
+	previousTotal, previousBusy := cpuTotals(previous)
+	currentTotal, currentBusy := cpuTotals(current)
+	totalDelta := currentTotal - previousTotal
+	busyDelta := currentBusy - previousBusy
+	if totalDelta <= 0 || busyDelta <= 0 {
+		return 0
+	}
+	value := busyDelta / totalDelta * 100
+	if value > 100 {
+		return 100
+	}
+	return value
+}
+
+func cpuTotals(value cpu.TimesStat) (float64, float64) {
+	total := value.User + value.System + value.Idle + value.Nice + value.Iowait +
+		value.Irq + value.Softirq + value.Steal + value.Guest + value.GuestNice
+	if runtime.GOOS == "linux" {
+		total -= value.Guest + value.GuestNice
+	}
+	return total, total - value.Idle - value.Iowait
 }
 
 func applyPanelCoreStatus(report *Report) {

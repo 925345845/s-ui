@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/shirou/gopsutil/v4/cpu"
 )
 
 func TestRunReconnectsWebSocketAfterDisconnect(t *testing.T) {
@@ -80,5 +81,23 @@ func TestPanelCoreStatusOverridesProcessScan(t *testing.T) {
 	}
 	if report.Cores.XrayVersion != "26.7.11" {
 		t.Fatalf("Xray version was lost: %#v", report.Cores)
+	}
+}
+
+func TestCPUPercentBetweenUsesWholeSampleWindow(t *testing.T) {
+	previous := cpu.TimesStat{User: 10, System: 10, Idle: 80}
+	current := cpu.TimesStat{User: 25, System: 15, Idle: 160}
+
+	if got := cpuPercentBetween(previous, current); got != 20 {
+		t.Fatalf("cpuPercentBetween() = %v, want 20", got)
+	}
+}
+
+func TestCPUPercentBetweenIgnoresIdleAndIOWait(t *testing.T) {
+	previous := cpu.TimesStat{User: 10, System: 10, Idle: 70, Iowait: 10}
+	current := cpu.TimesStat{User: 10, System: 10, Idle: 150, Iowait: 30}
+
+	if got := cpuPercentBetween(previous, current); got != 0 {
+		t.Fatalf("cpuPercentBetween() = %v, want 0", got)
 	}
 }

@@ -328,7 +328,11 @@ const onTermPaste = (event: ClipboardEvent) => { event.preventDefault(); sendTer
 
 const clampPercent = (value?: number) => Math.max(0, Math.min(100, Number(value) || 0))
 const usagePercent = (value?: AgentUsage) => value?.total ? Number(value.used || 0) * 100 / value.total : undefined
-const percent = (value?: number) => value == null || Number.isNaN(value) ? '-' : `${value.toFixed(1)}%`
+const percent = (value?: number) => {
+  if (value == null || Number.isNaN(value)) return '-'
+  const digits = value > 0 && value < 1 ? 2 : 1
+  return `${value.toFixed(digits)}%`
+}
 const usage = (value?: AgentUsage) => value?.total ? `${bytes(value.used)} / ${bytes(value.total)}` : '-'
 const bytes = (value?: number) => {
   if (!value) return '0 B'
@@ -372,7 +376,8 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.agent-detail-page { display: grid; gap: 16px; }
+.agent-detail-page { display: grid; gap: 16px; padding-bottom: 8px; }
+:global(.app-main:has(.agent-detail-page)) { height: 100dvh; min-height: 0; overflow-y: auto !important; overscroll-behavior-y: contain; scrollbar-gutter: stable; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
 .detail-header { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
 .detail-identity { min-width: 0; }
 .identity-title { display: flex; align-items: center; gap: 10px; }

@@ -335,7 +335,11 @@ const batchCmd = async (type: string, args?: Record<string, any>) => {
 
 const clampPercent = (value?: number) => Math.max(0, Math.min(100, Number(value) || 0))
 const usagePercent = (value?: AgentUsage) => value?.total ? Number(value.used || 0) * 100 / value.total : undefined
-const percent = (value?: number) => value == null || Number.isNaN(value) ? '-' : `${value.toFixed(1)}%`
+const percent = (value?: number) => {
+  if (value == null || Number.isNaN(value)) return '-'
+  const digits = value > 0 && value < 1 ? 2 : 1
+  return `${value.toFixed(digits)}%`
+}
 const rate = (value?: number) => {
   if (value == null) return '-'
   if (value < 1024) return `${Math.round(value)} B/s`
