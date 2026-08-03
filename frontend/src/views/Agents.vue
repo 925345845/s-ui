@@ -1,26 +1,51 @@
 <template>
-  <v-dialog v-model="enroll.visible" width="min(640px, calc(100vw - 24px))">
+  <v-dialog v-model="enroll.visible" width="min(680px, calc(100vw - 24px))" scrollable>
     <v-card>
       <v-card-title class="text-center">{{ $t('agent.enroll') }}</v-card-title>
       <v-divider />
       <v-card-text>
         <v-alert type="info" variant="tonal" density="compact" class="mb-3">{{ $t('agent.note') }}</v-alert>
-        <v-text-field v-if="!enroll.command" v-model="enroll.name" :label="$t('agent.name')" maxlength="80" autofocus hide-details />
+        <template v-if="!enroll.command">
+          <v-btn color="primary" variant="tonal" block prepend-icon="mdi-api" :loading="enroll.apiLoading" @click="createEnrollmentAPI">
+            {{ $t('agent.generateConnectionAPI') }}
+          </v-btn>
+          <div class="enroll-choice"><span>{{ $t('agent.oneTimeOption') }}</span></div>
+          <v-text-field v-model="enroll.name" :label="$t('agent.name')" maxlength="80" hide-details />
+        </template>
         <template v-else>
-          <v-text-field :model-value="enroll.token" :label="$t('agent.token')" readonly dir="ltr" hide-details class="mb-3">
-            <template #append-inner><v-btn icon="mdi-content-copy" size="small" variant="text" @click="copy(enroll.token)" /></template>
-          </v-text-field>
-          <v-textarea :model-value="enroll.command" :label="$t('agent.command')" readonly dir="ltr" rows="3" hide-details>
-            <template #append-inner><v-btn icon="mdi-content-copy" size="small" variant="text" @click="copy(enroll.command)" /></template>
+          <v-alert :type="enroll.reusable ? 'info' : 'warning'" variant="tonal" density="compact" class="mb-3">
+            {{ enroll.reusable ? $t('agent.connectionAPIWarning') : $t('agent.pairSingleUse') }} {{ pairExpiryText }}
+          </v-alert>
+          <v-textarea :model-value="enroll.pairURL" :label="enroll.reusable ? $t('agent.connectionAPI') : $t('agent.connectURL')" :hint="enroll.reusable ? $t('agent.connectionAPIHint') : $t('agent.connectURLHint')" persistent-hint readonly dir="ltr" rows="2" auto-grow class="mb-3">
+            <template #append-inner><v-btn icon="mdi-content-copy" size="small" variant="text" :title="$t('copyToClipboard')" @click.stop="copy(enroll.pairURL)" /></template>
           </v-textarea>
-          <v-textarea :model-value="enroll.managedCommand" :label="$t('agent.managedCommand')" readonly dir="ltr" rows="3" hide-details class="mt-3">
-            <template #append-inner><v-btn icon="mdi-content-copy" size="small" variant="text" @click="copy(enroll.managedCommand)" /></template>
+          <v-textarea :model-value="enroll.managedCommand" :label="$t('agent.managedCommand')" readonly dir="ltr" rows="3" auto-grow hide-details class="mb-3">
+            <template #append-inner><v-btn icon="mdi-content-copy" size="small" variant="text" :title="$t('copyToClipboard')" @click.stop="copy(enroll.managedCommand)" /></template>
+          </v-textarea>
+          <v-textarea :model-value="enroll.command" :label="$t('agent.command')" readonly dir="ltr" rows="3" auto-grow hide-details>
+            <template #append-inner><v-btn icon="mdi-content-copy" size="small" variant="text" :title="$t('copyToClipboard')" @click.stop="copy(enroll.command)" /></template>
           </v-textarea>
         </template>
       </v-card-text>
       <v-card-actions class="justify-center">
         <v-btn variant="outlined" @click="closeEnrollment">{{ $t('actions.close') }}</v-btn>
         <v-btn v-if="!enroll.command" color="primary" variant="tonal" prepend-icon="mdi-link-plus" :loading="enroll.loading" :disabled="!enroll.name.trim()" @click="createNode">{{ $t('actions.add') }}</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+
+  <v-dialog v-model="connect.visible" width="min(580px, calc(100vw - 24px))">
+    <v-card>
+      <v-card-title class="text-center">{{ $t('agent.connectController') }}</v-card-title>
+      <v-divider />
+      <v-card-text>
+        <v-alert type="info" variant="tonal" density="compact" class="mb-3">{{ $t('agent.connectControllerHint') }}</v-alert>
+        <v-textarea v-model="connect.url" :label="$t('agent.connectInput')" :hint="$t('agent.connectInputHint')" persistent-hint rows="3" auto-grow dir="ltr" autofocus />
+        <v-checkbox v-model="connect.insecure" :label="$t('agent.allowInsecure')" :hint="$t('agent.allowInsecureHint')" persistent-hint density="compact" hide-details="auto" />
+      </v-card-text>
+      <v-card-actions class="justify-center">
+        <v-btn variant="outlined" @click="connect.visible = false">{{ $t('actions.close') }}</v-btn>
+        <v-btn color="primary" variant="tonal" prepend-icon="mdi-link-variant-plus" :loading="connect.loading" :disabled="!connect.url.trim()" @click="connectToController">{{ $t('agent.connectNow') }}</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
@@ -77,6 +102,7 @@
         <p>{{ $t('agent.overviewHint') }}</p>
       </div>
       <div class="heading-actions">
+        <v-btn variant="tonal" prepend-icon="mdi-link-variant-plus" @click="openLocalConnect">{{ $t('agent.connectController') }}</v-btn>
         <v-btn color="primary" prepend-icon="mdi-server-plus" :disabled="!serverMonitoringAvailable" :title="serverMonitoringAvailable ? '' : serverRequirementText" @click="openEnrollment">{{ $t('agent.enroll') }}</v-btn>
         <v-btn icon="mdi-refresh" variant="tonal" :loading="loading" :title="$t('actions.update')" @click="loadNodes" />
       </div>
@@ -173,6 +199,7 @@ import { push } from 'notivue'
 import { i18n } from '@/locales'
 import Data from '@/store/modules/data'
 import type { AgentNode, AgentUsage } from '@/types/agents'
+import { copyText } from '@/utils/clipboard'
 
 const router = useRouter()
 const dataStore = Data()
@@ -193,11 +220,16 @@ const serverRequirementText = computed(() => i18n.global.t('agent.hostRequiremen
   memory: currentHostMemoryGiB.value,
 }))
 
-const enroll = reactive({ visible: false, loading: false, name: '', token: '', command: '', managedCommand: '' })
+const enroll = reactive({ visible: false, loading: false, apiLoading: false, reusable: false, name: '', pairURL: '', pairExpiresAt: 0, command: '', managedCommand: '' })
+const connect = reactive({ visible: false, loading: false, url: '', insecure: false })
 const edit = reactive({ visible: false, loading: false, id: 0, name: '', publicHost: '' })
 const removeDialog = reactive<{ visible: boolean, loading: boolean, node?: AgentNode }>({ visible: false, loading: false })
 const batch = reactive<{ loading: boolean, shell: string, results: any[], resultVisible: boolean }>({ loading: false, shell: '', results: [], resultVisible: false })
 let refreshTimer: number | undefined
+
+const pairExpiryText = computed(() => enroll.pairExpiresAt
+  ? i18n.global.t('agent.pairExpires', { time: new Date(enroll.pairExpiresAt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })
+  : '')
 
 const apiURL = (path: string) => {
   const base = (document.querySelector('base')?.getAttribute('href') || (window as any).BASE_URL || '/').replace(/\/?$/, '/')
@@ -272,14 +304,28 @@ const handleVisibilityChange = () => { if (!document.hidden) void loadNodes() }
 
 const openEnrollment = () => {
   if (!serverMonitoringAvailable.value) return push.error({ message: serverRequirementText.value })
-  Object.assign(enroll, { visible: true, loading: false, name: '', token: '', command: '', managedCommand: '' })
+  Object.assign(enroll, { visible: true, loading: false, apiLoading: false, reusable: false, name: '', pairURL: '', pairExpiresAt: 0, command: '', managedCommand: '' })
 }
 const closeEnrollment = () => { enroll.visible = false; if (enroll.command) void loadNodes() }
+const createEnrollmentAPI = async () => {
+  enroll.apiLoading = true
+  try {
+    const result = await api('api/agents/enrollment-link', { method: 'POST', body: '{}' })
+    enroll.reusable = true
+    enroll.pairURL = result.connect_url || ''
+    enroll.pairExpiresAt = 0
+    enroll.command = result.command || ''
+    enroll.managedCommand = result.managed_command || ''
+  } catch (error: any) { push.error({ message: error?.message || i18n.global.t('agent.createFailed') }) }
+  finally { enroll.apiLoading = false }
+}
 const createNode = async () => {
   enroll.loading = true
   try {
     const result = await api('api/agents', { method: 'POST', body: JSON.stringify({ name: enroll.name.trim() }) })
-    enroll.token = result.token
+    enroll.reusable = false
+    enroll.pairURL = result.connect_url || result.pair_url || ''
+    enroll.pairExpiresAt = Number(result.pair_expires_at || 0)
     enroll.command = result.command
     enroll.managedCommand = result.managed_command || ''
   } catch (error: any) { push.error({ message: error?.message || i18n.global.t('agent.createFailed') }) }
@@ -288,8 +334,33 @@ const createNode = async () => {
 const rotateNode = async (node: AgentNode) => {
   try {
     const result = await api(`api/agents/${node.id}/rotate`, { method: 'POST', body: '{}' })
-    Object.assign(enroll, { visible: true, loading: false, name: node.name, token: result.token, command: result.command, managedCommand: result.managed_command || '' })
+    Object.assign(enroll, {
+      visible: true,
+      loading: false,
+      apiLoading: false,
+      reusable: false,
+      name: node.name,
+      pairURL: result.pair_url || '',
+      pairExpiresAt: Number(result.pair_expires_at || 0),
+      command: result.command,
+      managedCommand: result.managed_command || '',
+    })
   } catch (error: any) { push.error({ message: error?.message || i18n.global.t('agent.rotateFailed') }) }
+}
+const openLocalConnect = () => Object.assign(connect, { visible: true, loading: false, url: '', insecure: false })
+const connectToController = async () => {
+  if (connect.loading) return
+  connect.loading = true
+  try {
+    const result = await api('api/agents/connect-local', {
+      method: 'POST',
+      body: JSON.stringify({ connect_url: connect.url.trim(), insecure: connect.insecure }),
+    })
+    connect.visible = false
+    push.success({ message: i18n.global.t('agent.connectSuccess', { panel: result?.panel_url || '-' }) })
+  } catch (error: any) {
+    push.error({ message: error?.message || i18n.global.t('agent.connectFailed') })
+  } finally { connect.loading = false }
 }
 const openEdit = (node: AgentNode) => Object.assign(edit, { visible: true, loading: false, id: node.id, name: node.name, publicHost: node.public_host || '' })
 const saveNode = async () => {
@@ -360,7 +431,7 @@ const barStyle = (value?: number) => {
   return { width: `${current}%`, backgroundColor: color }
 }
 const copy = async (value: string) => {
-  try { await navigator.clipboard.writeText(value); push.success({ message: i18n.global.t('success') }) }
+  try { await copyText(value); push.success({ message: i18n.global.t('success') }) }
   catch { push.error({ message: i18n.global.t('failed') }) }
 }
 
@@ -380,6 +451,8 @@ onBeforeUnmount(() => {
 .monitor-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .monitor-heading h1 { margin: 0; font-size: 1.35rem; line-height: 1.4; letter-spacing: 0; }
 .monitor-heading p { margin: 4px 0 0; color: rgba(var(--v-theme-on-surface), 0.62); font-size: 0.9rem; }
+.enroll-choice { display: flex; align-items: center; gap: 10px; margin: 18px 0 12px; color: rgba(var(--v-theme-on-surface), 0.58); font-size: 0.78rem; }
+.enroll-choice::before, .enroll-choice::after { content: ''; height: 1px; flex: 1; background: rgba(var(--v-border-color), var(--v-border-opacity)); }
 .heading-actions, .monitor-controls, .batch-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .summary-item { position: relative; min-height: 92px; padding: 16px 18px; border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)); border-radius: 8px; background: rgb(var(--v-theme-surface)); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04); display: flex; flex-direction: column; justify-content: center; gap: 4px; }

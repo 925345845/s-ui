@@ -7,9 +7,11 @@ panel_url=""
 token=""
 version=""
 insecure="false"
+connect_url=""
 
 usage() {
-    echo "Usage: install-agent.sh --panel URL --token TOKEN [--version VERSION] [--insecure]"
+    echo "Usage: install-agent.sh --connect CONTROLLER_API [--version VERSION] [--insecure]"
+    echo "   or: install-agent.sh --panel URL --token TOKEN [--version VERSION] [--insecure]"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -20,6 +22,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --token)
             token="${2:-}"
+            shift 2
+            ;;
+        --connect)
+            connect_url="${2:-}"
             shift 2
             ;;
         --version)
@@ -50,14 +56,47 @@ if [[ "$(uname -s)" != "Linux" ]] || ! command -v systemctl >/dev/null 2>&1; the
     echo "The 1S-UI Agent installer requires Linux with systemd." >&2
     exit 1
 fi
-if [[ ! "$panel_url" =~ ^https?://[^[:space:]\'\"\\]+$ ]]; then
-    echo "Invalid panel URL." >&2
-    exit 1
+if [[ -n "$connect_url" ]]; then
+    if [[ "$connect_url" != http://* && "$connect_url" != https://* ]] || [[ "$connect_url" != *"#"* ]]; then
+        echo "Invalid controller connection API or one-time address." >&2
+        exit 1
+    fi
+else
+    if [[ ! "$panel_url" =~ ^https?://[^[:space:]\'\"\\]+$ ]]; then
+        echo "Invalid panel URL." >&2
+        exit 1
+    fi
+    if [[ ! "$token" =~ ^[A-Za-z0-9_-]{32,128}$ ]]; then
+        echo "Invalid enrollment token." >&2
+        exit 1
+    fi
 fi
-if [[ ! "$token" =~ ^[A-Za-z0-9_-]{32,128}$ ]]; then
-    echo "Invalid enrollment token." >&2
-    exit 1
-fi
+
+resolve_connection() {
+    [[ -n "$connect_url" ]] || return 0
+    local endpoint code response node_name
+    endpoint="${connect_url%%#*}"
+    code="${connect_url#*#}"
+    if [[ ! "$endpoint" =~ ^https?://[^[:space:]\'\"\\]+/agent/v1/(pair|enroll)$ ]] || [[ ! "$code" =~ ^[A-Za-z0-9_-]{32,128}$ ]]; then
+        echo "Invalid controller connection API or one-time address." >&2
+        return 1
+    fi
+    node_name=$(hostname 2>/dev/null | tr -d '\r\n' | sed 's/["\\]//g' | cut -c1-80)
+    [[ -n "$node_name" ]] || node_name="managed-server"
+    local curl_args=(--fail --silent --show-error --max-time 20)
+    [[ "$insecure" == "true" ]] && curl_args+=(--insecure)
+    echo "Connecting to the 1S-UI controller..."
+    response=$(curl "${curl_args[@]}" -H 'Content-Type: application/json' --data "{\"code\":\"${code}\",\"name\":\"${node_name}\"}" "$endpoint") || {
+        echo "The controller rejected or could not process the connection API." >&2
+        return 1
+    }
+    panel_url=$(printf '%s' "$response" | sed -nE 's/.*"panel_url"[[:space:]]*:[[:space:]]*"([^\"]+)".*/\1/p' | head -n1)
+    token=$(printf '%s' "$response" | sed -nE 's/.*"token"[[:space:]]*:[[:space:]]*"([^\"]+)".*/\1/p' | head -n1)
+    if [[ ! "$panel_url" =~ ^https?://[^[:space:]\'\"\\]+$ ]] || [[ ! "$token" =~ ^[A-Za-z0-9_-]{32,128}$ ]]; then
+        echo "The controller returned an invalid pairing response." >&2
+        return 1
+    fi
+}
 
 case "$(uname -m)" in
     x86_64|amd64) arch="amd64" ;;
@@ -94,6 +133,7 @@ tar -xzf "$archive" -C "$tmp_dir" s-ui/sui-agent s-ui/s-ui-agent.service
 install -d -m 0755 /usr/local/s-ui /etc/default /etc/systemd/system
 install -m 0755 "$tmp_dir/s-ui/sui-agent" /usr/local/s-ui/sui-agent
 install -m 0644 "$tmp_dir/s-ui/s-ui-agent.service" /etc/systemd/system/s-ui-agent.service
+resolve_connection
 umask 077
 {
     printf 'SUI_AGENT_PANEL=%s\n' "$panel_url"

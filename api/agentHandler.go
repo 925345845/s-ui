@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Hhz0823/1s-ui/agent"
+	"github.com/Hhz0823/1s-ui/config"
 	"github.com/Hhz0823/1s-ui/logger"
 	"github.com/Hhz0823/1s-ui/service"
 	"github.com/coder/websocket"
@@ -15,12 +16,78 @@ import (
 
 type AgentHandler struct {
 	service.AgentService
+	service.SettingService
 }
 
 func NewAgentHandler(group *gin.RouterGroup) {
 	handler := &AgentHandler{}
+	group.POST("/pair", handler.Pair)
+	group.POST("/enroll", handler.Enroll)
 	group.POST("/heartbeat", handler.Heartbeat)
 	group.GET("/ws", handler.WebSocket)
+}
+
+type pairAgentRequest struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
+func (h *AgentHandler) Pair(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4<<10)
+	var request pairAgentRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, Msg{Success: false, Msg: "invalid pairing request"})
+		return
+	}
+	webPath, err := h.SettingService.GetWebPath()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Msg{Success: false, Msg: "panel configuration is unavailable"})
+		return
+	}
+	enrollment, err := h.AgentService.ConsumePairingCode(request.Code)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, Msg{Success: false, Msg: err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, Msg{Success: true, Obj: map[string]interface{}{
+		"panel_url": panelURLForRequest(c, webPath),
+		"token":     enrollment.Token,
+		"version":   config.GetVersion(),
+		"node_id":   enrollment.Node.Id,
+	}})
+}
+
+func (h *AgentHandler) Enroll(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4<<10)
+	var request pairAgentRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, Msg{Success: false, Msg: "invalid enrollment request"})
+		return
+	}
+	webPath, err := h.SettingService.GetWebPath()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, Msg{Success: false, Msg: "panel configuration is unavailable"})
+		return
+	}
+	if err := h.SettingService.ValidateAgentEnrollmentKey(request.Code); err != nil {
+		c.JSON(http.StatusUnauthorized, Msg{Success: false, Msg: err.Error()})
+		return
+	}
+	enrollment, err := h.AgentService.CreateConnected(request.Name)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, Msg{Success: false, Msg: err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, Msg{Success: true, Obj: map[string]interface{}{
+		"panel_url": panelURLForRequest(c, webPath),
+		"token":     enrollment.Token,
+		"version":   config.GetVersion(),
+		"node_id":   enrollment.Node.Id,
+	}})
 }
 
 func (h *AgentHandler) Heartbeat(c *gin.Context) {

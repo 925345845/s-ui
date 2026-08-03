@@ -53,9 +53,24 @@ type updateAgentRequest struct {
 	PublicHost string `json:"public_host"`
 }
 
+type connectLocalAgentRequest struct {
+	ConnectURL string `json:"connect_url"`
+	Insecure   bool   `json:"insecure"`
+}
+
 func (a *ApiService) GetAgents(c *gin.Context) {
 	nodes, err := a.AgentService.List()
 	jsonObj(c, nodes, err)
+}
+
+func (a *ApiService) ConnectLocalAgent(c *gin.Context) {
+	var request connectLocalAgentRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	result, err := a.AgentService.ConnectLocalController(request.ConnectURL, request.Insecure)
+	jsonObj(c, result, err)
 }
 
 func (a *ApiService) GetAgent(c *gin.Context) {
@@ -398,6 +413,22 @@ func (a *ApiService) CreateAgent(c *gin.Context) {
 	jsonObj(c, a.agentEnrollmentResponse(c, enrollment), nil)
 }
 
+func (a *ApiService) CreateAgentEnrollmentLink(c *gin.Context) {
+	webPath, err := a.SettingService.GetWebPath()
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	key, err := a.SettingService.RotateAgentEnrollmentKey()
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	panelURL := panelURLForRequest(c, webPath)
+	connectURL := strings.TrimRight(panelURL, "/") + "/agent/v1/enroll#" + key
+	jsonObj(c, agentConnectionResponse(connectURL), nil)
+}
+
 func (a *ApiService) RotateAgent(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil || id == 0 {
@@ -423,19 +454,41 @@ func (a *ApiService) DeleteAgent(c *gin.Context) {
 
 func (a *ApiService) agentEnrollmentResponse(c *gin.Context, enrollment *service.AgentEnrollment) map[string]interface{} {
 	webPath, _ := a.SettingService.GetWebPath()
+	panelURL := panelURLForRequest(c, webPath)
+	pairURL := strings.TrimRight(panelURL, "/") + "/agent/v1/pair#" + enrollment.PairCode
+	command := "bash <(curl -fsSL https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install-agent.sh) --connect " +
+		shellQuote(pairURL) + " --version " + shellQuote(config.GetVersion())
+	managedCommand := "bash <(curl -fsSL https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) --managed-client -y --connect " +
+		shellQuote(pairURL) + " " + shellQuote(config.GetVersion())
+	legacyCommand := "bash <(curl -fsSL https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install-agent.sh) --panel " +
+		shellQuote(panelURL) + " --token " + shellQuote(enrollment.Token) + " --version " + shellQuote(config.GetVersion())
+	legacyManagedCommand := "bash <(curl -fsSL https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) --managed-client -y --controller " +
+		shellQuote(panelURL) + " --agent-token " + shellQuote(enrollment.Token) + " " + shellQuote(config.GetVersion())
+	return map[string]interface{}{
+		"node": enrollment.Node, "token": enrollment.Token,
+		"panel_url": panelURL, "connect_url": pairURL, "pair_url": pairURL, "pair_expires_at": enrollment.PairExpiresAt,
+		"command": command, "managed_command": managedCommand,
+		"legacy_command": legacyCommand, "legacy_managed_command": legacyManagedCommand,
+	}
+}
+
+func agentConnectionResponse(connectURL string) map[string]interface{} {
+	command := "bash <(curl -fsSL https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install-agent.sh) --connect " +
+		shellQuote(connectURL) + " --version " + shellQuote(config.GetVersion())
+	managedCommand := "bash <(curl -fsSL https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) --managed-client -y --connect " +
+		shellQuote(connectURL) + " " + shellQuote(config.GetVersion())
+	return map[string]interface{}{
+		"connect_url": connectURL,
+		"command":     command, "managed_command": managedCommand,
+	}
+}
+
+func panelURLForRequest(c *gin.Context, webPath string) string {
 	scheme := "http"
 	if requestIsHTTPS(c) {
 		scheme = "https"
 	}
-	panelURL := scheme + "://" + c.Request.Host + webPath
-	command := "bash <(curl -fsSL https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install-agent.sh) --panel " +
-		shellQuote(panelURL) + " --token " + shellQuote(enrollment.Token) + " --version " + shellQuote(config.GetVersion())
-	managedCommand := "bash <(curl -fsSL https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) --managed-client -y --controller " +
-		shellQuote(panelURL) + " --agent-token " + shellQuote(enrollment.Token) + " " + shellQuote(config.GetVersion())
-	return map[string]interface{}{
-		"node": enrollment.Node, "token": enrollment.Token,
-		"panel_url": panelURL, "command": command, "managed_command": managedCommand,
-	}
+	return scheme + "://" + c.Request.Host + webPath
 }
 
 func shellQuote(value string) string {

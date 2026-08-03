@@ -74,6 +74,7 @@ var defaultValueMap = map[string]string{
 	"qdisc":              "",
 	"config":             defaultConfig,
 	"version":            config.GetVersion(),
+	agentEnrollmentKey:   "",
 }
 
 type SettingService struct {
@@ -107,6 +108,7 @@ func (s *SettingService) GetAllSetting() (*map[string]string, error) {
 	delete(allSetting, "config")
 	delete(allSetting, "version")
 	delete(allSetting, "globalResetLast")
+	delete(allSetting, agentEnrollmentKey)
 
 	return &allSetting, nil
 }

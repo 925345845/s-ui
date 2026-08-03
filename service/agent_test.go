@@ -7,7 +7,133 @@ import (
 
 	"github.com/Hhz0823/1s-ui/agent"
 	"github.com/Hhz0823/1s-ui/database"
+	"github.com/Hhz0823/1s-ui/database/model"
 )
+
+func TestAgentPairingCodeIsSingleUseAndRotatesToken(t *testing.T) {
+	dir := t.TempDir()
+	if err := database.InitDB(filepath.Join(dir, "agent-pairing.db")); err != nil {
+		t.Fatal(err)
+	}
+	service := AgentService{
+		capacityProvider: func() (int, uint64) {
+			return MinClusterCPUCores, MinClusterMemBytes
+		},
+	}
+	enrollment, err := service.Create("pairing-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enrollment.PairCode == "" || enrollment.PairExpiresAt <= time.Now().Unix() {
+		t.Fatalf("missing pairing details: %#v", enrollment)
+	}
+	if _, err := service.AuthenticateToken(enrollment.Token); err != nil {
+		t.Fatalf("temporary token should be valid before pairing: %v", err)
+	}
+
+	paired, err := service.ConsumePairingCode(enrollment.PairCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paired.Token == "" || paired.Token == enrollment.Token || paired.Node.Id != enrollment.Node.Id {
+		t.Fatalf("pairing did not rotate credentials: %#v", paired)
+	}
+	if _, err := service.AuthenticateToken(enrollment.Token); err == nil {
+		t.Fatal("temporary token remained valid after pairing")
+	}
+	if _, err := service.AuthenticateToken(paired.Token); err != nil {
+		t.Fatalf("paired token is invalid: %v", err)
+	}
+	if _, err := service.ConsumePairingCode(enrollment.PairCode); err == nil {
+		t.Fatal("single-use pairing code was accepted twice")
+	}
+}
+
+func TestAgentPairingCodeExpires(t *testing.T) {
+	dir := t.TempDir()
+	if err := database.InitDB(filepath.Join(dir, "agent-pairing-expiry.db")); err != nil {
+		t.Fatal(err)
+	}
+	service := AgentService{
+		capacityProvider: func() (int, uint64) {
+			return MinClusterCPUCores, MinClusterMemBytes
+		},
+	}
+	enrollment, err := service.Create("expired-pairing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.GetDB().Model(&model.AgentNode{}).
+		Where("id = ?", enrollment.Node.Id).
+		Update("pair_expires_at", time.Now().Add(-time.Minute).Unix()).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ConsumePairingCode(enrollment.PairCode); err == nil {
+		t.Fatal("expired pairing code was accepted")
+	}
+}
+
+func TestAgentCreateConnectedHasNoPairingCode(t *testing.T) {
+	dir := t.TempDir()
+	if err := database.InitDB(filepath.Join(dir, "agent-connected.db")); err != nil {
+		t.Fatal(err)
+	}
+	service := AgentService{
+		capacityProvider: func() (int, uint64) {
+			return MinClusterCPUCores, MinClusterMemBytes
+		},
+	}
+	enrollment, err := service.CreateConnected("connected-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enrollment.PairCode != "" || enrollment.PairExpiresAt != 0 {
+		t.Fatalf("connected enrollment left pairing credentials: %#v", enrollment)
+	}
+	if _, err := service.AuthenticateToken(enrollment.Token); err != nil {
+		t.Fatalf("connected enrollment token is invalid: %v", err)
+	}
+}
+
+func TestAgentEnrollmentKeyRotationAndValidation(t *testing.T) {
+	dir := t.TempDir()
+	if err := database.InitDB(filepath.Join(dir, "agent-enrollment-key.db")); err != nil {
+		t.Fatal(err)
+	}
+	settings := SettingService{}
+	first, err := settings.RotateAgentEnrollmentKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.ValidateAgentEnrollmentKey(first); err != nil {
+		t.Fatalf("fresh enrollment key was rejected: %v", err)
+	}
+	if err := settings.ValidateAgentEnrollmentKey("wrong-credential-value-that-is-long-enough-0000"); err == nil {
+		t.Fatal("invalid enrollment key was accepted")
+	}
+
+	all, err := settings.GetAllSetting()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exposed := (*all)[agentEnrollmentKey]; exposed {
+		t.Fatal("enrollment key hash was exposed through settings")
+	}
+
+	second, err := settings.RotateAgentEnrollmentKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second == first {
+		t.Fatal("enrollment key rotation returned the same credential")
+	}
+	if err := settings.ValidateAgentEnrollmentKey(first); err == nil {
+		t.Fatal("rotated enrollment key remained valid")
+	}
+	if err := settings.ValidateAgentEnrollmentKey(second); err != nil {
+		t.Fatalf("rotated enrollment key was rejected: %v", err)
+	}
+}
 
 func TestAgentEnrollmentHeartbeatAndRotation(t *testing.T) {
 	dir := t.TempDir()

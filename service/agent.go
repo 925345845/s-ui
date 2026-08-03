@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -17,12 +18,15 @@ import (
 	"github.com/Hhz0823/1s-ui/database"
 	"github.com/Hhz0823/1s-ui/database/model"
 	"github.com/Hhz0823/1s-ui/util/common"
+	"gorm.io/gorm"
 )
 
 const (
 	agentOnlineWindow    = 45 * time.Second
 	agentHistoryLimit    = 120
 	agentDefaultInterval = 15
+	agentPairingTTL      = 15 * time.Minute
+	agentEnrollmentKey   = "agentEnrollmentKeyHash"
 )
 
 type AgentNodeView struct {
@@ -45,8 +49,10 @@ type AgentNodeView struct {
 }
 
 type AgentEnrollment struct {
-	Node  AgentNodeView `json:"node"`
-	Token string        `json:"token"`
+	Node          AgentNodeView `json:"node"`
+	Token         string        `json:"token"`
+	PairCode      string        `json:"pair_code"`
+	PairExpiresAt int64         `json:"pair_expires_at"`
 }
 
 type AgentMetricSample struct {
@@ -95,6 +101,16 @@ func (s *AgentService) Get(id uint) (*AgentNodeView, error) {
 }
 
 func (s *AgentService) Create(name string) (*AgentEnrollment, error) {
+	return s.create(name, true)
+}
+
+// CreateConnected creates a node whose token is returned directly to an
+// authenticated enrollment client. It does not leave an unused pairing code.
+func (s *AgentService) CreateConnected(name string) (*AgentEnrollment, error) {
+	return s.create(name, false)
+}
+
+func (s *AgentService) create(name string, includePairing bool) (*AgentEnrollment, error) {
 	name, err := normalizeAgentName(name)
 	if err != nil {
 		return nil, err
@@ -115,13 +131,25 @@ func (s *AgentService) Create(name string) (*AgentEnrollment, error) {
 	if err != nil {
 		return nil, err
 	}
-	node := model.AgentNode{Name: name, TokenHash: hash, CreatedAt: time.Now().Unix(), Report: json.RawMessage(`{}`)}
+	var pairCode, pairHash string
+	var pairExpiresAt int64
+	if includePairing {
+		pairCode, pairHash, err = newAgentToken()
+		if err != nil {
+			return nil, err
+		}
+		pairExpiresAt = time.Now().Add(agentPairingTTL).Unix()
+	}
+	node := model.AgentNode{
+		Name: name, TokenHash: hash, PairCodeHash: pairHash, PairExpiresAt: pairExpiresAt,
+		CreatedAt: time.Now().Unix(), Report: json.RawMessage(`{}`),
+	}
 	if err := database.GetDB().Create(&node).Error; err != nil {
 		return nil, err
 	}
 	invalidateHostRequirementsCache()
 	view := agentNodeView(node, time.Now(), false)
-	return &AgentEnrollment{Node: view, Token: token}, nil
+	return &AgentEnrollment{Node: view, Token: token, PairCode: pairCode, PairExpiresAt: pairExpiresAt}, nil
 }
 
 func (s *AgentService) Rotate(id uint) (*AgentEnrollment, error) {
@@ -133,10 +161,66 @@ func (s *AgentService) Rotate(id uint) (*AgentEnrollment, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := database.GetDB().Model(&node).Updates(map[string]interface{}{"token_hash": hash, "last_seen": 0}).Error; err != nil {
+	pairCode, pairHash, err := newAgentToken()
+	if err != nil {
+		return nil, err
+	}
+	pairExpiresAt := time.Now().Add(agentPairingTTL).Unix()
+	if err := database.GetDB().Model(&node).Updates(map[string]interface{}{
+		"token_hash": hash, "pair_code_hash": pairHash, "pair_expires_at": pairExpiresAt, "last_seen": 0,
+	}).Error; err != nil {
 		return nil, err
 	}
 	node.TokenHash = hash
+	node.PairCodeHash = pairHash
+	node.PairExpiresAt = pairExpiresAt
+	node.LastSeen = 0
+	view := agentNodeView(node, time.Now(), false)
+	return &AgentEnrollment{Node: view, Token: token, PairCode: pairCode, PairExpiresAt: pairExpiresAt}, nil
+}
+
+// ConsumePairingCode exchanges a short-lived, single-use code for a fresh
+// Agent token. Rotating during the exchange invalidates the temporary token
+// shown by older controller UIs.
+func (s *AgentService) ConsumePairingCode(code string) (*AgentEnrollment, error) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return nil, common.NewError("missing agent pairing code")
+	}
+	if len(code) < 32 || len(code) > 128 {
+		return nil, common.NewError("invalid or expired agent pairing code")
+	}
+
+	token, tokenHash, err := newAgentToken()
+	if err != nil {
+		return nil, err
+	}
+	pairHash := hashAgentToken(code)
+	now := time.Now().Unix()
+	var node model.AgentNode
+	err = database.GetDB().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("pair_code_hash = ? AND pair_expires_at >= ?", pairHash, now).First(&node).Error; err != nil {
+			return common.NewError("invalid or expired agent pairing code")
+		}
+		result := tx.Model(&model.AgentNode{}).
+			Where("id = ? AND pair_code_hash = ? AND pair_expires_at >= ?", node.Id, pairHash, now).
+			Updates(map[string]interface{}{
+				"token_hash": tokenHash, "pair_code_hash": "", "pair_expires_at": 0, "last_seen": 0,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return common.NewError("invalid or expired agent pairing code")
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	node.TokenHash = tokenHash
+	node.PairCodeHash = ""
+	node.PairExpiresAt = 0
 	node.LastSeen = 0
 	view := agentNodeView(node, time.Now(), false)
 	return &AgentEnrollment{Node: view, Token: token}, nil
@@ -366,4 +450,31 @@ func newAgentToken() (string, string, error) {
 func hashAgentToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
+}
+
+func (s *SettingService) RotateAgentEnrollmentKey() (string, error) {
+	token, hash, err := newAgentToken()
+	if err != nil {
+		return "", err
+	}
+	if err := s.setString(agentEnrollmentKey, hash); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func (s *SettingService) ValidateAgentEnrollmentKey(token string) error {
+	token = strings.TrimSpace(token)
+	if !validAgentCredential(token) {
+		return common.NewError("invalid controller enrollment key")
+	}
+	expected, err := s.getString(agentEnrollmentKey)
+	if err != nil || len(expected) != sha256.Size*2 {
+		return common.NewError("invalid controller enrollment key")
+	}
+	actual := hashAgentToken(token)
+	if subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) != 1 {
+		return common.NewError("invalid controller enrollment key")
+	}
+	return nil
 }

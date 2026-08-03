@@ -46,6 +46,8 @@ func (a *APIHandler) initRouter(g *gin.RouterGroup) {
 	g.GET("/agents/:id/relay/:relayId/bitbrowser.xlsx", a.ApiService.ExportAgentRelayBitBrowser)
 	g.GET("/agents/:id/terminal", a.ApiService.AgentTerminal)
 	g.POST("/agents", a.ApiService.CreateAgent)
+	g.POST("/agents/enrollment-link", a.ApiService.CreateAgentEnrollmentLink)
+	g.POST("/agents/connect-local", a.ApiService.ConnectLocalAgent)
 	g.POST("/agents/:id/command", a.ApiService.ControlAgent)
 	g.POST("/agents/:id/rotate", a.ApiService.RotateAgent)
 	g.POST("/agents/:id/delete", a.ApiService.DeleteAgent)

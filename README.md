@@ -62,13 +62,19 @@ bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh)
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.8 -y --full --domain panel.example.com --email admin@example.com
 ```
 
-受管客户端请先在中心面板的 **服务器监控 → 添加服务器 Agent** 创建节点，再执行页面生成的命令。手动格式如下：
+受管客户端请在主面板打开 **服务器监控 → 添加子服务器 → 生成主服务器连接 API**。子服务器只需输入这一项，系统会按主机名自动登记并绑定：
+
+- 子服务器已经安装 1S-UI：打开 **服务器监控 → 连接主服务器**，粘贴完整连接 API 即可。
+- 全新服务器：执行同一弹窗生成的“受管客户端安装命令”，安装完成后自动绑定。
+- 一个连接 API 可连续接入多台子服务器；重新生成后旧 API 立即失效。
+- 只接入一台服务器时，也可在同一弹窗创建 15 分钟有效、仅使用一次的地址。
+
+手动格式如下：
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/Hhz0823/1s-ui/main/install.sh) v1.5.8 -y \
   --managed-client \
-  --controller https://panel.example.com/app/ \
-  --agent-token TOKEN
+  --connect 'https://panel.example.com/app/agent/v1/enroll#CONTROLLER_KEY'
 ```
 
 ### 安装后的访问地址
@@ -155,12 +161,15 @@ flowchart LR
 
 Agent 主动出站连接中心面板，远端无需开放 Agent 控制端口：
 
+- 主面板可生成一个可复用连接 API，子服务器只需粘贴这一项；主机名、节点登记和独立 Agent Token 均自动完成。
+- 连接密钥放在 URL `#` 片段中，不进入 HTTP 访问日志；重新生成连接 API 会立即撤销旧密钥。
+- 单台服务器仍可选择 15 分钟、一次性的配对地址。
 - WebSocket 长连接负责实时指标、命令、交互终端和控制面 RTT。
 - WS 暂时断开时回退到 HTTP `/agent/v1/heartbeat`，之后自动重连。
 - CPU 使用整个心跳周期的累计时间差计算，避免空闲 VPS 被 200ms 瞬时采样长期显示为 0。
 - 一个 Agent 代表一台服务器，一台受管服务器可以包含多条入站。
 - 远程入站变更由客户端本地面板校验并应用，不直接修改远端 SQLite。
-- Token 仅在创建或轮换时显示一次，保存在权限 `0600` 的 `/etc/default/1s-ui-agent`。
+- 绑定成功后主面板为每台子服务器签发独立 Agent Token；Token 仅保存在子服务器权限 `0600` 的 `/etc/default/1s-ui-agent`。
 - 远程 Shell 和 PTY 权限等同 Agent 的系统用户，通常是 root，请严格保护面板账号。
 
 ### 一键中转
@@ -200,6 +209,7 @@ IPv6 池模式只会向选定网卡添加地址，不修改系统默认路由。
 - sing-box plus Xray protocols including XHTTP, RAW, gRPC, WebSocket, Hysteria2, Dokodemo-door, and WireGuard.
 - IPv6 egress pools and upstream SOCKS5 relays with BitBrowser Excel/plain-text export.
 - Outbound Agent connections over WebSocket/HTTP; no inbound Agent control port is required.
+- A reusable controller connection API lets each child panel bind by pasting one value; optional 15-minute single-use links remain available.
 - Live CPU, memory, disk, process, network, RTT/P95/loss metrics, history charts, remote commands, and PTY terminal.
 - Managed-server inbound CRUD, remote quick-add, and remote relay creation through a root-only Unix socket.
 - Default solid UI, responsive desktop/mobile layouts, optional backgrounds and glass/clear styles.
@@ -361,7 +371,7 @@ windows/      Windows 脚本（暂停维护）
 1. 首次登录后立即修改默认管理员密码。
 2. 公网控制面使用 HTTPS，并限制面板访问来源。
 3. 妥善保护数据库、证书、私钥、管理员 Token 和 Agent Token。
-4. Agent Token 仅创建或轮换时显示一次，不要提交到仓库或公开日志。
+4. 主服务器连接 API、一次性地址和 Agent Token 都属于敏感凭据；不要截图公开，连接 API 泄露后应立即重新生成。
 5. 远程 Shell / PTY 权限等同 Agent 系统用户，通常是 root。
 6. 定期备份 `/usr/local/s-ui/db`，升级前保留可回滚副本。
 7. 不要为 IPv6 中转修改系统默认路由；使用面板内置的源地址绑定和验证流程。

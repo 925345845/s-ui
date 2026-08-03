@@ -35,6 +35,7 @@ START_SERVICE=1
 REQUESTED_VERSION=""
 CONTROLLER_URL=""
 AGENT_TOKEN=""
+CONNECT_URL=""
 AGENT_INSECURE=0
 PORT80_FREE=1
 PORT443_FREE=1
@@ -80,6 +81,7 @@ usage() {
   --email EMAIL         ACME 邮箱（Caddy 可选）
   --controller URL      受管客户端连接的中心面板 URL（包含面板路径）
   --agent-token TOKEN   中心面板生成的 Agent 注册密钥
+  --connect URL         主面板生成的连接 API 或一次性连接地址（推荐）
   --agent-insecure      Agent 连接中心时跳过 TLS 证书校验
   --start-core          安装后自动启动代理内核
   --skip-core           仅面板 Web，不自动启内核（更安全）
@@ -101,6 +103,7 @@ usage() {
   bash install.sh -y --full --domain panel.example.com --email a@b.com
 
   # 受管客户端（完整 Web 面板，可从中心管理入站）
+  bash install.sh -y --managed-client --connect 'https://panel.example.com/app/agent/v1/enroll#KEY'
   bash install.sh -y --managed-client --controller https://panel.example.com/app/ --agent-token TOKEN
 
   # 交互选择模式
@@ -158,6 +161,10 @@ parse_args() {
             ;;
         --agent-token)
             AGENT_TOKEN="${2:-}"
+            shift 2
+            ;;
+        --connect)
+            CONNECT_URL="${2:-}"
             shift 2
             ;;
         --agent-insecure)
@@ -424,19 +431,27 @@ apply_kind_defaults() {
         fi
         xray_reason="受管客户端默认 sing-box（可用 --with-xray）"
         proxy_reason="受管客户端默认不安装反代（可按需启用）"
-        if [[ -z "$CONTROLLER_URL" && "$AUTO_YES" -ne 1 ]]; then
-            read -r -p "中心面板 URL（例如 https://panel.example.com/app/）: " CONTROLLER_URL
+        if [[ -z "$CONNECT_URL" && -z "$CONTROLLER_URL" && "$AUTO_YES" -ne 1 ]]; then
+            read -r -p "粘贴主服务器连接 API 或一次性地址（推荐，直接回车可用旧方式）: " CONNECT_URL
         fi
-        if [[ -z "$AGENT_TOKEN" && "$AUTO_YES" -ne 1 ]]; then
-            read -r -s -p "Agent 注册密钥: " AGENT_TOKEN
-            echo
-        fi
-        if [[ ! "$CONTROLLER_URL" =~ ^https?://[^[:space:]\'\"\\]+$ ]]; then
-            echo -e "${red}受管客户端需要有效的 --controller URL。${plain}"
-            return 1
-        fi
-        if [[ ! "$AGENT_TOKEN" =~ ^[A-Za-z0-9_-]{32,128}$ ]]; then
-            echo -e "${red}受管客户端需要有效的 --agent-token。${plain}"
+        if [[ -z "$CONNECT_URL" ]]; then
+            if [[ -z "$CONTROLLER_URL" && "$AUTO_YES" -ne 1 ]]; then
+                read -r -p "中心面板 URL（例如 https://panel.example.com/app/）: " CONTROLLER_URL
+            fi
+            if [[ -z "$AGENT_TOKEN" && "$AUTO_YES" -ne 1 ]]; then
+                read -r -s -p "Agent 注册密钥: " AGENT_TOKEN
+                echo
+            fi
+            if [[ ! "$CONTROLLER_URL" =~ ^https?://[^[:space:]\'\"\\]+$ ]]; then
+                echo -e "${red}受管客户端需要 --connect，或有效的 --controller URL。${plain}"
+                return 1
+            fi
+            if [[ ! "$AGENT_TOKEN" =~ ^[A-Za-z0-9_-]{32,128}$ ]]; then
+                echo -e "${red}受管客户端需要 --connect，或有效的 --agent-token。${plain}"
+                return 1
+            fi
+        elif [[ "$CONNECT_URL" != http://* && "$CONNECT_URL" != https://* ]] || [[ "$CONNECT_URL" != *"#"* ]]; then
+            echo -e "${red}主服务器连接 API 或一次性地址格式无效。${plain}"
             return 1
         fi
     else
@@ -1045,8 +1060,35 @@ prepare_services() {
     systemctl daemon-reload
 }
 
+resolve_managed_connection() {
+    [[ -n "$CONNECT_URL" ]] || return 0
+    local endpoint code response node_name
+    endpoint="${CONNECT_URL%%#*}"
+    code="${CONNECT_URL#*#}"
+    if [[ ! "$endpoint" =~ ^https?://[^[:space:]\'\"\\]+/agent/v1/(pair|enroll)$ ]] || [[ ! "$code" =~ ^[A-Za-z0-9_-]{32,128}$ ]]; then
+        echo -e "${red}主服务器连接 API 或一次性地址格式无效。${plain}"
+        return 1
+    fi
+    node_name=$(hostname 2>/dev/null | tr -d '\r\n' | sed 's/["\\]//g' | cut -c1-80)
+    [[ -n "$node_name" ]] || node_name="managed-server"
+    local curl_args=(--fail --silent --show-error --max-time 20)
+    [[ "$AGENT_INSECURE" -eq 1 ]] && curl_args+=(--insecure)
+    echo -e "${yellow}正在连接主服务器...${plain}"
+    response=$(curl "${curl_args[@]}" -H 'Content-Type: application/json' --data "{\"code\":\"${code}\",\"name\":\"${node_name}\"}" "$endpoint") || {
+        echo -e "${red}主服务器拒绝连接 API；请检查地址、密钥或重新生成。${plain}"
+        return 1
+    }
+    CONTROLLER_URL=$(printf '%s' "$response" | sed -nE 's/.*"panel_url"[[:space:]]*:[[:space:]]*"([^\"]+)".*/\1/p' | head -n1)
+    AGENT_TOKEN=$(printf '%s' "$response" | sed -nE 's/.*"token"[[:space:]]*:[[:space:]]*"([^\"]+)".*/\1/p' | head -n1)
+    if [[ ! "$CONTROLLER_URL" =~ ^https?://[^[:space:]\'\"\\]+$ ]] || [[ ! "$AGENT_TOKEN" =~ ^[A-Za-z0-9_-]{32,128}$ ]]; then
+        echo -e "${red}主面板返回的连接信息无效。${plain}"
+        return 1
+    fi
+}
+
 configure_managed_agent() {
     [[ "$INSTALL_AGENT" -eq 1 ]] || return 0
+    resolve_managed_connection || return 1
     [[ -n "$CONTROLLER_URL" && -n "$AGENT_TOKEN" ]] || return 0
     if [[ ! -x /usr/local/s-ui/sui-agent || ! -f /etc/systemd/system/s-ui-agent.service ]]; then
         echo -e "${red}受管客户端缺少 Agent 二进制或 systemd 服务。${plain}"

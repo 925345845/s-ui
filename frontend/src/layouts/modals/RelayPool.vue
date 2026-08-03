@@ -216,6 +216,7 @@ import { push } from 'notivue'
 import HttpUtils from '@/plugins/httputil'
 import Data from '@/store/modules/data'
 import { i18n } from '@/locales'
+import { copyText } from '@/utils/clipboard'
 
 interface IPv6Item { interface: string; address: string; prefix: number }
 interface RelayItem { listen_port: number; username: string; password: string; ipv6?: string; protocol?: string; export?: string }
@@ -434,7 +435,7 @@ const downloadBitBrowser = async (pool: RelayPool) => {
 
 const copy = async (value: string) => {
   try {
-    await navigator.clipboard.writeText(value)
+    await copyText(value)
     push.success({ message: i18n.global.t('relay.copied') })
   } catch {
     push.error({ message: i18n.global.t('relay.copyFailed') })
