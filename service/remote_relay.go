@@ -90,7 +90,7 @@ func (s *LocalControlService) ExportRemoteRelay(request RemoteRelayExportRequest
 	if request.ID == 0 {
 		return nil, common.NewError("invalid relay pool id")
 	}
-	data, err := s.ConfigService.GetRelayBitBrowserExport(request.ID)
+	data, err := s.ConfigService.GetRelayBitBrowserExport(request.ID, "")
 	if err != nil {
 		return nil, err
 	}

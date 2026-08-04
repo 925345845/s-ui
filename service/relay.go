@@ -310,15 +310,22 @@ func (s *ConfigService) populateRelayRefreshTokens(pools []model.RelayPool) erro
 	return nil
 }
 
-func (s *ConfigService) GetRelayBitBrowserExport(id uint) ([]byte, error) {
+func (s *ConfigService) GetRelayBitBrowserExport(id uint, refreshBaseURL string) ([]byte, error) {
 	var pool model.RelayPool
 	if err := database.GetDB().First(&pool, id).Error; err != nil {
 		return nil, err
 	}
-	return buildRelayBitBrowserWorkbook(pool)
+	pools := []model.RelayPool{pool}
+	if err := s.ensureRelayRefreshLinks(pools); err != nil {
+		return nil, err
+	}
+	if err := s.populateRelayRefreshTokens(pools); err != nil {
+		return nil, err
+	}
+	return buildRelayBitBrowserWorkbook(pools[0], refreshBaseURL)
 }
 
-func buildRelayBitBrowserWorkbook(pool model.RelayPool) ([]byte, error) {
+func buildRelayBitBrowserWorkbook(pool model.RelayPool, refreshBaseURL string) ([]byte, error) {
 	var items []model.RelayItem
 	if err := json.Unmarshal(pool.Items, &items); err != nil {
 		return nil, common.NewError("invalid relay pool items: ", err.Error())
@@ -344,7 +351,7 @@ func buildRelayBitBrowserWorkbook(pool model.RelayPool) ([]byte, error) {
 		"必填；用于区分浏览器窗口", "网站登录用户名（可选）", "网站登录密码（可选）",
 		"支持 JSON/Netscape/Name=Value 格式（可选）", "填写 socks5",
 		"代理主机:代理端口:代理用户名:代理密码；IPv6 在最前增加 ipv6:",
-		"动态代理可选", "动态代理可选", "动态代理可选", "可选", "可选", "例如 1920*1030（可选）",
+		"动态代理可选", "动态代理可选", "动态代理可选", "有 IPv6 轮转功能时显示该窗口独立轮转链接", "可选", "例如 1920*1030（可选）",
 	}
 	for column := 1; column <= len(headers); column++ {
 		cell, _ := excelize.CoordinatesToCellName(column, 1)
@@ -365,10 +372,21 @@ func buildRelayBitBrowserWorkbook(pool model.RelayPool) ([]byte, error) {
 		}
 		row := itemIndex + 4
 		windowName := fmt.Sprintf("%s-%03d", poolName, itemIndex+1)
-		values := []string{windowName, "", "", "", "socks5", proxyInfo, "", "", "", "1S-UI " + poolName, "", ""}
+		refreshURL := relayItemRefreshURL(refreshBaseURL, item.RefreshToken)
+		note := "1S-UI " + poolName
+		if refreshURL != "" {
+			note = refreshURL
+		}
+		values := []string{windowName, "", "", "", "socks5", proxyInfo, "", "", "", note, "", ""}
 		for column, value := range values {
 			cell, _ := excelize.CoordinatesToCellName(column+1, row)
 			file.SetCellStr(sheet, cell, value)
+		}
+		if refreshURL != "" {
+			cell, _ := excelize.CoordinatesToCellName(10, row)
+			if err := file.SetCellHyperLink(sheet, cell, refreshURL, "External"); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -402,7 +420,8 @@ func buildRelayBitBrowserWorkbook(pool model.RelayPool) ([]byte, error) {
 	file.SetColWidth(sheet, "B", "D", 18)
 	file.SetColWidth(sheet, "E", "E", 14)
 	file.SetColWidth(sheet, "F", "F", 54)
-	file.SetColWidth(sheet, "G", "J", 22)
+	file.SetColWidth(sheet, "G", "I", 22)
+	file.SetColWidth(sheet, "J", "J", 54)
 	file.SetColWidth(sheet, "K", "L", 22)
 	if err := file.SetPanes(sheet, &excelize.Panes{Freeze: true, YSplit: 3, TopLeftCell: "A4", ActivePane: "bottomLeft"}); err != nil {
 		return nil, err
@@ -413,6 +432,15 @@ func buildRelayBitBrowserWorkbook(pool model.RelayPool) ([]byte, error) {
 		return nil, err
 	}
 	return buffer.Bytes(), nil
+}
+
+func relayItemRefreshURL(baseURL, token string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	token = strings.TrimSpace(token)
+	if baseURL == "" || token == "" {
+		return ""
+	}
+	return baseURL + "/refresh/" + token
 }
 
 func relayBitBrowserProxyInfo(pool model.RelayPool, item model.RelayItem) (string, error) {

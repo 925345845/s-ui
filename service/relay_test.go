@@ -195,11 +195,11 @@ func TestBuildRelayBitBrowserWorkbook(t *testing.T) {
 		Protocol:   "socks",
 		ListenHost: "88.214.24.57",
 		Items: mustJSON([]model.RelayItem{
-			{ListenPort: 30005, Username: "user-1", Password: "pass-1", IPv6: "2001:db8::10"},
-			{ListenPort: 30006, Username: "user-2", Password: "pass-2", IPv6: "2001:db8::11"},
+			{ListenPort: 30005, Username: "user-1", Password: "pass-1", IPv6: "2001:db8::10", RefreshToken: "refresh-one"},
+			{ListenPort: 30006, Username: "user-2", Password: "pass-2", IPv6: "2001:db8::11", RefreshToken: "refresh-two"},
 		}),
 	}
-	data, err := buildRelayBitBrowserWorkbook(pool)
+	data, err := buildRelayBitBrowserWorkbook(pool, "https://panel.example/admin/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,6 +217,8 @@ func TestBuildRelayBitBrowserWorkbook(t *testing.T) {
 		"E4": "socks5",
 		"F4": "88.214.24.57:30005:user-1:pass-1",
 		"F5": "88.214.24.57:30006:user-2:pass-2",
+		"J4": "https://panel.example/admin/refresh/refresh-one",
+		"J5": "https://panel.example/admin/refresh/refresh-two",
 	}
 	for cell, want := range checks {
 		got, err := workbook.GetCellValue(sheet, cell)
@@ -971,10 +973,13 @@ func TestRelayRefreshLinksAreStableAndPerItem(t *testing.T) {
 	}
 	defer sqlDB.Close()
 	items := []model.RelayItem{
-		{InboundTag: "relay-in-1", IPv6: "2001:db8::10"},
-		{InboundTag: "relay-in-2", IPv6: "2001:db8::20"},
+		{InboundTag: "relay-in-1", ListenPort: 30001, Username: "user-1", Password: "pass-1", IPv6: "2001:db8::10"},
+		{InboundTag: "relay-in-2", ListenPort: 30002, Username: "user-2", Password: "pass-2", IPv6: "2001:db8::20"},
 	}
-	pool := model.RelayPool{Name: "refresh", Mode: relayModeDualStack, Items: mustJSON(items), CreatedAt: time.Now().Unix()}
+	pool := model.RelayPool{
+		Name: "refresh", Mode: relayModeDualStack, Protocol: "socks", ListenHost: "198.51.100.10",
+		Items: mustJSON(items), CreatedAt: time.Now().Unix(),
+	}
 	if err := db.Create(&pool).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -1003,6 +1008,26 @@ func TestRelayRefreshLinksAreStableAndPerItem(t *testing.T) {
 	}
 	if len(links) != 2 || links[0].Token != firstTokens[0] || links[1].Token != firstTokens[1] {
 		t.Fatalf("refresh links changed after repair: %#v", links)
+	}
+	export, err := service.GetRelayBitBrowserExport(pool.Id, "https://panel.example/admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workbook, err := excelize.OpenReader(bytes.NewReader(export))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workbook.Close()
+	for index, token := range firstTokens {
+		cell := fmt.Sprintf("J%d", index+4)
+		got, err := workbook.GetCellValue("批量导入窗口", cell)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "https://panel.example/admin/refresh/" + token
+		if got != want {
+			t.Fatalf("%s = %q, want %q", cell, got, want)
+		}
 	}
 }
 

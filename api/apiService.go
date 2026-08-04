@@ -976,7 +976,12 @@ func (a *ApiService) ExportRelayBitBrowser(c *gin.Context) {
 		c.String(http.StatusBadRequest, "invalid relay pool id")
 		return
 	}
-	data, err := a.ConfigService.GetRelayBitBrowserExport(uint(id))
+	webPath, err := a.SettingService.GetWebPath()
+	if err != nil {
+		c.String(http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	data, err := a.ConfigService.GetRelayBitBrowserExport(uint(id), relayRefreshBaseURL(c, webPath))
 	if err != nil {
 		c.String(http.StatusBadRequest, "%s", err.Error())
 		return

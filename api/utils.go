@@ -39,6 +39,22 @@ func getHostname(c *gin.Context) string {
 	return host
 }
 
+func relayRefreshBaseURL(c *gin.Context, webPath string) string {
+	scheme := "http"
+	if requestIsHTTPS(c) {
+		scheme = "https"
+	}
+	host := strings.TrimSpace(strings.Split(c.GetHeader("X-Forwarded-Host"), ",")[0])
+	if host == "" {
+		host = strings.TrimSpace(c.Request.Host)
+	}
+	webPath = "/" + strings.Trim(strings.TrimSpace(webPath), "/")
+	if webPath == "/" {
+		webPath = ""
+	}
+	return scheme + "://" + host + webPath
+}
+
 func jsonMsg(c *gin.Context, msg string, err error) {
 	jsonMsgObj(c, msg, nil, err)
 }

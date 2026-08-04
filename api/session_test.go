@@ -38,3 +38,17 @@ func TestRequestIsHTTPS(t *testing.T) {
 		})
 	}
 }
+
+func TestRelayRefreshBaseURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	req := httptest.NewRequest("GET", "http://127.0.0.1/api/relay/1/bitbrowser.xlsx", nil)
+	req.Host = "127.0.0.1:2095"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "panel.example.com")
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = req
+
+	if got, want := relayRefreshBaseURL(ctx, "/admin/"), "https://panel.example.com/admin"; got != want {
+		t.Fatalf("relayRefreshBaseURL() = %q, want %q", got, want)
+	}
+}
