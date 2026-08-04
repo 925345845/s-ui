@@ -925,7 +925,7 @@ func TestPrepareRelayRotatedItemsPreservesMappings(t *testing.T) {
 	}
 }
 
-func TestRelayRotationSettingsAreOptIn(t *testing.T) {
+func TestRelayRotationIsManualOnly(t *testing.T) {
 	dbDir := t.TempDir()
 	t.Setenv("SUI_DB_FOLDER", dbDir)
 	if err := database.InitDB(filepath.Join(dbDir, "relay-rotation.db")); err != nil {
@@ -946,12 +946,8 @@ func TestRelayRotationSettingsAreOptIn(t *testing.T) {
 	if pool.RotationEnabled || pool.NextRotateAt != 0 {
 		t.Fatalf("new pool rotated by default: %#v", pool)
 	}
-	updated, err := (&ConfigService{}).SetRelayRotation(pool.Id, RelayRotationRequest{Enabled: true, IntervalMinutes: 30}, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !updated.RotationEnabled || updated.RotationIntervalMinutes != 30 || updated.NextRotateAt <= time.Now().Unix() {
-		t.Fatalf("rotation settings were not enabled: %#v", updated)
+	if _, err := (&ConfigService{}).SetRelayRotation(pool.Id, RelayRotationRequest{Enabled: true, IntervalMinutes: 30}, "test"); err == nil {
+		t.Fatal("expected scheduled rotation to be rejected")
 	}
 	disabled, err := (&ConfigService{}).SetRelayRotation(pool.Id, RelayRotationRequest{Enabled: false, IntervalMinutes: 30}, "test")
 	if err != nil {
@@ -959,6 +955,54 @@ func TestRelayRotationSettingsAreOptIn(t *testing.T) {
 	}
 	if disabled.RotationEnabled || disabled.NextRotateAt != 0 {
 		t.Fatalf("rotation settings were not disabled: %#v", disabled)
+	}
+}
+
+func TestRelayRefreshLinksAreStableAndPerItem(t *testing.T) {
+	dbDir := t.TempDir()
+	t.Setenv("SUI_DB_FOLDER", dbDir)
+	if err := database.InitDB(filepath.Join(dbDir, "relay-refresh-links.db")); err != nil {
+		t.Fatal(err)
+	}
+	db := database.GetDB()
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+	items := []model.RelayItem{
+		{InboundTag: "relay-in-1", IPv6: "2001:db8::10"},
+		{InboundTag: "relay-in-2", IPv6: "2001:db8::20"},
+	}
+	pool := model.RelayPool{Name: "refresh", Mode: relayModeDualStack, Items: mustJSON(items), CreatedAt: time.Now().Unix()}
+	if err := db.Create(&pool).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := &ConfigService{}
+	pools := []model.RelayPool{pool}
+	if err := service.ensureRelayRefreshLinks(pools); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.populateRelayRefreshTokens(pools); err != nil {
+		t.Fatal(err)
+	}
+	var hydrated []model.RelayItem
+	if err := json.Unmarshal(pools[0].Items, &hydrated); err != nil {
+		t.Fatal(err)
+	}
+	if hydrated[0].RefreshToken == "" || hydrated[1].RefreshToken == "" || hydrated[0].RefreshToken == hydrated[1].RefreshToken {
+		t.Fatalf("refresh tokens are not unique per item: %#v", hydrated)
+	}
+	firstTokens := []string{hydrated[0].RefreshToken, hydrated[1].RefreshToken}
+	if err := service.ensureRelayRefreshLinks(pools); err != nil {
+		t.Fatal(err)
+	}
+	var links []model.RelayRefreshLink
+	if err := db.Where("pool_id = ?", pool.Id).Order("inbound_tag").Find(&links).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 2 || links[0].Token != firstTokens[0] || links[1].Token != firstTokens[1] {
+		t.Fatalf("refresh links changed after repair: %#v", links)
 	}
 }
 

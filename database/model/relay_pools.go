@@ -45,8 +45,20 @@ type RelayItem struct {
 	Interface        string `json:"interface,omitempty"`
 	Prefix           int    `json:"prefix,omitempty"`
 	AddedByUs        bool   `json:"added_by_us,omitempty"`
+	RefreshToken     string `json:"refresh_token,omitempty"`
 	UpstreamServer   string `json:"upstream_server,omitempty"`
 	UpstreamPort     int    `json:"upstream_port,omitempty"`
 	UpstreamUsername string `json:"upstream_username,omitempty"`
 	UpstreamPassword string `json:"upstream_password,omitempty"`
+}
+
+// RelayRefreshLink maps one stable, bearer-style refresh URL to one relay
+// item. The token remains stable while the IPv6 address rotates.
+type RelayRefreshLink struct {
+	Id            uint   `json:"id" gorm:"primaryKey;autoIncrement"`
+	PoolID        uint   `json:"pool_id" gorm:"uniqueIndex:idx_relay_refresh_pool_item"`
+	InboundTag    string `json:"inbound_tag" gorm:"uniqueIndex:idx_relay_refresh_pool_item"`
+	Token         string `json:"token" gorm:"uniqueIndex;size:64"`
+	CreatedAt     int64  `json:"created_at"`
+	LastRotatedAt int64  `json:"last_rotated_at,omitempty"`
 }

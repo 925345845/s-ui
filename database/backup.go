@@ -59,6 +59,7 @@ func GetDb(exclude string) ([]byte, error) {
 		&model.Client{},
 		&model.Changes{},
 		&model.RelayPool{},
+		&model.RelayRefreshLink{},
 	)
 	if err != nil {
 		return nil, err
@@ -76,6 +77,7 @@ func GetDb(exclude string) ([]byte, error) {
 	var stats []model.Stats
 	var changes []model.Changes
 	var relayPools []model.RelayPool
+	var relayRefreshLinks []model.RelayRefreshLink
 
 	// Perform scans and handle errors
 	if err := db.Model(&model.Setting{}).Scan(&settings).Error; err != nil {
@@ -145,6 +147,13 @@ func GetDb(exclude string) ([]byte, error) {
 		return nil, err
 	} else if len(relayPools) > 0 {
 		if err := backupDb.Save(relayPools).Error; err != nil {
+			return nil, err
+		}
+	}
+	if err := db.Model(&model.RelayRefreshLink{}).Scan(&relayRefreshLinks).Error; err != nil {
+		return nil, err
+	} else if len(relayRefreshLinks) > 0 {
+		if err := backupDb.Save(relayRefreshLinks).Error; err != nil {
 			return nil, err
 		}
 	}

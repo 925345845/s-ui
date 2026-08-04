@@ -147,6 +147,8 @@ type RelayRotationResult struct {
 	PoolID        uint     `json:"pool_id"`
 	Rotated       int      `json:"rotated"`
 	IPv6          []string `json:"ipv6"`
+	ItemIndex     int      `json:"item_index,omitempty"`
+	RefreshToken  string   `json:"refresh_token,omitempty"`
 	LastRotatedAt int64    `json:"last_rotated_at"`
 	NextRotateAt  int64    `json:"next_rotate_at,omitempty"`
 }
@@ -175,6 +177,12 @@ func (s *ConfigService) GetRelayData() (*RelayData, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := s.ensureRelayRefreshLinks(pools); err != nil {
+		return nil, err
+	}
+	if err := s.populateRelayRefreshTokens(pools); err != nil {
+		return nil, err
+	}
 	managed := make(map[string]bool)
 	for _, pool := range pools {
 		var items []model.RelayItem
@@ -195,6 +203,111 @@ func (s *ConfigService) GetRelayData() (*RelayData, error) {
 		Pools: pools, IPv6: ipv6, IPv6Total: total, IPv6Truncated: total > len(ipv6), RotationSupported: true,
 		Capabilities: getRelayCapabilities(),
 	}, nil
+}
+
+func (s *ConfigService) ensureRelayRefreshLinks(pools []model.RelayPool) error {
+	db := database.GetDB()
+	return db.Transaction(func(tx *gorm.DB) error {
+		poolIDs := make([]uint, 0, len(pools))
+		for _, pool := range pools {
+			poolIDs = append(poolIDs, pool.Id)
+		}
+		var links []model.RelayRefreshLink
+		if len(poolIDs) > 0 {
+			if err := tx.Where("pool_id IN ?", poolIDs).Find(&links).Error; err != nil {
+				return err
+			}
+		}
+		existing := make(map[string]bool, len(links))
+		for _, link := range links {
+			existing[fmt.Sprintf("%d:%s", link.PoolID, link.InboundTag)] = true
+		}
+		for _, pool := range pools {
+			if !relayModeUsesIPv6(pool.Mode) {
+				continue
+			}
+			var items []model.RelayItem
+			if err := json.Unmarshal(pool.Items, &items); err != nil {
+				return fmt.Errorf("relay pool %q: invalid items: %w", pool.Name, err)
+			}
+			for _, item := range items {
+				if item.IPv6 == "" || item.InboundTag == "" {
+					continue
+				}
+				key := fmt.Sprintf("%d:%s", pool.Id, item.InboundTag)
+				if existing[key] {
+					continue
+				}
+				link := model.RelayRefreshLink{
+					PoolID: pool.Id, InboundTag: item.InboundTag, Token: common.Random(48), CreatedAt: time.Now().Unix(),
+				}
+				if err := tx.Create(&link).Error; err != nil {
+					return err
+				}
+				existing[key] = true
+			}
+		}
+		return nil
+	})
+}
+
+func ensureRelayRefreshLinksTx(tx *gorm.DB, poolID uint, items []model.RelayItem) error {
+	for _, item := range items {
+		if item.IPv6 == "" || item.InboundTag == "" {
+			continue
+		}
+		var link model.RelayRefreshLink
+		err := tx.Where("pool_id = ? AND inbound_tag = ?", poolID, item.InboundTag).First(&link).Error
+		if err == nil {
+			continue
+		}
+		if !database.IsNotFound(err) {
+			return err
+		}
+		link = model.RelayRefreshLink{
+			PoolID: poolID, InboundTag: item.InboundTag, Token: common.Random(48), CreatedAt: time.Now().Unix(),
+		}
+		if err := tx.Create(&link).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *ConfigService) populateRelayRefreshTokens(pools []model.RelayPool) error {
+	ids := make([]uint, 0, len(pools))
+	for _, pool := range pools {
+		ids = append(ids, pool.Id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var links []model.RelayRefreshLink
+	if err := database.GetDB().Where("pool_id IN ?", ids).Find(&links).Error; err != nil {
+		return err
+	}
+	byItem := make(map[string]string, len(links))
+	for _, link := range links {
+		byItem[fmt.Sprintf("%d:%s", link.PoolID, link.InboundTag)] = link.Token
+	}
+	for index := range pools {
+		var items []model.RelayItem
+		if err := json.Unmarshal(pools[index].Items, &items); err != nil {
+			return fmt.Errorf("relay pool %q: invalid items: %w", pools[index].Name, err)
+		}
+		changed := false
+		for itemIndex := range items {
+			token := byItem[fmt.Sprintf("%d:%s", pools[index].Id, items[itemIndex].InboundTag)]
+			if token != "" && items[itemIndex].RefreshToken != token {
+				items[itemIndex].RefreshToken = token
+				changed = true
+			}
+		}
+		if changed {
+			pools[index].Items = mustJSON(items)
+		}
+	}
+	return nil
 }
 
 func (s *ConfigService) GetRelayBitBrowserExport(id uint) ([]byte, error) {
@@ -350,14 +463,22 @@ func buildRelayCapabilities(goos string, hasRoot, hasIPCommand bool) RelayCapabi
 }
 
 func (s *ConfigService) RestoreRelayIPv6() error {
-	if runtime.GOOS != "linux" {
-		return nil
-	}
-	if err := s.repairRelayIPv6OutboundStrategies(); err != nil {
+	if err := database.GetDB().Model(&model.RelayPool{}).
+		Where("rotation_enabled = ? OR next_rotate_at <> 0", true).
+		Updates(map[string]interface{}{"rotation_enabled": false, "next_rotate_at": 0}).Error; err != nil {
 		return err
 	}
 	pools, err := s.GetRelayPools()
 	if err != nil {
+		return err
+	}
+	if err := s.ensureRelayRefreshLinks(pools); err != nil {
+		return err
+	}
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	if err := s.repairRelayIPv6OutboundStrategies(); err != nil {
 		return err
 	}
 	detected, err := discoverRelayIPv6()
@@ -891,6 +1012,9 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	if err := tx.Create(&pool).Error; err != nil {
 		return nil, err
 	}
+	if err := ensureRelayRefreshLinksTx(tx, pool.Id, items); err != nil {
+		return nil, err
+	}
 	if err := updateRelayRouteRules(tx, items, req.DomainStrategy == relayDomainStrategyIPv6Only, false); err != nil {
 		return nil, err
 	}
@@ -931,6 +1055,14 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		if err := s.StartCore(); err != nil {
 			return &pool, common.NewErrorf("relay saved, but core update failed: %v", err)
 		}
+	}
+	returnedPools := []model.RelayPool{pool}
+	if err := s.populateRelayRefreshTokens(returnedPools); err == nil {
+		// Return the generated per-item links without storing bearer tokens in
+		// the large relay pool JSON column.
+		pool = returnedPools[0]
+	} else {
+		logger.Warning("populate relay refresh tokens after create failed: ", err)
 	}
 	return &pool, nil
 }
@@ -1052,6 +1184,9 @@ func (s *ConfigService) DeleteRelay(id uint, actor string) error {
 			return err
 		}
 	}
+	if err := tx.Where("pool_id = ?", pool.Id).Delete(&model.RelayRefreshLink{}).Error; err != nil {
+		return err
+	}
 	if err := tx.Delete(&pool).Error; err != nil {
 		return err
 	}
@@ -1100,6 +1235,9 @@ func (s *ConfigService) SetRelayRotation(id uint, request RelayRotationRequest, 
 	}
 	if !relayModeUsesIPv6(pool.Mode) {
 		return nil, common.NewError("IPv4 upstream-only relay pools cannot rotate IPv6 addresses")
+	}
+	if request.Enabled {
+		return nil, common.NewError("scheduled pool rotation is disabled; use the per-item manual refresh links")
 	}
 	interval, err := normalizeRelayRotationInterval(request.Enabled, request.IntervalMinutes)
 	if err != nil {
@@ -1154,10 +1292,33 @@ func normalizeRelayRotationInterval(enabled bool, interval int) (int, error) {
 func (s *ConfigService) RotateRelay(id uint, actor string) (*RelayRotationResult, error) {
 	relayMu.Lock()
 	defer relayMu.Unlock()
-	return s.rotateRelayLocked(id, actor)
+	return s.rotateRelayItemsLocked(id, "", actor)
 }
 
-func (s *ConfigService) rotateRelayLocked(id uint, actor string) (*RelayRotationResult, error) {
+// RotateRelayItemByToken rotates exactly one IPv6 address selected by its
+// bearer refresh token. The token is stable across rotations.
+func (s *ConfigService) RotateRelayItemByToken(token, actor string) (*RelayRotationResult, error) {
+	token = strings.TrimSpace(token)
+	if token == "" || len(token) > 64 {
+		return nil, common.NewError("invalid relay refresh token")
+	}
+	relayMu.Lock()
+	defer relayMu.Unlock()
+	var link model.RelayRefreshLink
+	if err := database.GetDB().Where("token = ?", token).First(&link).Error; err != nil {
+		if database.IsNotFound(err) {
+			return nil, common.NewError("relay refresh link not found")
+		}
+		return nil, err
+	}
+	result, err := s.rotateRelayItemsLocked(link.PoolID, link.InboundTag, actor)
+	if err == nil {
+		result.RefreshToken = token
+	}
+	return result, err
+}
+
+func (s *ConfigService) rotateRelayItemsLocked(id uint, inboundTag, actor string) (*RelayRotationResult, error) {
 	if runtime.GOOS != "linux" {
 		return nil, common.NewError("IPv6 rotation is supported on Linux only")
 	}
@@ -1188,12 +1349,36 @@ func (s *ConfigService) rotateRelayLocked(id uint, actor string) (*RelayRotation
 	for _, address := range detected {
 		occupied[address.Address] = true
 	}
-	newItems, err := prepareRelayRotatedItems(oldItems, occupied)
+	selectedIndexes := make([]int, 0, len(oldItems))
+	if inboundTag == "" {
+		for index := range oldItems {
+			selectedIndexes = append(selectedIndexes, index)
+		}
+	} else {
+		for index := range oldItems {
+			if oldItems[index].InboundTag == inboundTag {
+				selectedIndexes = append(selectedIndexes, index)
+				break
+			}
+		}
+		if len(selectedIndexes) != 1 {
+			return nil, common.NewError("relay refresh link item no longer exists")
+		}
+	}
+	selectedOldItems := make([]model.RelayItem, len(selectedIndexes))
+	for index, itemIndex := range selectedIndexes {
+		selectedOldItems[index] = oldItems[itemIndex]
+	}
+	rotatedItems, err := prepareRelayRotatedItems(selectedOldItems, occupied)
 	if err != nil {
 		return nil, err
 	}
+	newItems := append([]model.RelayItem(nil), oldItems...)
+	for index, itemIndex := range selectedIndexes {
+		newItems[itemIndex] = rotatedItems[index]
+	}
 
-	added := make([]model.RelayItem, 0, len(newItems))
+	added := make([]model.RelayItem, 0, len(rotatedItems))
 	cleanupNew := true
 	defer func() {
 		if !cleanupNew {
@@ -1203,16 +1388,16 @@ func (s *ConfigService) rotateRelayLocked(id uint, actor string) (*RelayRotation
 			_ = deleteRelayAddress(item.Interface, item.IPv6, item.Prefix)
 		}
 	}()
-	for _, item := range newItems {
+	for _, item := range rotatedItems {
 		if err := addRelayAddress(item.Interface, item.IPv6, item.Prefix); err != nil {
 			return nil, err
 		}
 		added = append(added, item)
 	}
-	if err := waitRelayAddressesReady(newItems); err != nil {
+	if err := waitRelayAddressesReady(rotatedItems); err != nil {
 		return nil, err
 	}
-	if err := validateRelayIPv6Egress(context.Background(), newItems, probeRelayIPv6Egress); err != nil {
+	if err := validateRelayIPv6Egress(context.Background(), rotatedItems, probeRelayIPv6Egress); err != nil {
 		return nil, err
 	}
 	coreWasRunning := false
@@ -1254,13 +1439,20 @@ func (s *ConfigService) rotateRelayLocked(id uint, actor string) (*RelayRotation
 		}
 	}()
 
-	if err := updateRelayRotatedOutbounds(tx, pool.Mode, newItems); err != nil {
+	if err := updateRelayRotatedOutbounds(tx, pool.Mode, rotatedItems); err != nil {
 		return nil, err
+	}
+	for _, item := range rotatedItems {
+		if err := tx.Model(&model.RelayRefreshLink{}).
+			Where("pool_id = ? AND inbound_tag = ?", pool.Id, item.InboundTag).
+			Update("last_rotated_at", time.Now().Unix()).Error; err != nil {
+			return nil, err
+		}
 	}
 
 	now := time.Now()
 	nextRotateAt := int64(0)
-	if pool.RotationEnabled {
+	if pool.RotationEnabled && inboundTag == "" {
 		interval, intervalErr := normalizeRelayRotationInterval(true, pool.RotationIntervalMinutes)
 		if intervalErr != nil {
 			return nil, intervalErr
@@ -1295,7 +1487,10 @@ func (s *ConfigService) rotateRelayLocked(id uint, actor string) (*RelayRotation
 			return nil, common.NewErrorf("rotated relay configuration rejected by sing-box: %v", err)
 		}
 	}
-	change := map[string]interface{}{"pool_id": pool.Id, "rotated": len(newItems)}
+	change := map[string]interface{}{"pool_id": pool.Id, "rotated": len(rotatedItems)}
+	if inboundTag != "" {
+		change["inbound_tag"] = inboundTag
+	}
 	if err := tx.Create(&model.Changes{
 		DateTime: now.Unix(), Actor: actor, Key: "relay", Action: "rotate", Obj: mustJSON(change),
 	}).Error; err != nil {
@@ -1308,19 +1503,24 @@ func (s *ConfigService) rotateRelayLocked(id uint, actor string) (*RelayRotation
 	cleanupNew = false
 	LastUpdate.Store(time.Now().UnixMilli())
 
-	for _, item := range oldItems {
+	for _, itemIndex := range selectedIndexes {
+		item := oldItems[itemIndex]
 		if item.AddedByUs {
 			if err := deleteRelayAddress(item.Interface, item.IPv6, item.Prefix); err != nil {
 				logger.Warningf("remove rotated relay IPv6 %s: %v", item.IPv6, err)
 			}
 		}
 	}
-	addresses := make([]string, 0, len(newItems))
-	for _, item := range newItems {
+	addresses := make([]string, 0, len(rotatedItems))
+	for _, item := range rotatedItems {
 		addresses = append(addresses, item.IPv6)
 	}
+	itemIndex := 0
+	if len(selectedIndexes) == 1 {
+		itemIndex = selectedIndexes[0] + 1
+	}
 	return &RelayRotationResult{
-		PoolID: pool.Id, Rotated: len(newItems), IPv6: addresses,
+		PoolID: pool.Id, Rotated: len(rotatedItems), IPv6: addresses, ItemIndex: itemIndex,
 		LastRotatedAt: pool.LastRotatedAt, NextRotateAt: pool.NextRotateAt,
 	}, nil
 }

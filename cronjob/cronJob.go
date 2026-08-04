@@ -48,8 +48,6 @@ func (c *CronJob) Start(loc *time.Location, trafficAge int, statsBucketSeconds i
 		c.cron.AddJob("@every 5s", NewCheckCoreJob())
 		// database WAL checkpoint
 		c.cron.AddJob("@every 10m", NewWALCheckpointJob())
-		// Rotate only relay pools that explicitly opted in and are due.
-		c.cron.AddJob("@every 1m", NewRelayRotationJob())
 	}()
 
 	return nil

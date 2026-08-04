@@ -258,7 +258,6 @@
                     <span class="text-truncate">{{ pool.name }}</span>
                     <v-spacer />
                     <v-chip v-if="pool.source" size="small" color="primary" variant="tonal">auto-add-ipv6</v-chip>
-                    <v-chip v-if="pool.rotation_enabled" size="small" color="success" variant="tonal">{{ $t('relay.rotationOn') }}</v-chip>
                     <v-chip size="small" :color="pool.mode === 'ipv6' ? 'info' : 'secondary'" variant="tonal">{{ pool.mode }}</v-chip>
                   </v-card-title>
                   <v-card-text>
@@ -267,29 +266,26 @@
                     <div v-if="pool.items.length > exportPreviewLimit" class="relay-preview-note">
                       {{ $t('relay.previewLimited', { shown: exportPreviewLimit, total: pool.items.length }) }}
                     </div>
-                    <div v-if="canRotatePool(pool)" class="relay-rotation-settings">
-                      <v-switch
-                        v-model="pool.rotation_enabled"
-                        color="success"
-                        density="compact"
-                        :label="$t('relay.autoRotation')"
-                        :loading="savingRotation === pool.id"
-                        hide-details
-                        @update:model-value="saveRotation(pool)"
-                      />
-                      <v-text-field
-                        v-model.number="pool.rotation_interval_minutes"
-                        type="number"
-                        min="5"
-                        max="10080"
-                        density="compact"
-                        :label="$t('relay.rotationInterval')"
-                        suffix="min"
-                        hide-details
-                        @change="saveRotation(pool)"
-                      />
-                      <div v-if="pool.next_rotate_at" class="relay-next-rotation">
-                        {{ $t('relay.nextRotation') }}: {{ formatTimestamp(pool.next_rotate_at) }}
+                    <div v-if="canRotatePool(pool)" class="relay-refresh-section">
+                      <div class="relay-refresh-heading">{{ $t('relay.itemRefreshLinks') }}</div>
+                      <v-list density="compact" class="relay-refresh-list">
+                        <v-list-item v-for="(item, itemIndex) in pool.items.slice(0, exportPreviewLimit)" :key="item.listen_port">
+                          <v-list-item-title dir="ltr">#{{ itemIndex + 1 }} · {{ item.ipv6 }}</v-list-item-title>
+                          <v-list-item-subtitle class="relay-refresh-url" dir="ltr">{{ itemRefreshURL(item) }}</v-list-item-subtitle>
+                          <template #append>
+                            <v-btn
+                              variant="text"
+                              icon="mdi-content-copy"
+                              size="small"
+                              :aria-label="$t('relay.copyRefreshLink')"
+                              :title="$t('relay.copyRefreshLink')"
+                              @click="copy(itemRefreshURL(item))"
+                            />
+                          </template>
+                        </v-list-item>
+                      </v-list>
+                      <div v-if="pool.items.length > exportPreviewLimit" class="relay-preview-note">
+                        {{ $t('relay.refreshPreviewLimited', { shown: exportPreviewLimit, total: pool.items.length }) }}
                       </div>
                     </div>
                   </v-card-text>
@@ -305,15 +301,10 @@
                     >{{ $t('relay.exportBitBrowser') }}</v-btn>
                     <v-btn
                       v-if="canRotatePool(pool)"
-                      class="relay-rotate-button"
-                      color="primary"
-                      variant="text"
-                      icon="mdi-sync"
-                      :aria-label="$t('relay.rotateNow')"
-                      :title="$t('relay.rotateNow')"
-                      :loading="rotating === pool.id"
-                      @click="rotate(pool)"
-                    />
+                      variant="tonal"
+                      prepend-icon="mdi-link-variant"
+                      @click="copyRefreshLinks(pool)"
+                    >{{ $t('relay.copyRefreshLinks') }}</v-btn>
                     <v-btn
                       class="relay-delete-button"
                       color="error"
@@ -353,11 +344,10 @@ import { i18n } from '@/locales'
 import { copyText } from '@/utils/clipboard'
 
 interface IPv6Item { interface: string; address: string; prefix: number }
-interface RelayItem { listen_port: number; username: string; password: string; ipv6?: string; upstream_server?: string; protocol?: string; export?: string }
+interface RelayItem { listen_port: number; username: string; password: string; ipv6?: string; upstream_server?: string; protocol?: string; export?: string; refresh_token?: string }
 interface RelayPool {
   id: number; name: string; source?: string; mode: string; protocol?: string; domain_strategy?: string
   listen_host: string; port_start: number; count: number; items: RelayItem[]; export_text: string
-  rotation_enabled: boolean; rotation_interval_minutes: number; last_rotated_at?: number; next_rotate_at?: number
 }
 interface RelayCapabilities { os: string; can_add_system_ipv6: boolean; unavailable_reason?: string }
 
@@ -377,8 +367,6 @@ const loading = ref(false)
 const refreshing = ref(false)
 const deleting = ref(0)
 const downloading = ref(0)
-const rotating = ref(0)
-const savingRotation = ref(0)
 const ipv6 = ref<IPv6Item[]>([])
 const pools = ref<RelayPool[]>([])
 const ipv6Total = ref(0)
@@ -471,8 +459,6 @@ const loadData = async () => {
     pools.value = (data?.pools ?? []).map((rawPool: any) => {
       const items = parseItems(rawPool.items)
       const pool = { ...rawPool, items } as RelayPool
-      pool.rotation_enabled = Boolean(rawPool.rotation_enabled)
-      pool.rotation_interval_minutes = Number(rawPool.rotation_interval_minutes) || 60
       pool.export_text = buildExportText(pool)
       return pool
     })
@@ -582,61 +568,18 @@ const buildExportText = (pool: RelayPool) => pool.items.map((item) => {
 
 const previewExportText = (pool: RelayPool) => pool.export_text.split('\n').slice(0, exportPreviewLimit).join('\n')
 
-const canRotatePool = (pool: RelayPool) => rotationSupported.value && ['ipv6', 'paired', 'dualstack'].includes(pool.mode)
+const canRotatePool = (pool: RelayPool) => !isRemote.value && rotationSupported.value
+  && ['ipv6', 'paired', 'dualstack'].includes(pool.mode)
+  && pool.items.some((item) => Boolean(item.refresh_token))
 
-const formatTimestamp = (timestamp: number) => new Date(timestamp * 1000).toLocaleString()
-
-const rotate = async (pool: RelayPool) => {
-  if (!window.confirm(i18n.global.t('relay.rotateConfirm'))) return
-  rotating.value = pool.id
-  try {
-    const endpoint = isRemote.value
-      ? `api/agents/${props.agentId}/relay/${pool.id}/rotate`
-      : `api/relay/${pool.id}/rotate`
-    const response = await fetch(endpoint, {
-      method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' },
-    })
-    let msg: any
-    try { msg = await response.json() } catch { msg = { success: false, msg: i18n.global.t('relay.invalidResponse') } }
-    if (!response.ok || !msg.success) throw new Error(msg.msg || i18n.global.t('relay.rotateFailed'))
-    push.success({ message: i18n.global.t('relay.rotated', { count: Number(msg.obj?.rotated) || pool.count }) })
-    await loadData()
-    if (isRemote.value) emit('changed')
-    else await Data().loadData()
-  } catch (error: any) {
-    push.error({ message: error?.message || i18n.global.t('relay.rotateFailed') })
-  } finally {
-    rotating.value = 0
-  }
+const itemRefreshURL = (item: RelayItem) => {
+  if (!item.refresh_token) return ''
+  return new URL(`refresh/${item.refresh_token}`, document.baseURI).toString()
 }
 
-const saveRotation = async (pool: RelayPool) => {
-  const interval = Number(pool.rotation_interval_minutes)
-  if (!Number.isInteger(interval) || interval < 5 || interval > 10080) {
-    push.error({ message: i18n.global.t('relay.rotationIntervalInvalid') })
-    return
-  }
-  savingRotation.value = pool.id
-  try {
-    const endpoint = isRemote.value
-      ? `api/agents/${props.agentId}/relay/${pool.id}/rotation`
-      : `api/relay/${pool.id}/rotation`
-    const response = await fetch(endpoint, {
-      method: 'POST', credentials: 'include',
-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-      body: JSON.stringify({ enabled: pool.rotation_enabled, interval_minutes: interval }),
-    })
-    let msg: any
-    try { msg = await response.json() } catch { msg = { success: false, msg: i18n.global.t('relay.invalidResponse') } }
-    if (!response.ok || !msg.success) throw new Error(msg.msg || i18n.global.t('relay.rotationSaveFailed'))
-    pool.next_rotate_at = Number(msg.obj?.next_rotate_at) || 0
-    push.success({ message: i18n.global.t('relay.rotationSaved') })
-  } catch (error: any) {
-    push.error({ message: error?.message || i18n.global.t('relay.rotationSaveFailed') })
-    await loadData()
-  } finally {
-    savingRotation.value = 0
-  }
+const copyRefreshLinks = async (pool: RelayPool) => {
+  const links = pool.items.map(itemRefreshURL).filter(Boolean).join('\n')
+  await copy(links)
 }
 
 const supportsBitBrowser = (pool: RelayPool) => {
@@ -724,17 +667,12 @@ watch(() => props.connectionHost, (host) => {
 .relay-dialog-body { min-height: 0; background: rgba(var(--v-theme-surface), 0.34); overflow-y: auto !important; }
 .relay-list { border: 1px solid rgba(var(--v-theme-on-surface), 0.08); border-radius: 10px; }
 .relay-quick-section { padding: 14px; border: 1px solid rgba(var(--v-theme-primary), 0.2); border-radius: 8px; background: rgba(var(--v-theme-primary), 0.045); }
-.relay-pool-actions { display: grid !important; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 40px 40px; gap: 8px; }
+.relay-pool-actions { display: flex !important; flex-wrap: wrap; gap: 8px; }
 .relay-pool-actions :deep(.v-btn) { margin: 0 !important; }
-.relay-pool-actions :deep(.v-btn:not(.relay-delete-button)) { min-width: 0; }
-.relay-delete-button, .relay-rotate-button { width: 40px; height: 40px; align-self: center; }
-.relay-rotate-button { grid-column: 3; }
-.relay-delete-button { grid-column: 4; }
+.relay-pool-actions :deep(.v-btn:not(.relay-delete-button)) { min-width: 0; flex: 1 1 150px; }
+.relay-delete-button { width: 40px; height: 40px; align-self: center; }
 @media (max-width: 520px) {
-  .relay-pool-actions { grid-template-columns: minmax(0, 1fr) 40px 40px; }
-  .relay-pool-actions :deep(.v-btn:not(.relay-delete-button)) { grid-column: 1; }
-  .relay-pool-actions :deep(.relay-rotate-button) { grid-column: 2; grid-row: 1 / span 2; }
-  .relay-delete-button { grid-column: 3; grid-row: 1 / span 2; }
+	.relay-pool-actions :deep(.v-btn:not(.relay-delete-button)) { flex-basis: 100%; }
 }
 .relay-quick-heading { display: flex; justify-content: center; text-align: center; }
 .relay-source-link { color: rgb(var(--v-theme-primary)); font-size: 12px; text-decoration: none; }
@@ -747,8 +685,10 @@ watch(() => props.connectionHost, (host) => {
 .relay-actions { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
 .relay-pool-meta { opacity: 0.7; margin-bottom: 10px; overflow-wrap: anywhere; }
 .relay-preview-note { margin-top: 6px; font-size: 12px; opacity: 0.68; }
-.relay-rotation-settings { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr); align-items: center; gap: 10px; margin-top: 12px; }
-.relay-next-rotation { grid-column: 1 / -1; font-size: 12px; opacity: 0.72; }
+.relay-refresh-section { margin-top: 14px; }
+.relay-refresh-heading { margin-bottom: 6px; font-size: 13px; font-weight: 600; }
+.relay-refresh-list { border: 1px solid rgba(var(--v-theme-on-surface), 0.1); border-radius: 6px; }
+.relay-refresh-url { overflow-wrap: anywhere; white-space: normal; }
 .relay-pool-card { height: 100%; }
 
 @media (max-width: 959px) {
@@ -765,7 +705,5 @@ watch(() => props.connectionHost, (host) => {
   .relay-dialog-body :deep(.v-tab) { min-width: 0; padding-inline: 6px; font-size: 13px; white-space: nowrap; }
   .relay-dialog :deep(.v-card-actions) { flex-wrap: wrap; justify-content: center !important; }
   .relay-dialog :deep(.v-card-actions .v-btn) { flex: 1 1 140px; }
-  .relay-rotation-settings { grid-template-columns: minmax(0, 1fr); }
-  .relay-next-rotation { grid-column: 1; }
 }
 </style>

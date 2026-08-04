@@ -35,6 +35,10 @@ func TestGetDbIncludesServicesAndTokens(t *testing.T) {
 	if err := GetDB().Create(&relayPool).Error; err != nil {
 		t.Fatal(err)
 	}
+	refreshLink := model.RelayRefreshLink{PoolID: relayPool.Id, InboundTag: "relay-in", Token: "stable-refresh-token", CreatedAt: 1}
+	if err := GetDB().Create(&refreshLink).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	data, err := GetDb("")
 	if err != nil {
@@ -69,5 +73,12 @@ func TestGetDbIncludesServicesAndTokens(t *testing.T) {
 	}
 	if relayCount != 1 {
 		t.Fatalf("relay pool count = %d, want 1", relayCount)
+	}
+	var refreshLinkCount int64
+	if err = backupDB.Model(&model.RelayRefreshLink{}).Where("token = ?", refreshLink.Token).Count(&refreshLinkCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if refreshLinkCount != 1 {
+		t.Fatalf("relay refresh link count = %d, want 1", refreshLinkCount)
 	}
 }

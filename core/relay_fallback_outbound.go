@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -21,6 +22,17 @@ const RelayFallbackOutboundType = "relay-fallback"
 
 const defaultRelayIPv6Timeout = 3 * time.Second
 
+const (
+	relayIPv6HealthyCache   = 30 * time.Second
+	relayIPv6UnhealthyCache = 5 * time.Second
+	relayIPv6ProbeTimeout   = 2 * time.Second
+)
+
+var relayFallbackIPv6ProbeTargets = []M.Socksaddr{
+	M.ParseSocksaddr("[2606:4700:4700::1111]:443"),
+	M.ParseSocksaddr("[2001:4860:4860::8888]:443"),
+}
+
 type RelayFallbackOutboundOptions struct {
 	IPv6Outbound string `json:"ipv6_outbound"`
 	IPv4Outbound string `json:"ipv4_outbound"`
@@ -35,6 +47,10 @@ type relayFallbackOutbound struct {
 	ipv6Timeout  time.Duration
 	ipv6Outbound adapter.Outbound
 	ipv4Outbound adapter.Outbound
+	healthMu     sync.Mutex
+	healthKnown  bool
+	ipv6Healthy  bool
+	healthAt     time.Time
 }
 
 var _ adapter.Outbound = (*relayFallbackOutbound)(nil)
@@ -88,7 +104,14 @@ func (o *relayFallbackOutbound) Start() error {
 func (o *relayFallbackOutbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
 	if destination.IsIP() {
 		if destination.Addr.Is6() && !destination.Addr.Is4In6() {
-			return o.ipv6Outbound.DialContext(ctx, network, destination)
+			conn, err := o.ipv6Outbound.DialContext(ctx, network, destination)
+			if err == nil {
+				o.markIPv6Healthy()
+			}
+			return conn, err
+		}
+		if err := o.rejectIPv4WhileIPv6Healthy(ctx, false); err != nil {
+			return nil, err
 		}
 		return o.ipv4Outbound.DialContext(ctx, network, destination)
 	}
@@ -96,7 +119,11 @@ func (o *relayFallbackOutbound) DialContext(ctx context.Context, network string,
 	conn, ipv6Err := o.ipv6Outbound.DialContext(ipv6Ctx, network, destination)
 	cancel()
 	if ipv6Err == nil {
+		o.markIPv6Healthy()
 		return conn, nil
+	}
+	if err := o.rejectIPv4WhileIPv6Healthy(ctx, true); err != nil {
+		return nil, E.Errors(E.Cause(ipv6Err, "IPv6 attempt failed"), err)
 	}
 	conn, ipv4Err := o.ipv4Outbound.DialContext(ctx, network, destination)
 	if ipv4Err == nil {
@@ -108,13 +135,24 @@ func (o *relayFallbackOutbound) DialContext(ctx context.Context, network string,
 func (o *relayFallbackOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
 	if destination.IsIP() {
 		if destination.Addr.Is6() && !destination.Addr.Is4In6() {
-			return o.ipv6Outbound.ListenPacket(ctx, destination)
+			conn, err := o.ipv6Outbound.ListenPacket(ctx, destination)
+			if err == nil {
+				o.markIPv6Healthy()
+			}
+			return conn, err
+		}
+		if err := o.rejectIPv4WhileIPv6Healthy(ctx, false); err != nil {
+			return nil, err
 		}
 		return o.ipv4Outbound.ListenPacket(ctx, destination)
 	}
 	conn, ipv6Err := o.ipv6Outbound.ListenPacket(ctx, destination)
 	if ipv6Err == nil {
+		o.markIPv6Healthy()
 		return conn, nil
+	}
+	if err := o.rejectIPv4WhileIPv6Healthy(ctx, true); err != nil {
+		return nil, E.Errors(E.Cause(ipv6Err, "IPv6 packet attempt failed"), err)
 	}
 	conn, ipv4Err := o.ipv4Outbound.ListenPacket(ctx, destination)
 	if ipv4Err == nil {
@@ -131,11 +169,18 @@ func (o *relayFallbackOutbound) DialParallelNetwork(ctx context.Context, network
 		conn, err := dialRelayAddresses(ipv6Ctx, o.ipv6Outbound, network, destination, addresses6, strategy, networkType, fallbackNetworkType, fallbackDelay)
 		cancel()
 		if err == nil {
+			o.markIPv6Healthy()
 			return conn, nil
 		}
 		ipv6Err = err
 	}
 	if len(addresses4) > 0 {
+		if err := o.rejectIPv4WhileIPv6Healthy(ctx, ipv6Err != nil); err != nil {
+			if ipv6Err != nil {
+				return nil, E.Errors(E.Cause(ipv6Err, "IPv6 attempt failed"), err)
+			}
+			return nil, err
+		}
 		conn, ipv4Err := o.ipv4Outbound.DialContext(ctx, network, destination)
 		if ipv4Err == nil {
 			return conn, nil
@@ -157,11 +202,18 @@ func (o *relayFallbackOutbound) ListenSerialNetworkPacket(ctx context.Context, d
 	for _, address := range addresses6 {
 		conn, err := o.ipv6Outbound.ListenPacket(ctx, M.SocksaddrFrom(address, destination.Port))
 		if err == nil {
+			o.markIPv6Healthy()
 			return conn, address, nil
 		}
 		ipv6Err = err
 	}
 	if len(addresses4) > 0 {
+		if err := o.rejectIPv4WhileIPv6Healthy(ctx, ipv6Err != nil); err != nil {
+			if ipv6Err != nil {
+				return nil, netip.Addr{}, E.Errors(E.Cause(ipv6Err, "IPv6 packet attempt failed"), err)
+			}
+			return nil, netip.Addr{}, err
+		}
 		conn, ipv4Err := o.ipv4Outbound.ListenPacket(ctx, destination)
 		if ipv4Err == nil {
 			return conn, addresses4[0], nil
@@ -176,6 +228,60 @@ func (o *relayFallbackOutbound) ListenSerialNetworkPacket(ctx context.Context, d
 	}
 	conn, err := o.ListenPacket(ctx, destination)
 	return conn, destination.Addr, err
+}
+
+func (o *relayFallbackOutbound) markIPv6Healthy() {
+	o.healthMu.Lock()
+	o.healthKnown = true
+	o.ipv6Healthy = true
+	o.healthAt = time.Now()
+	o.healthMu.Unlock()
+}
+
+// rejectIPv4WhileIPv6Healthy enforces global failover semantics for one
+// relay item. IPv4 is allowed only while the bound VPS IPv6 egress is down;
+// an IPv4-only probe cannot bypass a healthy IPv6 route.
+func (o *relayFallbackOutbound) rejectIPv4WhileIPv6Healthy(ctx context.Context, forceProbe bool) error {
+	if o.ipv6EgressHealthy(ctx, forceProbe) {
+		return E.New("IPv4 fallback suppressed while IPv6 egress is healthy")
+	}
+	return nil
+}
+
+func (o *relayFallbackOutbound) ipv6EgressHealthy(ctx context.Context, forceProbe bool) bool {
+	now := time.Now()
+	o.healthMu.Lock()
+	if o.healthKnown {
+		ttl := relayIPv6HealthyCache
+		if !o.ipv6Healthy {
+			ttl = relayIPv6UnhealthyCache
+		}
+		if now.Sub(o.healthAt) < ttl && (!forceProbe || !o.ipv6Healthy) {
+			healthy := o.ipv6Healthy
+			o.healthMu.Unlock()
+			return healthy
+		}
+	}
+	o.healthMu.Unlock()
+
+	healthy := false
+	for _, destination := range relayFallbackIPv6ProbeTargets {
+		probeCtx, cancel := context.WithTimeout(ctx, relayIPv6ProbeTimeout)
+		conn, err := o.ipv6Outbound.DialContext(probeCtx, N.NetworkTCP, destination)
+		cancel()
+		if err != nil {
+			continue
+		}
+		_ = conn.Close()
+		healthy = true
+		break
+	}
+	o.healthMu.Lock()
+	o.healthKnown = true
+	o.ipv6Healthy = healthy
+	o.healthAt = time.Now()
+	o.healthMu.Unlock()
+	return healthy
 }
 
 func splitRelayDestinationAddresses(destination M.Socksaddr, addresses []netip.Addr) ([]netip.Addr, []netip.Addr) {

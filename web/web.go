@@ -109,6 +109,27 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	// Serve the assets folder
 	engine.StaticFS(assetsBasePath, http.FS(assetsFS))
 
+	// Refresh links are bearer URLs: possession of the per-item random token
+	// authorizes rotating only that relay item's IPv6 address.
+	engine.GET(base_url+"refresh/:token", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		var relayService service.ConfigService
+		result, rotateErr := relayService.RotateRelayItemByToken(c.Param("token"), "refresh-link:"+c.ClientIP())
+		if rotateErr != nil {
+			status := http.StatusServiceUnavailable
+			if strings.Contains(rotateErr.Error(), "not found") || strings.Contains(rotateErr.Error(), "invalid relay refresh token") {
+				status = http.StatusNotFound
+			}
+			c.String(status, "IPv6 rotation failed: %s\n", rotateErr.Error())
+			return
+		}
+		address := ""
+		if len(result.IPv6) > 0 {
+			address = result.IPv6[0]
+		}
+		c.String(http.StatusOK, "success\nitem=%d\nipv6=%s\n", result.ItemIndex, address)
+	})
+
 	group_apiv2 := engine.Group(base_url + "apiv2")
 	apiv2 := api.NewAPIv2Handler(group_apiv2)
 
