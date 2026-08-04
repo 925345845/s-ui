@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index baa8f36..16a123c 100644
+index baa8f36..7064ae7 100644
 --- a/README.md
 +++ b/README.md
 @@ -176,7 +176,7 @@ Agent 主动出站连接中心面板，远端无需开放 Agent 控制端口：
@@ -7,20 +7,22 @@ index baa8f36..16a123c 100644
  | 项目 | 支持 |
  | --- | --- |
 -| 来源 | 本机公网 IPv6 池、上游 SOCKS5 |
-+| 来源 | 本机公网 IPv6 池、上游 SOCKS5、IPv4/IPv6 配对 |
++| 来源 | 本机公网 IPv6 池、上游 SOCKS5、IPv4/IPv6 配对、双栈回退出口 |
  | 协议 | SOCKS5、HTTP、Mixed、Shadowsocks、VLESS、VMess、Trojan、Hysteria2、TUIC、Naive、AnyTLS |
  | 批量 | 每批 1–100 条；已用端口自动跳过并继续分配 |
  | 导出 | BitBrowser Excel、纯文本 `IP:端口:账号:密码` |
-@@ -184,6 +184,8 @@ Agent 主动出站连接中心面板，远端无需开放 Agent 控制端口：
+@@ -184,6 +184,10 @@ Agent 主动出站连接中心面板，远端无需开放 Agent 控制端口：
  
  IPv6 池模式只会向选定网卡添加地址，不修改系统默认路由。每个地址都经过 DAD 和公网出口验证，失败会回滚。VPS 必须拥有服务商已路由或授权的 IPv6 前缀；仅添加随机 `/64` 地址无法绕过源地址过滤。
  
 +IPv4/IPv6 配对模式按上游 SOCKS5 列表顺序为每个入口分配一个 VPS IPv6。IPv4-only 目标使用对应上游 SOCKS5，IPv6 或双栈目标优先绑定对应 VPS IPv6；支持直接粘贴 `host:port`、`host:port:user:pass` 或 `socks5://` 列表。
 +
++双栈出口模式使用同样的 IPv4/IPv6 配对，但由内置复合 outbound 负责连接级回退：所有目标先尝试对应 VPS IPv6，IPv6 连接失败或目标没有 AAAA 记录时，再使用同一行对应的 IPv4 SOCKS5。IPv4 回退不会使用 VPS 原生 IPv4；IPv6 连接最多等待 3 秒后回退。
++
  实现参考 [help660vip/auto-add-ipv6](https://github.com/help660vip/auto-add-ipv6) 的流程，但 1S-UI 使用内置 Go 逻辑，不执行第三方远程脚本。
  
  ### v1.5.8 更新重点
-@@ -207,7 +209,7 @@ IPv6 池模式只会向选定网卡添加地址，不修改系统默认路由。
+@@ -207,7 +211,7 @@ IPv6 池模式只会向选定网卡添加地址，不修改系统默认路由。
  - Complete Web UI for inbounds, outbounds, endpoints, routing, DNS, users, subscriptions, TLS, logs, backup, and traffic.
  - 1–100 node quick creation with safe protocol defaults and automatic used-port skipping.
  - sing-box plus Xray protocols including XHTTP, RAW, gRPC, WebSocket, Hysteria2, Dokodemo-door, and WireGuard.
@@ -29,31 +31,398 @@ index baa8f36..16a123c 100644
  - Outbound Agent connections over WebSocket/HTTP; no inbound Agent control port is required.
  - A reusable controller connection API lets each child panel bind by pasting one value; optional 15-minute single-use links remain available.
  - Live CPU, memory, disk, process, network, RTT/P95/loss metrics, history charts, remote commands, and PTY terminal.
+@@ -335,6 +339,10 @@ cd frontend && npm run build
+ 
+ 正式 Release 使用 GitHub Actions 构建带 CGO、musl 和 Naive 支持的 Linux 多架构包；普通本地 `go build` 不等同于正式 Release 构建。
+ 
++## IPv4/IPv6 配对交付文件
++
++本仓库的 [`paired-release/`](paired-release/) 目录包含可直接安装的 amd64/arm64 包、通用安装脚本、补丁、完整源码包和使用说明。直接安装时，先执行 `uname -m`，再下载 `install-s-ui-paired.sh` 与对应架构的 `s-ui-linux-*-paired.tar.gz` 到 VPS 同一目录。
++
+ ## 目录结构
+ 
+ ```text
+diff --git a/core/register.go b/core/register.go
+index ff9d4f6..248b730 100644
+--- a/core/register.go
++++ b/core/register.go
+@@ -72,6 +72,7 @@ func OutboundRegistry() *outbound.Registry {
+ 	registry := outbound.NewRegistry()
+ 
+ 	direct.RegisterOutbound(registry)
++	registerRelayFallbackOutbound(registry)
+ 
+ 	block.RegisterOutbound(registry)
+ 
+diff --git a/core/relay_fallback_outbound.go b/core/relay_fallback_outbound.go
+new file mode 100644
+index 0000000..26219f1
+--- /dev/null
++++ b/core/relay_fallback_outbound.go
+@@ -0,0 +1,213 @@
++package core
++
++import (
++	"context"
++	"net"
++	"net/netip"
++	"time"
++
++	"github.com/sagernet/sing-box/adapter"
++	sbOutbound "github.com/sagernet/sing-box/adapter/outbound"
++	"github.com/sagernet/sing-box/common/dialer"
++	C "github.com/sagernet/sing-box/constant"
++	"github.com/sagernet/sing-box/log"
++	E "github.com/sagernet/sing/common/exceptions"
++	M "github.com/sagernet/sing/common/metadata"
++	N "github.com/sagernet/sing/common/network"
++	"github.com/sagernet/sing/service"
++)
++
++const RelayFallbackOutboundType = "relay-fallback"
++
++const defaultRelayIPv6Timeout = 3 * time.Second
++
++type RelayFallbackOutboundOptions struct {
++	IPv6Outbound string `json:"ipv6_outbound"`
++	IPv4Outbound string `json:"ipv4_outbound"`
++	IPv6Timeout  string `json:"ipv6_timeout,omitempty"`
++}
++
++type relayFallbackOutbound struct {
++	sbOutbound.Adapter
++	manager      adapter.OutboundManager
++	ipv6Tag      string
++	ipv4Tag      string
++	ipv6Timeout  time.Duration
++	ipv6Outbound adapter.Outbound
++	ipv4Outbound adapter.Outbound
++}
++
++var _ adapter.Outbound = (*relayFallbackOutbound)(nil)
++var _ dialer.ParallelNetworkDialer = (*relayFallbackOutbound)(nil)
++
++func registerRelayFallbackOutbound(registry *sbOutbound.Registry) {
++	sbOutbound.Register[RelayFallbackOutboundOptions](registry, RelayFallbackOutboundType, newRelayFallbackOutbound)
++}
++
++func newRelayFallbackOutbound(ctx context.Context, _ adapter.Router, _ log.ContextLogger, tag string, options RelayFallbackOutboundOptions) (adapter.Outbound, error) {
++	if options.IPv6Outbound == "" || options.IPv4Outbound == "" {
++		return nil, E.New("relay fallback requires IPv6 and IPv4 outbound tags")
++	}
++	if options.IPv6Outbound == options.IPv4Outbound {
++		return nil, E.New("relay fallback outbound tags must be different")
++	}
++	timeout := defaultRelayIPv6Timeout
++	if options.IPv6Timeout != "" {
++		parsed, err := time.ParseDuration(options.IPv6Timeout)
++		if err != nil || parsed <= 0 || parsed > 30*time.Second {
++			return nil, E.New("relay fallback IPv6 timeout must be between 1ns and 30s")
++		}
++		timeout = parsed
++	}
++	manager := service.FromContext[adapter.OutboundManager](ctx)
++	if manager == nil {
++		return nil, E.New("missing outbound manager")
++	}
++	return &relayFallbackOutbound{
++		Adapter:     sbOutbound.NewAdapter(RelayFallbackOutboundType, tag, []string{N.NetworkTCP, N.NetworkUDP}, []string{options.IPv6Outbound, options.IPv4Outbound}),
++		manager:     manager,
++		ipv6Tag:     options.IPv6Outbound,
++		ipv4Tag:     options.IPv4Outbound,
++		ipv6Timeout: timeout,
++	}, nil
++}
++
++func (o *relayFallbackOutbound) Start() error {
++	var loaded bool
++	o.ipv6Outbound, loaded = o.manager.Outbound(o.ipv6Tag)
++	if !loaded {
++		return E.New("IPv6 outbound not found: ", o.ipv6Tag)
++	}
++	o.ipv4Outbound, loaded = o.manager.Outbound(o.ipv4Tag)
++	if !loaded {
++		return E.New("IPv4 outbound not found: ", o.ipv4Tag)
++	}
++	return nil
++}
++
++func (o *relayFallbackOutbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
++	if destination.IsIP() {
++		if destination.Addr.Is6() && !destination.Addr.Is4In6() {
++			return o.ipv6Outbound.DialContext(ctx, network, destination)
++		}
++		return o.ipv4Outbound.DialContext(ctx, network, destination)
++	}
++	ipv6Ctx, cancel := context.WithTimeout(ctx, o.ipv6Timeout)
++	conn, ipv6Err := o.ipv6Outbound.DialContext(ipv6Ctx, network, destination)
++	cancel()
++	if ipv6Err == nil {
++		return conn, nil
++	}
++	conn, ipv4Err := o.ipv4Outbound.DialContext(ctx, network, destination)
++	if ipv4Err == nil {
++		return conn, nil
++	}
++	return nil, E.Errors(E.Cause(ipv6Err, "IPv6 attempt failed"), E.Cause(ipv4Err, "IPv4 SOCKS5 fallback failed"))
++}
++
++func (o *relayFallbackOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
++	if destination.IsIP() {
++		if destination.Addr.Is6() && !destination.Addr.Is4In6() {
++			return o.ipv6Outbound.ListenPacket(ctx, destination)
++		}
++		return o.ipv4Outbound.ListenPacket(ctx, destination)
++	}
++	conn, ipv6Err := o.ipv6Outbound.ListenPacket(ctx, destination)
++	if ipv6Err == nil {
++		return conn, nil
++	}
++	conn, ipv4Err := o.ipv4Outbound.ListenPacket(ctx, destination)
++	if ipv4Err == nil {
++		return conn, nil
++	}
++	return nil, E.Errors(E.Cause(ipv6Err, "IPv6 packet attempt failed"), E.Cause(ipv4Err, "IPv4 SOCKS5 packet fallback failed"))
++}
++
++func (o *relayFallbackOutbound) DialParallelNetwork(ctx context.Context, network string, destination M.Socksaddr, destinationAddresses []netip.Addr, strategy *C.NetworkStrategy, networkType []C.InterfaceType, fallbackNetworkType []C.InterfaceType, fallbackDelay time.Duration) (net.Conn, error) {
++	addresses6, addresses4 := splitRelayDestinationAddresses(destination, destinationAddresses)
++	var ipv6Err error
++	if len(addresses6) > 0 {
++		ipv6Ctx, cancel := context.WithTimeout(ctx, o.ipv6Timeout)
++		conn, err := dialRelayAddresses(ipv6Ctx, o.ipv6Outbound, network, destination, addresses6, strategy, networkType, fallbackNetworkType, fallbackDelay)
++		cancel()
++		if err == nil {
++			return conn, nil
++		}
++		ipv6Err = err
++	}
++	if len(addresses4) > 0 {
++		conn, ipv4Err := o.ipv4Outbound.DialContext(ctx, network, destination)
++		if ipv4Err == nil {
++			return conn, nil
++		}
++		if ipv6Err != nil {
++			return nil, E.Errors(E.Cause(ipv6Err, "IPv6 attempt failed"), E.Cause(ipv4Err, "IPv4 SOCKS5 fallback failed"))
++		}
++		return nil, E.Cause(ipv4Err, "IPv4 SOCKS5 connection failed")
++	}
++	if ipv6Err != nil {
++		return nil, E.Cause(ipv6Err, "IPv6 connection failed and the destination has no IPv4 address")
++	}
++	return o.DialContext(ctx, network, destination)
++}
++
++func (o *relayFallbackOutbound) ListenSerialNetworkPacket(ctx context.Context, destination M.Socksaddr, destinationAddresses []netip.Addr, _ *C.NetworkStrategy, _ []C.InterfaceType, _ []C.InterfaceType, _ time.Duration) (net.PacketConn, netip.Addr, error) {
++	addresses6, addresses4 := splitRelayDestinationAddresses(destination, destinationAddresses)
++	var ipv6Err error
++	for _, address := range addresses6 {
++		conn, err := o.ipv6Outbound.ListenPacket(ctx, M.SocksaddrFrom(address, destination.Port))
++		if err == nil {
++			return conn, address, nil
++		}
++		ipv6Err = err
++	}
++	if len(addresses4) > 0 {
++		conn, ipv4Err := o.ipv4Outbound.ListenPacket(ctx, destination)
++		if ipv4Err == nil {
++			return conn, addresses4[0], nil
++		}
++		if ipv6Err != nil {
++			return nil, netip.Addr{}, E.Errors(E.Cause(ipv6Err, "IPv6 packet attempt failed"), E.Cause(ipv4Err, "IPv4 SOCKS5 packet fallback failed"))
++		}
++		return nil, netip.Addr{}, E.Cause(ipv4Err, "IPv4 SOCKS5 packet connection failed")
++	}
++	if ipv6Err != nil {
++		return nil, netip.Addr{}, ipv6Err
++	}
++	conn, err := o.ListenPacket(ctx, destination)
++	return conn, destination.Addr, err
++}
++
++func splitRelayDestinationAddresses(destination M.Socksaddr, addresses []netip.Addr) ([]netip.Addr, []netip.Addr) {
++	if len(addresses) == 0 && destination.IsIP() {
++		addresses = []netip.Addr{destination.Addr}
++	}
++	addresses6 := make([]netip.Addr, 0, len(addresses))
++	addresses4 := make([]netip.Addr, 0, len(addresses))
++	for _, address := range addresses {
++		if address.Is6() && !address.Is4In6() {
++			addresses6 = append(addresses6, address)
++		} else if address.Is4() || address.Is4In6() {
++			addresses4 = append(addresses4, address)
++		}
++	}
++	return addresses6, addresses4
++}
++
++func dialRelayAddresses(ctx context.Context, outbound adapter.Outbound, network string, destination M.Socksaddr, addresses []netip.Addr, strategy *C.NetworkStrategy, networkType []C.InterfaceType, fallbackNetworkType []C.InterfaceType, fallbackDelay time.Duration) (net.Conn, error) {
++	if parallel, ok := outbound.(dialer.ParallelNetworkDialer); ok {
++		return parallel.DialParallelNetwork(ctx, network, destination, addresses, strategy, networkType, fallbackNetworkType, fallbackDelay)
++	}
++	if parallel, ok := outbound.(N.ParallelDialer); ok {
++		return parallel.DialParallel(ctx, network, destination, addresses)
++	}
++	var errors []error
++	for _, address := range addresses {
++		conn, err := outbound.DialContext(ctx, network, M.SocksaddrFrom(address, destination.Port))
++		if err == nil {
++			return conn, nil
++		}
++		errors = append(errors, err)
++	}
++	return nil, E.Errors(errors...)
++}
+diff --git a/core/relay_fallback_outbound_test.go b/core/relay_fallback_outbound_test.go
+new file mode 100644
+index 0000000..fe3743f
+--- /dev/null
++++ b/core/relay_fallback_outbound_test.go
+@@ -0,0 +1,117 @@
++package core
++
++import (
++	"context"
++	"errors"
++	"net"
++	"net/netip"
++	"testing"
++	"time"
++
++	sbOutbound "github.com/sagernet/sing-box/adapter/outbound"
++	C "github.com/sagernet/sing-box/constant"
++	M "github.com/sagernet/sing/common/metadata"
++	N "github.com/sagernet/sing/common/network"
++)
++
++type relayFallbackTestOutbound struct {
++	sbOutbound.Adapter
++	err         error
++	calls       int
++	destination M.Socksaddr
++}
++
++func newRelayFallbackTestOutbound(tag string, err error) *relayFallbackTestOutbound {
++	return &relayFallbackTestOutbound{
++		Adapter: sbOutbound.NewAdapter("test", tag, []string{N.NetworkTCP, N.NetworkUDP}, nil),
++		err:     err,
++	}
++}
++
++func (o *relayFallbackTestOutbound) DialContext(_ context.Context, _ string, destination M.Socksaddr) (net.Conn, error) {
++	o.calls++
++	o.destination = destination
++	if o.err != nil {
++		return nil, o.err
++	}
++	client, server := net.Pipe()
++	_ = server.Close()
++	return client, nil
++}
++
++func (o *relayFallbackTestOutbound) ListenPacket(context.Context, M.Socksaddr) (net.PacketConn, error) {
++	return nil, errors.New("not implemented")
++}
++
++func TestRelayFallbackPrefersIPv6(t *testing.T) {
++	ipv6 := newRelayFallbackTestOutbound("ipv6", nil)
++	ipv4 := newRelayFallbackTestOutbound("ipv4", nil)
++	outbound := &relayFallbackOutbound{ipv6Outbound: ipv6, ipv4Outbound: ipv4, ipv6Timeout: time.Second}
++	destination := M.ParseSocksaddr("example.com:443")
++	conn, err := outbound.DialParallelNetwork(context.Background(), N.NetworkTCP, destination, []netip.Addr{
++		netip.MustParseAddr("2001:db8::10"),
++		netip.MustParseAddr("192.0.2.10"),
++	}, nil, nil, nil, 0)
++	if err != nil {
++		t.Fatal(err)
++	}
++	_ = conn.Close()
++	if ipv6.calls != 1 || ipv4.calls != 0 {
++		t.Fatalf("calls: IPv6=%d IPv4=%d", ipv6.calls, ipv4.calls)
++	}
++}
++
++func TestRelayFallbackUsesIPv4SOCKSAfterIPv6Failure(t *testing.T) {
++	ipv6 := newRelayFallbackTestOutbound("ipv6", errors.New("IPv6 unreachable"))
++	ipv4 := newRelayFallbackTestOutbound("ipv4", nil)
++	outbound := &relayFallbackOutbound{ipv6Outbound: ipv6, ipv4Outbound: ipv4, ipv6Timeout: time.Second}
++	destination := M.ParseSocksaddr("appleid.apple.com:443")
++	conn, err := outbound.DialParallelNetwork(context.Background(), N.NetworkTCP, destination, []netip.Addr{
++		netip.MustParseAddr("2001:db8::20"),
++		netip.MustParseAddr("192.0.2.20"),
++	}, nil, nil, nil, 0)
++	if err != nil {
++		t.Fatal(err)
++	}
++	_ = conn.Close()
++	if ipv6.calls != 1 || ipv4.calls != 1 {
++		t.Fatalf("calls: IPv6=%d IPv4=%d", ipv6.calls, ipv4.calls)
++	}
++	if ipv4.destination.String() != destination.String() {
++		t.Fatalf("IPv4 fallback destination = %s, want %s", ipv4.destination, destination)
++	}
++}
++
++func TestRelayFallbackDoesNotSendIPv6OnlyDestinationToIPv4(t *testing.T) {
++	ipv6 := newRelayFallbackTestOutbound("ipv6", errors.New("IPv6 unreachable"))
++	ipv4 := newRelayFallbackTestOutbound("ipv4", nil)
++	outbound := &relayFallbackOutbound{ipv6Outbound: ipv6, ipv4Outbound: ipv4, ipv6Timeout: time.Second}
++	_, err := outbound.DialParallelNetwork(context.Background(), N.NetworkTCP, M.ParseSocksaddr("ipv6.example:443"), []netip.Addr{
++		netip.MustParseAddr("2001:db8::30"),
++	}, (*C.NetworkStrategy)(nil), nil, nil, 0)
++	if err == nil {
++		t.Fatal("expected IPv6-only destination to fail")
++	}
++	if ipv4.calls != 0 {
++		t.Fatalf("IPv4 fallback calls = %d, want 0", ipv4.calls)
++	}
++}
++
++func TestCoreAcceptsRelayFallbackOutbound(t *testing.T) {
++	instance := NewCore()
++	config := []byte(`{
++  "log": {"disabled": true},
++  "outbounds": [
++    {"type": "direct", "tag": "relay-v6", "domain_strategy": "ipv6_only"},
++    {"type": "socks", "tag": "relay-v4", "server": "127.0.0.1", "server_port": 9, "version": "5"},
++    {"type": "relay-fallback", "tag": "relay-dual", "ipv6_outbound": "relay-v6", "ipv4_outbound": "relay-v4", "ipv6_timeout": "3s"}
++  ],
++  "route": {"final": "relay-dual"}
++}`)
++	if err := instance.Start(config); err != nil {
++		t.Fatal(err)
++	}
++	if err := instance.Stop(); err != nil {
++		t.Fatal(err)
++	}
++}
 diff --git a/database/model/relay_pools.go b/database/model/relay_pools.go
-index f2dba91..24bce50 100644
+index f2dba91..d65cf5f 100644
 --- a/database/model/relay_pools.go
 +++ b/database/model/relay_pools.go
-@@ -26,6 +26,7 @@ type RelayItem struct {
+@@ -26,6 +26,8 @@ type RelayItem struct {
  	InboundID        uint   `json:"inbound_id"`
  	InboundTag       string `json:"inbound_tag"`
  	OutboundTag      string `json:"outbound_tag"`
++	IPv6OutboundTag  string `json:"ipv6_outbound_tag,omitempty"`
 +	IPv4OutboundTag  string `json:"ipv4_outbound_tag,omitempty"`
  	ClientID         uint   `json:"client_id"`
  	ListenPort       int    `json:"listen_port"`
  	Username         string `json:"username"`
 diff --git a/frontend/src/layouts/modals/RelayPool.vue b/frontend/src/layouts/modals/RelayPool.vue
-index 2009e8d..2c7936e 100644
+index 2009e8d..882aec7 100644
 --- a/frontend/src/layouts/modals/RelayPool.vue
 +++ b/frontend/src/layouts/modals/RelayPool.vue
-@@ -11,6 +11,7 @@
+@@ -11,6 +11,8 @@
          <v-tabs v-model="tab" align-tabs="center" grow class="mb-3">
            <v-tab value="ipv6">{{ $t('relay.ipv6Mode') }}</v-tab>
            <v-tab value="upstream">{{ $t('relay.upstreamMode') }}</v-tab>
 +          <v-tab value="paired">{{ $t('relay.pairedMode') }}</v-tab>
++          <v-tab value="dualstack">{{ $t('relay.dualStackMode') }}</v-tab>
            <v-tab value="pools">{{ $t('relay.pools') }}</v-tab>
          </v-tabs>
  
-@@ -156,6 +157,50 @@
+@@ -156,6 +158,94 @@
              </div>
            </v-window-item>
  
@@ -101,10 +470,54 @@ index 2009e8d..2c7936e 100644
 +            </div>
 +          </v-window-item>
 +
++          <v-window-item value="dualstack">
++            <v-alert type="info" variant="tonal" density="compact" class="mb-3">
++              {{ $t('relay.dualStackDescription') }}
++            </v-alert>
++            <v-row>
++              <v-col cols="12" sm="6" md="4">
++                <v-text-field v-model="form.name" :label="$t('relay.name')" hide-details />
++              </v-col>
++              <v-col cols="12" sm="6" md="4">
++                <v-text-field v-model="form.public_host" :label="$t('relay.publicHost')" dir="ltr" hide-details />
++              </v-col>
++              <v-col cols="12" sm="6" md="4">
++                <v-text-field v-model.number="form.port_start" type="number" min="1" max="65535" :label="$t('relay.portStart')" hide-details />
++              </v-col>
++              <v-col cols="12" sm="6" md="4">
++                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
++              </v-col>
++              <v-col cols="12" sm="6" md="4">
++                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" hide-details />
++              </v-col>
++              <v-col cols="12" sm="6" md="4">
++                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" hide-details />
++              </v-col>
++              <v-col cols="12" sm="6" md="4">
++                <v-text-field v-model="form.username_prefix" :label="$t('relay.usernamePrefix')" dir="ltr" hide-details />
++              </v-col>
++              <v-col cols="12" sm="6" md="4">
++                <v-text-field v-model.number="form.password_length" type="number" min="8" max="64" :label="$t('relay.passwordLength')" hide-details />
++              </v-col>
++              <v-col cols="12">
++                <v-textarea v-model="form.ipv6_text" :label="$t('relay.ipv6List')" :hint="$t('relay.pairedIPv6Hint')" persistent-hint rows="3" dir="ltr" hide-details="auto" />
++              </v-col>
++              <v-col cols="12">
++                <v-textarea v-model="form.upstream_text" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
++              </v-col>
++              <v-col cols="12">
++                <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
++              </v-col>
++            </v-row>
++            <div class="relay-actions">
++              <v-btn color="primary" prepend-icon="mdi-swap-horizontal-bold" :loading="loading" :disabled="!canCreatePaired" @click="create('dualstack')">{{ $t('relay.createDualStack') }}</v-btn>
++            </div>
++          </v-window-item>
++
            <v-window-item value="pools">
              <v-alert v-if="pools.length === 0" type="info" variant="tonal">{{ $t('relay.noPools') }}</v-alert>
              <v-row v-else>
-@@ -219,7 +264,7 @@ import { i18n } from '@/locales'
+@@ -219,7 +309,7 @@ import { i18n } from '@/locales'
  import { copyText } from '@/utils/clipboard'
  
  interface IPv6Item { interface: string; address: string; prefix: number }
@@ -113,7 +526,7 @@ index 2009e8d..2c7936e 100644
  interface RelayPool { id: number; name: string; source?: string; mode: string; protocol?: string; domain_strategy?: string; listen_host: string; port_start: number; count: number; items: RelayItem[] }
  interface RelayCapabilities { os: string; can_add_system_ipv6: boolean; unavailable_reason?: string }
  
-@@ -254,6 +299,12 @@ const interfaceItems = computed(() => [...new Set(ipv6.value.map((item) => item.
+@@ -254,6 +344,12 @@ const interfaceItems = computed(() => [...new Set(ipv6.value.map((item) => item.
  const relayCountValid = computed(() => Number.isInteger(form.count) && form.count >= 1 && form.count <= 100)
  const canCreateIPv6 = computed(() => relayCountValid.value && (ipv6.value.length > 0 || form.base_ipv6.trim().length > 0))
  const canQuickCreateIPv6 = computed(() => canCreateIPv6.value && capabilities.value?.can_add_system_ipv6 === true)
@@ -126,31 +539,31 @@ index 2009e8d..2c7936e 100644
  const capabilityMessage = computed(() => {
    const capability = capabilities.value
    if (!capability || capability.can_add_system_ipv6) return ''
-@@ -322,6 +373,10 @@ const parseItems = (items: any): RelayItem[] => {
+@@ -322,6 +418,10 @@ const parseItems = (items: any): RelayItem[] => {
  }
  
  const poolAddressSummary = (pool: RelayPool) => {
-+  if (pool.mode === 'paired') {
++  if (pool.mode === 'paired' || pool.mode === 'dualstack') {
 +    const ipv6Addresses = [...new Set(pool.items.map((item) => item.ipv6).filter(Boolean))]
 +    return `${pool.listen_host} -> ${pool.count} IPv4 SOCKS5 + ${ipv6Addresses.length} VPS IPv6`
 +  }
    if (pool.mode !== 'ipv6') return pool.listen_host
    const addresses = [...new Set(pool.items.map((item) => item.ipv6).filter(Boolean))]
    const mode = pool.domain_strategy === 'prefer_ipv6'
-@@ -332,7 +387,7 @@ const poolAddressSummary = (pool: RelayPool) => {
+@@ -332,7 +432,7 @@ const poolAddressSummary = (pool: RelayPool) => {
    return `${pool.listen_host} -> ${addresses[0]}, ${addresses[1]} ... (+${addresses.length - 2} IPv6) / ${mode}`
  }
  
 -const create = async (mode: 'ipv6' | 'upstream', quick = false) => {
-+const create = async (mode: 'ipv6' | 'upstream' | 'paired', quick = false) => {
++const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick = false) => {
    if (mode === 'ipv6' && !relayCountValid.value) {
      push.error({ message: i18n.global.t('relay.countRange') })
      return
-@@ -347,6 +402,14 @@ const create = async (mode: 'ipv6' | 'upstream', quick = false) => {
+@@ -347,6 +447,14 @@ const create = async (mode: 'ipv6' | 'upstream', quick = false) => {
        payload.tls_id = 0
        payload.transport = ''
      }
-+    if (mode === 'paired') {
++    if (mode === 'paired' || mode === 'dualstack') {
 +      payload.count = pairedUpstreamCount.value
 +      payload.protocol = 'socks'
 +      payload.core_type = 'sing-box'
@@ -162,20 +575,23 @@ index 2009e8d..2c7936e 100644
      // Keep the raw text as the source of truth so bracketed IPv6 SOCKS5 entries
      // are parsed by the backend without losing their colon-separated address.
 diff --git a/frontend/src/locales/en.ts b/frontend/src/locales/en.ts
-index ed360dd..c9172ec 100644
+index ed360dd..1ec6eff 100644
 --- a/frontend/src/locales/en.ts
 +++ b/frontend/src/locales/en.ts
-@@ -659,6 +659,9 @@
+@@ -659,6 +659,12 @@
      encryption: "Encryption",
      ipv6Mode: "Local IPv6 pool",
      upstreamMode: "Upstream SOCKS5",
 +    pairedMode: "IPv4/IPv6 pairs",
 +    pairedDescription: "Each upstream SOCKS5 line is paired with one VPS IPv6. IPv4 destinations use that SOCKS5 proxy and IPv6 destinations bind to the matching VPS IPv6.",
 +    createPaired: "Create paired relays",
++    dualStackMode: "Dual-stack egress",
++    dualStackDescription: "Each upstream SOCKS5 is paired with one VPS IPv6. Every site tries the matching VPS IPv6 first, then falls back to the IPv4 SOCKS5 when IPv6 fails or is unavailable.",
++    createDualStack: "Create dual-stack relays",
      pools: "Relay pools",
      name: "Pool name",
      publicHost: "Public host",
-@@ -679,7 +682,9 @@
+@@ -679,7 +685,9 @@
      detectedIPv6: "Detected public IPv6",
      noIPv6: "No usable public IPv6 address detected",
      upstreamList: "Upstream list",
@@ -187,20 +603,23 @@ index ed360dd..c9172ec 100644
      noPools: "No relay pools",
      items: "items",
 diff --git a/frontend/src/locales/fa.ts b/frontend/src/locales/fa.ts
-index c77825d..03ca3f6 100644
+index c77825d..6b20cdb 100644
 --- a/frontend/src/locales/fa.ts
 +++ b/frontend/src/locales/fa.ts
-@@ -612,6 +612,9 @@
+@@ -612,6 +612,12 @@
      encryption: "رمزگذاری",
      ipv6Mode: "استخر IPv6 محلی",
      upstreamMode: "SOCKS5 بالادستی",
 +    pairedMode: "جفت‌های IPv4/IPv6",
 +    pairedDescription: "هر خط SOCKS5 بالادستی به ترتیب با یک IPv6 از VPS جفت می‌شود. مقصدهای IPv4 از SOCKS5 متناظر و مقصدهای IPv6 از IPv6 متناظر VPS استفاده می‌کنند.",
 +    createPaired: "ایجاد رله‌های جفت‌شده",
++    dualStackMode: "خروجی دوپشته",
++    dualStackDescription: "هر SOCKS5 بالادستی با یک IPv6 سرور جفت می‌شود. همه سایت‌ها ابتدا IPv6 سرور را امتحان می‌کنند و در صورت شکست یا نبود IPv6 به SOCKS5 IPv4 متناظر برمی‌گردند.",
++    createDualStack: "ایجاد رله‌های دوپشته",
      pools: "استخرهای رله",
      name: "نام استخر",
      publicHost: "آدرس عمومی",
-@@ -632,7 +635,9 @@
+@@ -632,7 +638,9 @@
      detectedIPv6: "IPv6 عمومی شناسایی‌شده",
      noIPv6: "IPv6 عمومی قابل استفاده‌ای شناسایی نشد",
      upstreamList: "فهرست بالادستی",
@@ -212,20 +631,23 @@ index c77825d..03ca3f6 100644
      noPools: "استخر رله‌ای وجود ندارد",
      items: "مورد",
 diff --git a/frontend/src/locales/ru.ts b/frontend/src/locales/ru.ts
-index 4afc4c2..4eba218 100644
+index 4afc4c2..d351c8c 100644
 --- a/frontend/src/locales/ru.ts
 +++ b/frontend/src/locales/ru.ts
-@@ -613,6 +613,9 @@
+@@ -613,6 +613,12 @@
      encryption: "Шифрование",
      ipv6Mode: "Локальный пул IPv6",
      upstreamMode: "Вышестоящий SOCKS5",
 +    pairedMode: "Пары IPv4/IPv6",
 +    pairedDescription: "Каждая строка вышестоящего SOCKS5 последовательно связывается с IPv6 VPS. Цели IPv4 используют SOCKS5, цели IPv6 — соответствующий IPv6 VPS.",
 +    createPaired: "Создать пары",
++    dualStackMode: "Двухстековый выход",
++    dualStackDescription: "Каждый SOCKS5 связывается с одним IPv6 VPS. Для всех сайтов сначала используется IPv6 VPS, а при сбое или отсутствии IPv6 выполняется переход на соответствующий IPv4 SOCKS5.",
++    createDualStack: "Создать двухстековые реле",
      pools: "Пулы ретрансляции",
      name: "Имя пула",
      publicHost: "Публичный адрес",
-@@ -633,7 +636,9 @@
+@@ -633,7 +639,9 @@
      detectedIPv6: "Обнаруженные публичные IPv6",
      noIPv6: "Подходящий публичный IPv6 не найден",
      upstreamList: "Список вышестоящих прокси",
@@ -237,20 +659,23 @@ index 4afc4c2..4eba218 100644
      noPools: "Пулов ретрансляции нет",
      items: "элементов",
 diff --git a/frontend/src/locales/vi.ts b/frontend/src/locales/vi.ts
-index 6997db4..d514daf 100644
+index 6997db4..2d0d46b 100644
 --- a/frontend/src/locales/vi.ts
 +++ b/frontend/src/locales/vi.ts
-@@ -612,6 +612,9 @@
+@@ -612,6 +612,12 @@
      encryption: "Mã hóa",
      ipv6Mode: "Nhóm IPv6 cục bộ",
      upstreamMode: "SOCKS5 upstream",
 +    pairedMode: "Ghép IPv4/IPv6",
 +    pairedDescription: "Mỗi dòng SOCKS5 upstream được ghép tuần tự với một IPv6 VPS. Đích IPv4 dùng SOCKS5 tương ứng, đích IPv6 dùng IPv6 VPS tương ứng.",
 +    createPaired: "Tạo relay ghép đôi",
++    dualStackMode: "Đầu ra ngăn xếp kép",
++    dualStackDescription: "Mỗi SOCKS5 upstream được ghép với một IPv6 VPS. Mọi trang web thử IPv6 VPS trước, sau đó dùng SOCKS5 IPv4 nếu IPv6 lỗi hoặc không khả dụng.",
++    createDualStack: "Tạo relay ngăn xếp kép",
      pools: "Nhóm chuyển tiếp",
      name: "Tên nhóm",
      publicHost: "Địa chỉ công khai",
-@@ -632,7 +635,9 @@
+@@ -632,7 +638,9 @@
      detectedIPv6: "IPv6 công khai đã phát hiện",
      noIPv6: "Không tìm thấy IPv6 công khai khả dụng",
      upstreamList: "Danh sách upstream",
@@ -262,20 +687,23 @@ index 6997db4..d514daf 100644
      noPools: "Chưa có nhóm chuyển tiếp",
      items: "mục",
 diff --git a/frontend/src/locales/zhcn.ts b/frontend/src/locales/zhcn.ts
-index 98fd5f5..6efb256 100644
+index 98fd5f5..02025d9 100644
 --- a/frontend/src/locales/zhcn.ts
 +++ b/frontend/src/locales/zhcn.ts
-@@ -659,6 +659,9 @@
+@@ -659,6 +659,12 @@
      encryption: "加密方式",
      ipv6Mode: "本机 IPv6 池",
      upstreamMode: "上游 SOCKS5",
 +    pairedMode: "IPv4/IPv6 配对",
 +    pairedDescription: "每行上游 SOCKS5 按顺序配一个 VPS IPv6。访问 IPv4 目标走对应 SOCKS5，访问 IPv6 目标绑定对应 VPS IPv6 出口。",
 +    createPaired: "创建配对中转",
++    dualStackMode: "双栈出口",
++    dualStackDescription: "每行上游 SOCKS5 配一个 VPS IPv6。所有网站先尝试对应 VPS IPv6；IPv6 连接失败或目标没有 IPv6 时，回退到对应 IPv4 SOCKS5。",
++    createDualStack: "创建双栈中转",
      pools: "中转批次",
      name: "批次名称",
      publicHost: "对外连接地址",
-@@ -679,7 +682,9 @@
+@@ -679,7 +685,9 @@
      detectedIPv6: "检测到的公网 IPv6",
      noIPv6: "未检测到可用公网 IPv6",
      upstreamList: "上游列表",
@@ -287,20 +715,23 @@ index 98fd5f5..6efb256 100644
      noPools: "暂无中转批次",
      items: "条",
 diff --git a/frontend/src/locales/zhtw.ts b/frontend/src/locales/zhtw.ts
-index 3adf47c..3e6eb2f 100644
+index 3adf47c..d599a7a 100644
 --- a/frontend/src/locales/zhtw.ts
 +++ b/frontend/src/locales/zhtw.ts
-@@ -612,6 +612,9 @@
+@@ -612,6 +612,12 @@
      encryption: "加密方式",
      ipv6Mode: "本機 IPv6 池",
      upstreamMode: "上游 SOCKS5",
 +    pairedMode: "IPv4/IPv6 配對",
 +    pairedDescription: "每行上游 SOCKS5 依序配對一個 VPS IPv6。IPv4 目標走對應 SOCKS5，IPv6 目標綁定對應 VPS IPv6 出口。",
 +    createPaired: "建立配對中轉",
++    dualStackMode: "雙棧出口",
++    dualStackDescription: "每行上游 SOCKS5 配一個 VPS IPv6。所有網站先嘗試對應 VPS IPv6；IPv6 連線失敗或目標沒有 IPv6 時，回退到對應 IPv4 SOCKS5。",
++    createDualStack: "建立雙棧中轉",
      pools: "中轉批次",
      name: "批次名稱",
      publicHost: "對外連接地址",
-@@ -632,7 +635,9 @@
+@@ -632,7 +638,9 @@
      detectedIPv6: "檢測到的公網 IPv6",
      noIPv6: "未檢測到可用公網 IPv6",
      upstreamList: "上游列表",
@@ -312,14 +743,23 @@ index 3adf47c..3e6eb2f 100644
      noPools: "暫無中轉批次",
      items: "條",
 diff --git a/service/relay.go b/service/relay.go
-index 27ca43e..79103a9 100644
+index 27ca43e..dd3005f 100644
 --- a/service/relay.go
 +++ b/service/relay.go
-@@ -30,9 +30,11 @@ import (
+@@ -16,6 +16,7 @@ import (
+ 	"sync"
+ 	"time"
+ 
++	"github.com/Hhz0823/1s-ui/core"
+ 	"github.com/Hhz0823/1s-ui/database"
+ 	"github.com/Hhz0823/1s-ui/database/model"
+ 	"github.com/Hhz0823/1s-ui/logger"
+@@ -30,19 +31,35 @@ import (
  const (
  	relayModeIPv6                 = "ipv6"
  	relayModeUpstream             = "upstream"
 +	relayModePaired               = "paired"
++	relayModeDualStack            = "dualstack"
  	relaySourceAutoAddIPv6        = "help660vip/auto-add-ipv6"
  	relayDomainStrategyIPv6Only   = "ipv6_only"
  	relayDomainStrategyPreferIPv6 = "prefer_ipv6"
@@ -327,52 +767,75 @@ index 27ca43e..79103a9 100644
  	relayAddressReady             = "ready"
  	relayAddressTentative         = "tentative"
  	relayAddressDADFailed         = "dadfailed"
-@@ -530,10 +532,10 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
+ 	relayAddressMissing           = "missing"
+ 	relayIPv6EgressErrorCode      = "relay_ipv6_egress_unreachable"
+ 	relayIPv6ProbeWorkers         = 8
++	relayDualStackIPv6Timeout     = "3s"
+ 	maxRelayItems                 = 100
+ 	relayCoreSingBox              = model.CoreTypeSingBox
+ )
+ 
++func relayModeUsesUpstream(mode string) bool {
++	return mode == relayModeUpstream || mode == relayModePaired || mode == relayModeDualStack
++}
++
++func relayModeUsesIPv6(mode string) bool {
++	return mode == relayModeIPv6 || mode == relayModePaired || mode == relayModeDualStack
++}
++
++func relayModePairsUpstream(mode string) bool {
++	return mode == relayModePaired || mode == relayModeDualStack
++}
++
+ var relayIPv6EgressTargets = []string{
+ 	"[2606:4700:4700::1111]:443",
+ 	"[2001:4860:4860::8888]:443",
+@@ -530,10 +547,10 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
  		return nil, err
  	}
  	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
 -	if req.Mode != relayModeIPv6 && req.Mode != relayModeUpstream {
 -		return nil, common.NewError("relay mode must be ipv6 or upstream")
-+	if req.Mode != relayModeIPv6 && req.Mode != relayModeUpstream && req.Mode != relayModePaired {
-+		return nil, common.NewError("relay mode must be ipv6, upstream, or paired")
++	if req.Mode != relayModeIPv6 && req.Mode != relayModeUpstream && req.Mode != relayModePaired && req.Mode != relayModeDualStack {
++		return nil, common.NewError("relay mode must be ipv6, upstream, paired, or dualstack")
  	}
 -	if req.Mode == relayModeUpstream && len(req.Upstreams) == 0 {
-+	if (req.Mode == relayModeUpstream || req.Mode == relayModePaired) && len(req.Upstreams) == 0 {
++	if relayModeUsesUpstream(req.Mode) && len(req.Upstreams) == 0 {
  		parsed, parseErr := parseRelayUpstreams(req.UpstreamText)
  		if parseErr != nil {
  			return nil, parseErr
-@@ -543,7 +545,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
+@@ -543,7 +560,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
  	if req.Mode == relayModeIPv6 && req.Count <= 0 {
  		return nil, common.NewError("relay count must be greater than zero")
  	}
 -	if req.Mode == relayModeUpstream {
-+	if req.Mode == relayModeUpstream || req.Mode == relayModePaired {
++	if relayModeUsesUpstream(req.Mode) {
  		for i := range req.Upstreams {
  			req.Upstreams[i].Server = strings.Trim(req.Upstreams[i].Server, "[]")
  		}
-@@ -654,7 +656,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
+@@ -654,7 +671,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
  			return nil, err
  		}
  	}
 -	if req.Mode == relayModeIPv6 && runtime.GOOS == "linux" {
-+	if (req.Mode == relayModeIPv6 || req.Mode == relayModePaired) && runtime.GOOS == "linux" {
++	if relayModeUsesIPv6(req.Mode) && runtime.GOOS == "linux" {
  		if err := validateRelayIPv6Egress(context.Background(), items, probeRelayIPv6Egress); err != nil {
  			return nil, err
  		}
-@@ -716,7 +718,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
+@@ -716,7 +733,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
  	}
  	for i := range items {
  		listenAddress := "::"
 -		if req.Mode == relayModeIPv6 {
-+		if req.Mode == relayModeIPv6 || req.Mode == relayModePaired {
++		if relayModeUsesIPv6(req.Mode) {
  			listenAddress = relayInboundListenAddress(req.Mode, publicHost)
  		}
  		inboundOptions, clientConfig, err := relayProtocolConfig(req, &items[i])
-@@ -763,6 +765,21 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
+@@ -763,6 +780,37 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
  			return nil, err
  		}
  		items[i].OutboundTag = outbound.Tag
-+		if req.Mode == relayModePaired {
++		if relayModePairsUpstream(req.Mode) {
 +			upstream := req.Upstreams[i]
 +			ipv4Outbound := model.Outbound{
 +				Type: "socks",
@@ -386,39 +849,68 @@ index 27ca43e..79103a9 100644
 +				return nil, err
 +			}
 +			items[i].IPv4OutboundTag = ipv4Outbound.Tag
++			if req.Mode == relayModeDualStack {
++				items[i].IPv6OutboundTag = outbound.Tag
++				fallbackOutbound := model.Outbound{
++					Type: core.RelayFallbackOutboundType,
++					Tag:  fmt.Sprintf("relay-dual-%s", common.Random(7)),
++					Options: mustJSON(map[string]interface{}{
++						"ipv6_outbound": items[i].IPv6OutboundTag,
++						"ipv4_outbound": items[i].IPv4OutboundTag,
++						"ipv6_timeout":  relayDualStackIPv6Timeout,
++					}),
++				}
++				if err := tx.Create(&fallbackOutbound).Error; err != nil {
++					return nil, err
++				}
++				items[i].OutboundTag = fallbackOutbound.Tag
++			}
 +		}
  		client := model.Client{
  			Enable: true, Name: items[i].Username,
  			Config:    mustJSON(clientConfig),
-@@ -836,6 +853,13 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
+@@ -836,6 +884,13 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
  }
  
  func normalizeRelayDomainStrategy(mode, value string) (string, error) {
-+	if mode == relayModePaired {
++	if mode == relayModePaired || mode == relayModeDualStack {
 +		value = strings.ToLower(strings.TrimSpace(value))
 +		if value == "" || value == relayDomainStrategyPreferIPv6 {
 +			return relayDomainStrategyPreferIPv6, nil
 +		}
-+		return "", common.NewError("paired relay mode requires prefer_ipv6 domain strategy")
++		return "", common.NewError("paired and dualstack relay modes require prefer_ipv6 domain strategy")
 +	}
  	if mode != relayModeIPv6 {
  		return "", nil
  	}
-@@ -917,6 +941,9 @@ func (s *ConfigService) DeleteRelay(id uint, actor string) error {
+@@ -853,6 +908,9 @@ func normalizeRelayDomainStrategy(mode, value string) (string, error) {
+ 
+ func relayDirectOutboundOptions(req RelayCreateRequest, item model.RelayItem) map[string]interface{} {
+ 	strategy := req.DomainStrategy
++	if req.Mode == relayModeDualStack {
++		strategy = relayDomainStrategyIPv6Only
++	}
+ 	if strategy == "" {
+ 		strategy = relayDomainStrategyIPv6Only
+ 	}
+@@ -917,6 +975,12 @@ func (s *ConfigService) DeleteRelay(id uint, actor string) error {
  	for _, item := range items {
  		inboundTags = append(inboundTags, item.InboundTag)
  		outboundTags = append(outboundTags, item.OutboundTag)
++		if item.IPv6OutboundTag != "" {
++			outboundTags = append(outboundTags, item.IPv6OutboundTag)
++		}
 +		if item.IPv4OutboundTag != "" {
 +			outboundTags = append(outboundTags, item.IPv4OutboundTag)
 +		}
  		if item.ClientID > 0 {
  			clientIDs = append(clientIDs, item.ClientID)
  		}
-@@ -1158,6 +1185,16 @@ func (s *ConfigService) prepareRelayItems(req RelayCreateRequest) ([]model.Relay
+@@ -1158,6 +1222,16 @@ func (s *ConfigService) prepareRelayItems(req RelayCreateRequest) ([]model.Relay
  	usedUsernames = make(map[string]bool)
  	for i, ip := range addresses {
  		items[i] = model.RelayItem{ListenPort: req.PortStart + i, Username: uniqueRelayUsername(req.UsernamePrefix, i, usedUsernames), Password: common.Random(req.PasswordLength), IPv6: ip.String(), Interface: iface, Prefix: prefix}
-+		if req.Mode == relayModePaired {
++		if relayModePairsUpstream(req.Mode) {
 +			upstream := req.Upstreams[i]
 +			if err := validateUpstream(upstream); err != nil {
 +				return nil, fmt.Errorf("upstream line %d: %w", i+1, err)
@@ -431,14 +923,18 @@ index 27ca43e..79103a9 100644
  	}
  	return items, nil
  }
-@@ -1555,12 +1592,15 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
+@@ -1555,12 +1629,19 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
  		rules = []interface{}{}
  	}
  	targets := make(map[string]string, len(items))
++	ipv6Targets := make(map[string]string, len(items))
 +	ipv4Targets := make(map[string]string, len(items))
  	for _, item := range items {
  		if item.InboundTag != "" && item.OutboundTag != "" {
  			targets[item.InboundTag] = item.OutboundTag
++			if item.IPv6OutboundTag != "" {
++				ipv6Targets[item.InboundTag] = item.IPv6OutboundTag
++			}
 +			if item.IPv4OutboundTag != "" {
 +				ipv4Targets[item.InboundTag] = item.IPv4OutboundTag
 +			}
@@ -448,7 +944,7 @@ index 27ca43e..79103a9 100644
  	filtered := make([]interface{}, 0, len(rules))
  	for _, raw := range rules {
  		entry, ok := raw.(map[string]interface{})
-@@ -1574,46 +1614,58 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
+@@ -1574,46 +1655,69 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
  			continue
  		}
  		outbound := fmt.Sprint(entry["outbound"])
@@ -458,7 +954,7 @@ index 27ca43e..79103a9 100644
 -			if targets[inbound] == outbound {
 -				routeExists[inbound] = true
 -				routeMatch = true
-+			if targets[inbound] == outbound || (ipv4Targets[inbound] != "" && ipv4Targets[inbound] == outbound) {
++			if targets[inbound] == outbound || (ipv6Targets[inbound] != "" && ipv6Targets[inbound] == outbound) || (ipv4Targets[inbound] != "" && ipv4Targets[inbound] == outbound) {
 +				generated = true
 +			}
 +			if ipv4Targets[inbound] != "" && fmt.Sprint(entry["action"]) == "resolve" && fmt.Sprint(entry["server"]) == relayPairedDNSResolverTag {
@@ -484,6 +980,17 @@ index 27ca43e..79103a9 100644
  			if _, ok := targets[item.InboundTag]; !ok {
  				continue
  			}
++			if item.IPv6OutboundTag != "" && item.IPv4OutboundTag != "" {
++				newRules = append(newRules,
++					map[string]interface{}{
++						"inbound": []string{item.InboundTag}, "action": "resolve", "strategy": relayDomainStrategyPreferIPv6, "server": relayPairedDNSResolverTag,
++					},
++					map[string]interface{}{
++						"inbound": []string{item.InboundTag}, "action": "route", "outbound": item.OutboundTag,
++					},
++				)
++				continue
++			}
 +			if item.IPv4OutboundTag != "" {
 +				newRules = append(newRules,
 +					map[string]interface{}{
@@ -523,7 +1030,7 @@ index 27ca43e..79103a9 100644
  	updated, err := json.MarshalIndent(config, "", "  ")
  	if err != nil {
  		return err
-@@ -1621,6 +1673,46 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
+@@ -1621,6 +1725,46 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
  	return tx.Model(&model.Setting{}).Where("key = ?", "config").Update("value", string(updated)).Error
  }
  
@@ -570,7 +1077,7 @@ index 27ca43e..79103a9 100644
  func relayRuleTargetInbounds(entry map[string]interface{}, targets map[string]string) []string {
  	var values []string
  	switch inbound := entry["inbound"].(type) {
-@@ -1726,9 +1818,17 @@ func parseRelayUpstreamLine(line string) (RelayUpstream, error) {
+@@ -1726,9 +1870,17 @@ func parseRelayUpstreamLine(line string) (RelayUpstream, error) {
  		}
  		return RelayUpstream{Server: parsed.Hostname(), Port: port, Username: username, Password: password}, validateUpstream(RelayUpstream{Server: parsed.Hostname(), Port: port, Username: username, Password: password})
  	}
@@ -589,17 +1096,17 @@ index 27ca43e..79103a9 100644
  	}
  	password := parts[len(parts)-1]
  	username := parts[len(parts)-2]
-@@ -1800,7 +1900,7 @@ func formatRelayHost(host string) string {
+@@ -1800,7 +1952,7 @@ func formatRelayHost(host string) string {
  }
  
  func relayInboundListenAddress(mode, publicHost string) string {
 -	if mode == relayModeIPv6 {
-+	if mode == relayModeIPv6 || mode == relayModePaired {
++	if relayModeUsesIPv6(mode) {
  		if address, err := netip.ParseAddr(strings.Trim(publicHost, "[]")); err == nil && address.Is6() {
  			return "::"
  		}
 diff --git a/service/relay_test.go b/service/relay_test.go
-index 5816c5c..b96adfb 100644
+index 5816c5c..f5bfff7 100644
 --- a/service/relay_test.go
 +++ b/service/relay_test.go
 @@ -6,6 +6,7 @@ import (
@@ -619,17 +1126,35 @@ index 5816c5c..b96adfb 100644
  		{name: "ipv6 colon format", line: "[2001:db8::10]:1080:user:pass", want: RelayUpstream{Server: "2001:db8::10", Port: 1080, Username: "user", Password: "pass"}},
  		{name: "socks url", line: "socks5://user:p%40ss@[2001:db8::10]:1080", want: RelayUpstream{Server: "2001:db8::10", Port: 1080, Username: "user", Password: "p@ss"}},
  	}
-@@ -353,6 +356,9 @@ func TestNormalizeRelayDomainStrategy(t *testing.T) {
+@@ -353,6 +356,12 @@ func TestNormalizeRelayDomainStrategy(t *testing.T) {
  		{name: "IPv6 only", mode: relayModeIPv6, value: relayDomainStrategyIPv6Only, want: relayDomainStrategyIPv6Only, valid: true},
  		{name: "dual stack", mode: relayModeIPv6, value: relayDomainStrategyPreferIPv6, want: relayDomainStrategyPreferIPv6, valid: true},
  		{name: "upstream ignores strategy", mode: relayModeUpstream, value: relayDomainStrategyIPv6Only, valid: true},
 +		{name: "paired default", mode: relayModePaired, want: relayDomainStrategyPreferIPv6, valid: true},
 +		{name: "paired prefer IPv6", mode: relayModePaired, value: relayDomainStrategyPreferIPv6, want: relayDomainStrategyPreferIPv6, valid: true},
 +		{name: "paired rejects IPv6 only", mode: relayModePaired, value: relayDomainStrategyIPv6Only},
++		{name: "dualstack default", mode: relayModeDualStack, want: relayDomainStrategyPreferIPv6, valid: true},
++		{name: "dualstack prefer IPv6", mode: relayModeDualStack, value: relayDomainStrategyPreferIPv6, want: relayDomainStrategyPreferIPv6, valid: true},
++		{name: "dualstack rejects IPv6 only", mode: relayModeDualStack, value: relayDomainStrategyIPv6Only},
  		{name: "invalid", mode: relayModeIPv6, value: "prefer_ipv4"},
  	}
  	for _, test := range tests {
-@@ -703,6 +709,125 @@ func TestUpdateRelayRouteRulesAddsAndRemovesOnlyRelayRules(t *testing.T) {
+@@ -379,6 +388,14 @@ func TestRelayDirectOutboundOptionsForceIPv6(t *testing.T) {
+ 	}
+ }
+ 
++func TestRelayDualStackDirectOutboundStaysIPv6Only(t *testing.T) {
++	item := model.RelayItem{IPv6: "2001:db8::10"}
++	options := relayDirectOutboundOptions(RelayCreateRequest{Mode: relayModeDualStack, DomainStrategy: relayDomainStrategyPreferIPv6}, item)
++	if options["inet6_bind_address"] != item.IPv6 || options["domain_strategy"] != relayDomainStrategyIPv6Only {
++		t.Fatalf("unexpected dual-stack IPv6 child options: %#v", options)
++	}
++}
++
+ func TestValidateRelayIPv6EgressDeduplicatesAddresses(t *testing.T) {
+ 	items := []model.RelayItem{
+ 		{IPv6: "2001:db8::10"},
+@@ -703,6 +720,193 @@ func TestUpdateRelayRouteRulesAddsAndRemovesOnlyRelayRules(t *testing.T) {
  	}
  }
  
@@ -706,6 +1231,74 @@ index 5816c5c..b96adfb 100644
 +	dnsServers = config["dns"].(map[string]interface{})["servers"].([]interface{})
 +	if len(dnsServers) != 0 {
 +		t.Fatalf("paired DNS server was not removed: %#v", dnsServers)
++	}
++}
++
++func TestUpdateRelayRouteRulesCreatesDualStackFallbackRoute(t *testing.T) {
++	dbDir := t.TempDir()
++	t.Setenv("SUI_DB_FOLDER", dbDir)
++	if err := database.InitDB(filepath.Join(dbDir, "relay-dualstack-rules.db")); err != nil {
++		t.Fatal(err)
++	}
++	db := database.GetDB()
++	if _, err := (&SettingService{}).GetAllSetting(); err != nil {
++		t.Fatal(err)
++	}
++	item := model.RelayItem{
++		InboundTag: "relay-dual-in", OutboundTag: "relay-dual-fallback",
++		IPv6OutboundTag: "relay-dual-ipv6", IPv4OutboundTag: "relay-dual-ipv4",
++	}
++	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, false); err != nil {
++		t.Fatal(err)
++	}
++	var setting model.Setting
++	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
++		t.Fatal(err)
++	}
++	var config map[string]interface{}
++	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
++		t.Fatal(err)
++	}
++	rules := config["route"].(map[string]interface{})["rules"].([]interface{})
++	if len(rules) != 4 {
++		t.Fatalf("dual-stack rule count = %d, want 4", len(rules))
++	}
++	resolve := rules[0].(map[string]interface{})
++	route := rules[1].(map[string]interface{})
++	if resolve["action"] != "resolve" || resolve["strategy"] != relayDomainStrategyPreferIPv6 || resolve["server"] != relayPairedDNSResolverTag {
++		t.Fatalf("dual-stack resolve rule = %#v", resolve)
++	}
++	if route["action"] != "route" || route["outbound"] != item.OutboundTag {
++		t.Fatalf("dual-stack fallback route = %#v", route)
++	}
++	if _, exists := route["ip_cidr"]; exists {
++		t.Fatalf("dual-stack fallback route must receive both address families: %#v", route)
++	}
++	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, false); err != nil {
++		t.Fatal(err)
++	}
++	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
++		t.Fatal(err)
++	}
++	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
++		t.Fatal(err)
++	}
++	rules = config["route"].(map[string]interface{})["rules"].([]interface{})
++	if len(rules) != 4 {
++		t.Fatalf("dual-stack rule count after idempotent update = %d, want 4", len(rules))
++	}
++	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, true); err != nil {
++		t.Fatal(err)
++	}
++	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
++		t.Fatal(err)
++	}
++	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
++		t.Fatal(err)
++	}
++	rules = config["route"].(map[string]interface{})["rules"].([]interface{})
++	if len(rules) != 2 {
++		t.Fatalf("dual-stack rule count after removal = %d, want 2", len(rules))
 +	}
 +}
 +
