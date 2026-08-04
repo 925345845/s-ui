@@ -24,7 +24,7 @@ chmod +x install-s-ui-paired.sh
 sudo ./install-s-ui-paired.sh
 ```
 
-安装后进入“入站管理 -> 一键中转 -> 双栈出口”。每行上游 SOCKS5 按顺序对应一条 VPS IPv6。IPv6 出口健康时禁止 IPv4，只有 IPv6 出口健康探测失败时才由同一行的 IPv4 SOCKS5 临时接管。完整配置说明见 `1s-ui-paired-relay-guide.md`。
+安装后进入“入站管理 -> 一键中转 -> 双栈出口”。每行上游 SOCKS5 按顺序对应一条 VPS IPv6。双栈目标严格优先使用 VPS IPv6；目标只有 IPv4，或本次 IPv6 连接失败时，才由同一行的 IPv4 SOCKS5 接管。完整配置说明见 `1s-ui-paired-relay-guide.md`。
 
 在“中转批次”中，每条 IPv6 都有独立的手动轮转链接。访问一条链接只更换对应 IPv6，不改变其他地址、现有端口、账号、密码或 IPv4 SOCKS5 配对。
 

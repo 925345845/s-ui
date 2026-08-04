@@ -616,7 +616,7 @@
     pairedDescription: "هر خط SOCKS5 بالادستی به ترتیب با یک IPv6 از VPS جفت می‌شود. مقصدهای IPv4 از SOCKS5 متناظر و مقصدهای IPv6 از IPv6 متناظر VPS استفاده می‌کنند.",
     createPaired: "ایجاد رله‌های جفت‌شده",
     dualStackMode: "خروجی دوپشته",
-    dualStackDescription: "Each upstream SOCKS5 is paired with one VPS IPv6. IPv4 is blocked while that VPS IPv6 egress is healthy and takes over only while the IPv6 egress health check is failing.",
+    dualStackDescription: "Each upstream SOCKS5 is paired with one VPS IPv6. Dual-stack destinations strictly prefer VPS IPv6; IPv4-only destinations, or failed IPv6 connections, use the paired IPv4 SOCKS5.",
     createDualStack: "ایجاد رله‌های دوپشته",
     pools: "استخرهای رله",
     name: "نام استخر",

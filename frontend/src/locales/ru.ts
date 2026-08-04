@@ -617,7 +617,7 @@
     pairedDescription: "Каждая строка вышестоящего SOCKS5 последовательно связывается с IPv6 VPS. Цели IPv4 используют SOCKS5, цели IPv6 — соответствующий IPv6 VPS.",
     createPaired: "Создать пары",
     dualStackMode: "Двухстековый выход",
-    dualStackDescription: "Each upstream SOCKS5 is paired with one VPS IPv6. IPv4 is blocked while that VPS IPv6 egress is healthy and takes over only while the IPv6 egress health check is failing.",
+    dualStackDescription: "Each upstream SOCKS5 is paired with one VPS IPv6. Dual-stack destinations strictly prefer VPS IPv6; IPv4-only destinations, or failed IPv6 connections, use the paired IPv4 SOCKS5.",
     createDualStack: "Создать двухстековые реле",
     pools: "Пулы ретрансляции",
     name: "Имя пула",

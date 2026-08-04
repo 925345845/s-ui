@@ -12,8 +12,8 @@
 上面的地址族固定分流属于 `paired` 模式。“双栈出口” `dualstack` 模式会在同一个入口内按以下顺序连接：
 
 1. 先使用绑定到该入口的 VPS IPv6 连接目标 IPv6 地址；
-2. 独立 IPv4 请求或目标没有 IPv6 地址时，先确认 VPS IPv6 公网出口是否健康；
-3. 只有目标 IPv6 连接和公网 IPv6 健康探测都失败时，才使用同一行对应的 IPv4 SOCKS5；IPv4 回退不会使用 VPS 原生 IPv4。
+2. 目标同时有 A/AAAA 时，只有本次 IPv6 连接失败才尝试 IPv4；
+3. 目标只有 A 记录或直接使用 IPv4 地址时，立即使用同一行对应的 IPv4 SOCKS5；IPv4 回退不会使用 VPS 原生 IPv4。
 
 ## 直接安装
 
@@ -76,7 +76,7 @@ socks5://user:password@203.0.113.12:1080
 
 ## IPv6 优先回退
 
-“双栈出口”按每条线路检查 VPS IPv6 出口健康状态。IPv6 健康时会拒绝独立 IPv4 请求，因此 IP 检测页面不会因为额外的 IPv4 探测而获得上游地址；只有 IPv6 连接与公网健康探测都失败时，对应 IPv4 SOCKS5 才会临时接管。IPv6 恢复后自动停止 IPv4 回退。
+“双栈出口”按当前目标的地址族严格优先 IPv6。双栈目标先走对应 VPS IPv6，只有本次连接失败才由对应 IPv4 SOCKS5 接管；IPv4-only 目标直接走 IPv4 SOCKS5；IPv6-only 目标失败时不会错误发送给 IPv4。此规则可以访问 `appleid.apple.com` 等 IPv4-only 服务，同时让支持 IPv6 的站点保持 IPv6 优先。
 
 ## 大量地址优化
 
@@ -91,7 +91,7 @@ curl --socks5-hostname VPS地址:端口 --proxy-user 账号:密码 https://api.i
 curl --socks5-hostname VPS地址:端口 --proxy-user 账号:密码 https://api6.ipify.org
 ```
 
-IPv6 健康时第二条应显示对应 VPS IPv6，第一条应连接失败。临时阻断 VPS IPv6 出口后，第一条才应显示该入口对应的上游 SOCKS5 IPv4。
+第二条应显示对应 VPS IPv6，第一条应显示该入口对应的上游 SOCKS5 IPv4。对于同时有 A 和 AAAA 记录的目标，IPv6 连接正常时不应使用 IPv4。
 
 测试双栈回退时，可以先临时阻断或停用该 VPS IPv6 路由，再访问一个同时有 A 和 AAAA 记录的网站；连接应在 IPv6 超时后自动回到对应 IPv4 SOCKS5。
 

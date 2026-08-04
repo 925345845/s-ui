@@ -616,7 +616,7 @@
     pairedDescription: "每行上游 SOCKS5 依序配對一個 VPS IPv6。IPv4 目標走對應 SOCKS5，IPv6 目標綁定對應 VPS IPv6 出口。",
     createPaired: "建立配對中轉",
     dualStackMode: "雙棧出口",
-    dualStackDescription: "每行上游 SOCKS5 配一個 VPS IPv6。VPS IPv6 出口健康時完全禁止 IPv4；只有該線路 IPv6 出口檢測失敗時，才由對應 IPv4 SOCKS5 暫時接管。",
+    dualStackDescription: "每行上游 SOCKS5 配一個 VPS IPv6。雙棧目標嚴格優先使用 VPS IPv6；目標只有 IPv4，或本次 IPv6 連線失敗時，才使用對應 IPv4 SOCKS5。",
     createDualStack: "建立雙棧中轉",
     pools: "中轉批次",
     name: "批次名稱",

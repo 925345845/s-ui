@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/miekg/dns"
+	"github.com/sagernet/sing-box/adapter"
 	sbOutbound "github.com/sagernet/sing-box/adapter/outbound"
 	C "github.com/sagernet/sing-box/constant"
 	M "github.com/sagernet/sing/common/metadata"
@@ -20,6 +22,28 @@ type relayFallbackTestOutbound struct {
 	calls       int
 	destination M.Socksaddr
 }
+
+type relayFallbackTestDNSRouter struct {
+	addresses []netip.Addr
+	queries   int
+	strategy  C.DomainStrategy
+}
+
+func (r *relayFallbackTestDNSRouter) Start(adapter.StartStage) error { return nil }
+func (r *relayFallbackTestDNSRouter) Close() error                   { return nil }
+func (r *relayFallbackTestDNSRouter) Exchange(context.Context, *dns.Msg, adapter.DNSQueryOptions) (*dns.Msg, error) {
+	return nil, errors.New("not implemented")
+}
+func (r *relayFallbackTestDNSRouter) Lookup(_ context.Context, _ string, options adapter.DNSQueryOptions) ([]netip.Addr, error) {
+	r.queries++
+	r.strategy = options.Strategy
+	return r.addresses, nil
+}
+func (r *relayFallbackTestDNSRouter) ClearCache() {}
+func (r *relayFallbackTestDNSRouter) LookupReverseMapping(netip.Addr) (string, bool) {
+	return "", false
+}
+func (r *relayFallbackTestDNSRouter) ResetNetwork() {}
 
 func newRelayFallbackTestOutbound(tag string, err error) *relayFallbackTestOutbound {
 	return &relayFallbackTestOutbound{
@@ -74,39 +98,72 @@ func TestRelayFallbackUsesIPv4SOCKSAfterIPv6Failure(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = conn.Close()
-	if ipv6.calls != 1+len(relayFallbackIPv6ProbeTargets) || ipv4.calls != 1 {
+	if ipv6.calls != 1 || ipv4.calls != 1 {
 		t.Fatalf("calls: IPv6=%d IPv4=%d", ipv6.calls, ipv4.calls)
 	}
-	if ipv4.destination.String() != destination.String() {
-		t.Fatalf("IPv4 fallback destination = %s, want %s", ipv4.destination, destination)
+	wantIPv4Destination := M.ParseSocksaddr("192.0.2.20:443")
+	if ipv4.destination.String() != wantIPv4Destination.String() {
+		t.Fatalf("IPv4 fallback destination = %s, want %s", ipv4.destination, wantIPv4Destination)
 	}
 }
 
-func TestRelayFallbackSuppressesIPv4OnlyProbeWhileIPv6Healthy(t *testing.T) {
+func TestRelayFallbackUsesIPv4ForIPv4OnlyDestination(t *testing.T) {
 	ipv6 := newRelayFallbackTestOutbound("ipv6", nil)
 	ipv4 := newRelayFallbackTestOutbound("ipv4", nil)
 	outbound := &relayFallbackOutbound{ipv6Outbound: ipv6, ipv4Outbound: ipv4, ipv6Timeout: time.Second}
-	outbound.markIPv6Healthy()
-	_, err := outbound.DialParallelNetwork(context.Background(), N.NetworkTCP, M.ParseSocksaddr("v4-check.example:443"), []netip.Addr{
+	conn, err := outbound.DialParallelNetwork(context.Background(), N.NetworkTCP, M.ParseSocksaddr("appleid.apple.com:443"), []netip.Addr{
 		netip.MustParseAddr("192.0.2.40"),
 	}, nil, nil, nil, 0)
-	if err == nil {
-		t.Fatal("expected IPv4-only probe to be rejected while IPv6 is healthy")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if ipv6.calls != 0 || ipv4.calls != 0 {
+	_ = conn.Close()
+	if ipv6.calls != 0 || ipv4.calls != 1 {
 		t.Fatalf("calls: IPv6=%d IPv4=%d", ipv6.calls, ipv4.calls)
+	}
+	wantIPv4Destination := M.ParseSocksaddr("192.0.2.40:443")
+	if ipv4.destination.String() != wantIPv4Destination.String() {
+		t.Fatalf("IPv4-only destination = %s, want %s", ipv4.destination, wantIPv4Destination)
 	}
 }
 
-func TestRelayFallbackProbesIPv6BeforeDirectIPv4(t *testing.T) {
+func TestRelayFallbackDialContextResolvesIPv4AfterIPv6Failure(t *testing.T) {
+	ipv6 := newRelayFallbackTestOutbound("ipv6", errors.New("no usable IPv6 destination"))
+	ipv4 := newRelayFallbackTestOutbound("ipv4", nil)
+	dnsRouter := &relayFallbackTestDNSRouter{addresses: []netip.Addr{
+		netip.MustParseAddr("2001:db8::41"),
+		netip.MustParseAddr("192.0.2.41"),
+	}}
+	outbound := &relayFallbackOutbound{
+		ipv6Outbound: ipv6, ipv4Outbound: ipv4, ipv6Timeout: time.Second, dnsRouter: dnsRouter,
+	}
+	conn, err := outbound.DialContext(context.Background(), N.NetworkTCP, M.ParseSocksaddr("appleid.apple.com:443"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	if ipv6.calls != 1 || ipv4.calls != 1 || dnsRouter.queries != 1 {
+		t.Fatalf("calls: IPv6=%d IPv4=%d DNS=%d", ipv6.calls, ipv4.calls, dnsRouter.queries)
+	}
+	if dnsRouter.strategy != C.DomainStrategyIPv4Only {
+		t.Fatalf("DNS strategy = %v, want IPv4 only", dnsRouter.strategy)
+	}
+	wantDestination := M.ParseSocksaddr("192.0.2.41:443")
+	if ipv4.destination.String() != wantDestination.String() {
+		t.Fatalf("IPv4 fallback destination = %s, want %s", ipv4.destination, wantDestination)
+	}
+}
+
+func TestRelayFallbackUsesIPv4ForLiteralIPv4(t *testing.T) {
 	ipv6 := newRelayFallbackTestOutbound("ipv6", nil)
 	ipv4 := newRelayFallbackTestOutbound("ipv4", nil)
 	outbound := &relayFallbackOutbound{ipv6Outbound: ipv6, ipv4Outbound: ipv4, ipv6Timeout: time.Second}
-	_, err := outbound.DialContext(context.Background(), N.NetworkTCP, M.ParseSocksaddr("192.0.2.50:443"))
-	if err == nil {
-		t.Fatal("expected direct IPv4 to be rejected after a successful IPv6 health probe")
+	conn, err := outbound.DialContext(context.Background(), N.NetworkTCP, M.ParseSocksaddr("192.0.2.50:443"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if ipv6.calls != 1 || ipv4.calls != 0 {
+	_ = conn.Close()
+	if ipv6.calls != 0 || ipv4.calls != 1 {
 		t.Fatalf("calls: IPv6=%d IPv4=%d", ipv6.calls, ipv4.calls)
 	}
 }

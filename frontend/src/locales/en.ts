@@ -663,7 +663,7 @@
     pairedDescription: "Each upstream SOCKS5 line is paired with one VPS IPv6. IPv4 destinations use that SOCKS5 proxy and IPv6 destinations bind to the matching VPS IPv6.",
     createPaired: "Create paired relays",
     dualStackMode: "Dual-stack egress",
-    dualStackDescription: "Each upstream SOCKS5 is paired with one VPS IPv6. IPv4 is blocked while that VPS IPv6 egress is healthy and takes over only while the IPv6 egress health check is failing.",
+    dualStackDescription: "Each upstream SOCKS5 is paired with one VPS IPv6. Dual-stack destinations strictly prefer VPS IPv6; IPv4-only destinations, or failed IPv6 connections, use the paired IPv4 SOCKS5.",
     createDualStack: "Create dual-stack relays",
     pools: "Relay pools",
     name: "Pool name",

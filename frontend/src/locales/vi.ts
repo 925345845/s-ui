@@ -616,7 +616,7 @@
     pairedDescription: "Mỗi dòng SOCKS5 upstream được ghép tuần tự với một IPv6 VPS. Đích IPv4 dùng SOCKS5 tương ứng, đích IPv6 dùng IPv6 VPS tương ứng.",
     createPaired: "Tạo relay ghép đôi",
     dualStackMode: "Đầu ra ngăn xếp kép",
-    dualStackDescription: "Each upstream SOCKS5 is paired with one VPS IPv6. IPv4 is blocked while that VPS IPv6 egress is healthy and takes over only while the IPv6 egress health check is failing.",
+    dualStackDescription: "Each upstream SOCKS5 is paired with one VPS IPv6. Dual-stack destinations strictly prefer VPS IPv6; IPv4-only destinations, or failed IPv6 connections, use the paired IPv4 SOCKS5.",
     createDualStack: "Tạo relay ngăn xếp kép",
     pools: "Nhóm chuyển tiếp",
     name: "Tên nhóm",
