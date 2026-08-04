@@ -12,6 +12,7 @@
           <v-tab value="ipv6">{{ $t('relay.ipv6Mode') }}</v-tab>
           <v-tab value="upstream">{{ $t('relay.upstreamMode') }}</v-tab>
           <v-tab value="paired">{{ $t('relay.pairedMode') }}</v-tab>
+          <v-tab value="dualstack">{{ $t('relay.dualStackMode') }}</v-tab>
           <v-tab value="pools">{{ $t('relay.pools') }}</v-tab>
         </v-tabs>
 
@@ -201,6 +202,50 @@
             </div>
           </v-window-item>
 
+          <v-window-item value="dualstack">
+            <v-alert type="info" variant="tonal" density="compact" class="mb-3">
+              {{ $t('relay.dualStackDescription') }}
+            </v-alert>
+            <v-row>
+              <v-col cols="12" sm="6" md="4">
+                <v-text-field v-model="form.name" :label="$t('relay.name')" hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-text-field v-model="form.public_host" :label="$t('relay.publicHost')" dir="ltr" hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-text-field v-model.number="form.port_start" type="number" min="1" max="65535" :label="$t('relay.portStart')" hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-text-field v-model="form.username_prefix" :label="$t('relay.usernamePrefix')" dir="ltr" hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-text-field v-model.number="form.password_length" type="number" min="8" max="64" :label="$t('relay.passwordLength')" hide-details />
+              </v-col>
+              <v-col cols="12">
+                <v-textarea v-model="form.ipv6_text" :label="$t('relay.ipv6List')" :hint="$t('relay.pairedIPv6Hint')" persistent-hint rows="3" dir="ltr" hide-details="auto" />
+              </v-col>
+              <v-col cols="12">
+                <v-textarea v-model="form.upstream_text" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
+              </v-col>
+              <v-col cols="12">
+                <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
+              </v-col>
+            </v-row>
+            <div class="relay-actions">
+              <v-btn color="primary" prepend-icon="mdi-swap-horizontal-bold" :loading="loading" :disabled="!canCreatePaired" @click="create('dualstack')">{{ $t('relay.createDualStack') }}</v-btn>
+            </div>
+          </v-window-item>
+
           <v-window-item value="pools">
             <v-alert v-if="pools.length === 0" type="info" variant="tonal">{{ $t('relay.noPools') }}</v-alert>
             <v-row v-else>
@@ -373,7 +418,7 @@ const parseItems = (items: any): RelayItem[] => {
 }
 
 const poolAddressSummary = (pool: RelayPool) => {
-  if (pool.mode === 'paired') {
+  if (pool.mode === 'paired' || pool.mode === 'dualstack') {
     const ipv6Addresses = [...new Set(pool.items.map((item) => item.ipv6).filter(Boolean))]
     return `${pool.listen_host} -> ${pool.count} IPv4 SOCKS5 + ${ipv6Addresses.length} VPS IPv6`
   }
@@ -387,7 +432,7 @@ const poolAddressSummary = (pool: RelayPool) => {
   return `${pool.listen_host} -> ${addresses[0]}, ${addresses[1]} ... (+${addresses.length - 2} IPv6) / ${mode}`
 }
 
-const create = async (mode: 'ipv6' | 'upstream' | 'paired', quick = false) => {
+const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick = false) => {
   if (mode === 'ipv6' && !relayCountValid.value) {
     push.error({ message: i18n.global.t('relay.countRange') })
     return
@@ -402,7 +447,7 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired', quick = false) => {
       payload.tls_id = 0
       payload.transport = ''
     }
-    if (mode === 'paired') {
+    if (mode === 'paired' || mode === 'dualstack') {
       payload.count = pairedUpstreamCount.value
       payload.protocol = 'socks'
       payload.core_type = 'sing-box'

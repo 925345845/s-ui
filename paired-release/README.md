@@ -1,6 +1,6 @@
 # IPv4/IPv6 配对中转交付文件
 
-这些文件是基于本仓库源码构建的 IPv4/IPv6 配对中转版本。
+这些文件是基于本仓库源码构建的 IPv4/IPv6 配对和双栈回退中转版本。
 
 ## 直接安装
 
@@ -24,7 +24,7 @@ chmod +x install-s-ui-paired.sh
 sudo ./install-s-ui-paired.sh
 ```
 
-安装后进入“入站管理 -> 一键中转 -> IPv4/IPv6 配对”。每行上游 SOCKS5 按顺序对应一条 VPS IPv6。完整配置说明见 `1s-ui-paired-relay-guide.md`。
+安装后进入“入站管理 -> 一键中转 -> 双栈出口”。每行上游 SOCKS5 按顺序对应一条 VPS IPv6。所有目标先尝试 VPS IPv6，连接失败后回退到同一行的 IPv4 SOCKS5。完整配置说明见 `1s-ui-paired-relay-guide.md`。
 
 ## 文件说明
 

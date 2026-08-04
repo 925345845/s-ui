@@ -26,6 +26,7 @@ type RelayItem struct {
 	InboundID        uint   `json:"inbound_id"`
 	InboundTag       string `json:"inbound_tag"`
 	OutboundTag      string `json:"outbound_tag"`
+	IPv6OutboundTag  string `json:"ipv6_outbound_tag,omitempty"`
 	IPv4OutboundTag  string `json:"ipv4_outbound_tag,omitempty"`
 	ClientID         uint   `json:"client_id"`
 	ListenPort       int    `json:"listen_port"`

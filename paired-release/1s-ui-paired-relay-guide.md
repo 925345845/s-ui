@@ -1,6 +1,6 @@
-# 1S-UI IPv4/IPv6 配对中转
+# 1S-UI IPv4/IPv6 配对与双栈回退中转
 
-此补丁为 1S-UI 增加第三种中转模式：`paired`。
+此补丁为 1S-UI 增加 IPv4/IPv6 配对模式 `paired` 和双栈回退模式 `dualstack`。
 
 每一条入口代理对应：
 
@@ -8,6 +8,12 @@
 - 一个绑定到 VPS 网卡的 IPv6 出口；
 - IPv4-only 目标走 SOCKS5；
 - IPv6-only 或双栈目标优先走对应 VPS IPv6。
+
+双栈出口模式会在同一个入口内按以下顺序连接：
+
+1. 先使用绑定到该入口的 VPS IPv6 连接目标 IPv6 地址；
+2. IPv6 连接失败、超时（默认 3 秒）或域名没有 IPv6 地址时，使用同一行对应的 IPv4 SOCKS5；
+3. IPv4 回退使用上游 SOCKS5，不会改用 VPS 原生 IPv4。
 
 ## 直接安装
 
@@ -41,7 +47,7 @@ git apply 1s-ui-ipv4-ipv6-paired.patch
 
 ## 面板使用
 
-1. 打开“入站管理 -> 一键中转 -> IPv4/IPv6 配对”。
+1. 打开“入站管理 -> 一键中转 -> 双栈出口”。如果只需要按地址族固定分流，使用“IPv4/IPv6 配对”。
 2. 选择 VPS 的公网 IPv6 网卡，必要时填写已路由 IPv6 前缀。
 3. 将 IPWO 接口返回的文本粘贴到“上游列表”。支持：
 
@@ -65,8 +71,10 @@ curl --socks5-hostname VPS地址:端口 --proxy-user 账号:密码 https://api6.
 
 第一条应显示该入口对应的上游 SOCKS5 IPv4；第二条应显示该入口对应的 VPS IPv6。
 
+测试双栈回退时，可以先临时阻断或停用该 VPS IPv6 路由，再访问一个同时有 A 和 AAAA 记录的网站；连接应在 IPv6 超时后自动回到对应 IPv4 SOCKS5。
+
 ## 限制
 
 - VPS 必须拥有服务商实际路由或授权的 IPv6 前缀。
 - 上游 SOCKS5 的 UDP 支持取决于代理供应商；浏览器 QUIC 可能回退到 TCP。
-- 域名先由 VPS 本地 DNS 解析再按地址族分流，因此 CDN 节点选择可能反映 VPS DNS 所在地，而不是上游 IPv4 代理所在地。
+- 域名先由 VPS 本地 DNS 解析并保留 A/AAAA 地址；双栈出口的 IPv6 优先和 IPv4 回退由内置复合 outbound 执行，因此 CDN 节点选择可能反映 VPS DNS 所在地，而不是上游 IPv4 代理所在地。

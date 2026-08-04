@@ -176,7 +176,7 @@ Agent 主动出站连接中心面板，远端无需开放 Agent 控制端口：
 
 | 项目 | 支持 |
 | --- | --- |
-| 来源 | 本机公网 IPv6 池、上游 SOCKS5、IPv4/IPv6 配对 |
+| 来源 | 本机公网 IPv6 池、上游 SOCKS5、IPv4/IPv6 配对、双栈回退出口 |
 | 协议 | SOCKS5、HTTP、Mixed、Shadowsocks、VLESS、VMess、Trojan、Hysteria2、TUIC、Naive、AnyTLS |
 | 批量 | 每批 1–100 条；已用端口自动跳过并继续分配 |
 | 导出 | BitBrowser Excel、纯文本 `IP:端口:账号:密码` |
@@ -185,6 +185,8 @@ Agent 主动出站连接中心面板，远端无需开放 Agent 控制端口：
 IPv6 池模式只会向选定网卡添加地址，不修改系统默认路由。每个地址都经过 DAD 和公网出口验证，失败会回滚。VPS 必须拥有服务商已路由或授权的 IPv6 前缀；仅添加随机 `/64` 地址无法绕过源地址过滤。
 
 IPv4/IPv6 配对模式按上游 SOCKS5 列表顺序为每个入口分配一个 VPS IPv6。IPv4-only 目标使用对应上游 SOCKS5，IPv6 或双栈目标优先绑定对应 VPS IPv6；支持直接粘贴 `host:port`、`host:port:user:pass` 或 `socks5://` 列表。
+
+双栈出口模式使用同样的 IPv4/IPv6 配对，但由内置复合 outbound 负责连接级回退：所有目标先尝试对应 VPS IPv6，IPv6 连接失败或目标没有 AAAA 记录时，再使用同一行对应的 IPv4 SOCKS5。IPv4 回退不会使用 VPS 原生 IPv4；IPv6 连接最多等待 3 秒后回退。
 
 实现参考 [help660vip/auto-add-ipv6](https://github.com/help660vip/auto-add-ipv6) 的流程，但 1S-UI 使用内置 Go 逻辑，不执行第三方远程脚本。
 

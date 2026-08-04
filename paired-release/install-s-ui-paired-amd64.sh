@@ -77,4 +77,4 @@ fi
 
 echo "安装完成，原数据库保留在 /usr/local/s-ui/db。"
 echo "默认访问地址：http://VPS-IP:2095/app/"
-echo "进入：入站管理 -> 一键中转 -> IPv4/IPv6 配对。"
+echo "进入：入站管理 -> 一键中转 -> 双栈出口。"

@@ -359,6 +359,9 @@ func TestNormalizeRelayDomainStrategy(t *testing.T) {
 		{name: "paired default", mode: relayModePaired, want: relayDomainStrategyPreferIPv6, valid: true},
 		{name: "paired prefer IPv6", mode: relayModePaired, value: relayDomainStrategyPreferIPv6, want: relayDomainStrategyPreferIPv6, valid: true},
 		{name: "paired rejects IPv6 only", mode: relayModePaired, value: relayDomainStrategyIPv6Only},
+		{name: "dualstack default", mode: relayModeDualStack, want: relayDomainStrategyPreferIPv6, valid: true},
+		{name: "dualstack prefer IPv6", mode: relayModeDualStack, value: relayDomainStrategyPreferIPv6, want: relayDomainStrategyPreferIPv6, valid: true},
+		{name: "dualstack rejects IPv6 only", mode: relayModeDualStack, value: relayDomainStrategyIPv6Only},
 		{name: "invalid", mode: relayModeIPv6, value: "prefer_ipv4"},
 	}
 	for _, test := range tests {
@@ -382,6 +385,14 @@ func TestRelayDirectOutboundOptionsForceIPv6(t *testing.T) {
 	options := relayDirectOutboundOptions(RelayCreateRequest{Mode: relayModeIPv6, DomainStrategy: relayDomainStrategyIPv6Only}, item)
 	if options["inet6_bind_address"] != item.IPv6 || options["domain_strategy"] != relayDomainStrategyIPv6Only {
 		t.Fatalf("unexpected IPv6 direct options: %#v", options)
+	}
+}
+
+func TestRelayDualStackDirectOutboundStaysIPv6Only(t *testing.T) {
+	item := model.RelayItem{IPv6: "2001:db8::10"}
+	options := relayDirectOutboundOptions(RelayCreateRequest{Mode: relayModeDualStack, DomainStrategy: relayDomainStrategyPreferIPv6}, item)
+	if options["inet6_bind_address"] != item.IPv6 || options["domain_strategy"] != relayDomainStrategyIPv6Only {
+		t.Fatalf("unexpected dual-stack IPv6 child options: %#v", options)
 	}
 }
 
@@ -782,6 +793,74 @@ func TestUpdateRelayRouteRulesCreatesPairedAddressFamilyRoutes(t *testing.T) {
 	dnsServers = config["dns"].(map[string]interface{})["servers"].([]interface{})
 	if len(dnsServers) != 0 {
 		t.Fatalf("paired DNS server was not removed: %#v", dnsServers)
+	}
+}
+
+func TestUpdateRelayRouteRulesCreatesDualStackFallbackRoute(t *testing.T) {
+	dbDir := t.TempDir()
+	t.Setenv("SUI_DB_FOLDER", dbDir)
+	if err := database.InitDB(filepath.Join(dbDir, "relay-dualstack-rules.db")); err != nil {
+		t.Fatal(err)
+	}
+	db := database.GetDB()
+	if _, err := (&SettingService{}).GetAllSetting(); err != nil {
+		t.Fatal(err)
+	}
+	item := model.RelayItem{
+		InboundTag: "relay-dual-in", OutboundTag: "relay-dual-fallback",
+		IPv6OutboundTag: "relay-dual-ipv6", IPv4OutboundTag: "relay-dual-ipv4",
+	}
+	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, false); err != nil {
+		t.Fatal(err)
+	}
+	var setting model.Setting
+	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
+		t.Fatal(err)
+	}
+	rules := config["route"].(map[string]interface{})["rules"].([]interface{})
+	if len(rules) != 4 {
+		t.Fatalf("dual-stack rule count = %d, want 4", len(rules))
+	}
+	resolve := rules[0].(map[string]interface{})
+	route := rules[1].(map[string]interface{})
+	if resolve["action"] != "resolve" || resolve["strategy"] != relayDomainStrategyPreferIPv6 || resolve["server"] != relayPairedDNSResolverTag {
+		t.Fatalf("dual-stack resolve rule = %#v", resolve)
+	}
+	if route["action"] != "route" || route["outbound"] != item.OutboundTag {
+		t.Fatalf("dual-stack fallback route = %#v", route)
+	}
+	if _, exists := route["ip_cidr"]; exists {
+		t.Fatalf("dual-stack fallback route must receive both address families: %#v", route)
+	}
+	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
+		t.Fatal(err)
+	}
+	rules = config["route"].(map[string]interface{})["rules"].([]interface{})
+	if len(rules) != 4 {
+		t.Fatalf("dual-stack rule count after idempotent update = %d, want 4", len(rules))
+	}
+	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
+		t.Fatal(err)
+	}
+	rules = config["route"].(map[string]interface{})["rules"].([]interface{})
+	if len(rules) != 2 {
+		t.Fatalf("dual-stack rule count after removal = %d, want 2", len(rules))
 	}
 }
 
