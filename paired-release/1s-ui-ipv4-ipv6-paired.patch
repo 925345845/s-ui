@@ -1,1521 +1,1249 @@
 diff --git a/README.md b/README.md
-index 7064ae7..4fe39e8 100644
+index 4fe39e8..9bc5e18 100644
 --- a/README.md
 +++ b/README.md
-@@ -188,6 +188,8 @@ IPv4/IPv6 配对模式按上游 SOCKS5 列表顺序为每个入口分配一个 V
+@@ -186,9 +186,9 @@ IPv6 池模式只会向选定网卡添加地址，不修改系统默认路由。
  
- 双栈出口模式使用同样的 IPv4/IPv6 配对，但由内置复合 outbound 负责连接级回退：所有目标先尝试对应 VPS IPv6，IPv6 连接失败或目标没有 AAAA 记录时，再使用同一行对应的 IPv4 SOCKS5。IPv4 回退不会使用 VPS 原生 IPv4；IPv6 连接最多等待 3 秒后回退。
+ IPv4/IPv6 配对模式按上游 SOCKS5 列表顺序为每个入口分配一个 VPS IPv6。IPv4-only 目标使用对应上游 SOCKS5，IPv6 或双栈目标优先绑定对应 VPS IPv6；支持直接粘贴 `host:port`、`host:port:user:pass` 或 `socks5://` 列表。
  
-+IPv6、IPv4/IPv6 配对和双栈出口池支持手动或定时轮转 IPv6（5 分钟到 7 天）。轮转保持入口端口、账号、密码和 IPv4 SOCKS5 顺序不变；新地址添加、DAD/公网检查和 sing-box 配置验证全部成功后才删除旧地址，失败自动保留原配置。大量地址场景会批量检查 DAD、过滤已由面板管理的地址并限制界面预览，避免地址数量增长拖慢面板。
-+
+-双栈出口模式使用同样的 IPv4/IPv6 配对，但由内置复合 outbound 负责连接级回退：所有目标先尝试对应 VPS IPv6，IPv6 连接失败或目标没有 AAAA 记录时，再使用同一行对应的 IPv4 SOCKS5。IPv4 回退不会使用 VPS 原生 IPv4；IPv6 连接最多等待 3 秒后回退。
++双栈出口模式使用同样的 IPv4/IPv6 配对，但由内置复合 outbound 负责出口健康回退：对应 VPS IPv6 出口健康时禁止任何独立 IPv4 请求；只有 IPv6 连接失败并且公网 IPv6 健康探测也失败时，才临时使用同一行对应的 IPv4 SOCKS5。IPv4 回退不会使用 VPS 原生 IPv4，IPv6 恢复后会自动重新成为唯一出口。
+ 
+-IPv6、IPv4/IPv6 配对和双栈出口池支持手动或定时轮转 IPv6（5 分钟到 7 天）。轮转保持入口端口、账号、密码和 IPv4 SOCKS5 顺序不变；新地址添加、DAD/公网检查和 sing-box 配置验证全部成功后才删除旧地址，失败自动保留原配置。大量地址场景会批量检查 DAD、过滤已由面板管理的地址并限制界面预览，避免地址数量增长拖慢面板。
++IPv6、IPv4/IPv6 配对和双栈出口池会为每条 IPv6 生成一个稳定的手动轮转链接。访问某条链接只更换对应 IPv6，不会改变同批次其他地址、入口端口、账号、密码或 IPv4 SOCKS5 配对；新地址添加、DAD/公网检查和 sing-box 配置验证全部成功后才删除旧地址，失败自动保留原配置。大量地址场景会批量检查 DAD、过滤已由面板管理的地址并限制界面预览，避免地址数量增长拖慢面板。
+ 
  实现参考 [help660vip/auto-add-ipv6](https://github.com/help660vip/auto-add-ipv6) 的流程，但 1S-UI 使用内置 Go 逻辑，不执行第三方远程脚本。
  
- ### v1.5.8 更新重点
-diff --git a/agent/local_client.go b/agent/local_client.go
-index 7c97fb3..b380104 100644
---- a/agent/local_client.go
-+++ b/agent/local_client.go
-@@ -91,7 +91,7 @@ func CallLocalRPC(ctx context.Context, socketPath string, request RPCRequest) RP
+diff --git a/core/relay_fallback_outbound.go b/core/relay_fallback_outbound.go
+index 26219f1..3f7c1d1 100644
+--- a/core/relay_fallback_outbound.go
++++ b/core/relay_fallback_outbound.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"net"
+ 	"net/netip"
++	"sync"
+ 	"time"
  
- func localRPCTimeout(method string) time.Duration {
- 	switch method {
--	case RPCMethodInboundQuickAdd, RPCMethodRelayCreate, RPCMethodRelayDelete:
-+	case RPCMethodInboundQuickAdd, RPCMethodRelayCreate, RPCMethodRelayDelete, RPCMethodRelayRotate:
- 		return 10 * time.Minute
- 	default:
- 		return 45 * time.Second
-diff --git a/agent/protocol.go b/agent/protocol.go
-index 9dbd8ec..ac596a4 100644
---- a/agent/protocol.go
-+++ b/agent/protocol.go
-@@ -37,15 +37,17 @@ const (
- )
+ 	"github.com/sagernet/sing-box/adapter"
+@@ -21,6 +22,17 @@ const RelayFallbackOutboundType = "relay-fallback"
  
- const (
--	RPCMethodCapabilities    = "capabilities.get"
--	RPCMethodInboundList     = "inbounds.list"
--	RPCMethodInboundEdit     = "inbounds.editor"
--	RPCMethodInboundSave     = "inbounds.save"
--	RPCMethodInboundQuickAdd = "inbounds.quick_add"
--	RPCMethodRelayGet        = "relay.get"
--	RPCMethodRelayCreate     = "relay.create"
--	RPCMethodRelayDelete     = "relay.delete"
--	RPCMethodRelayExport     = "relay.bitbrowser_export"
-+	RPCMethodCapabilities     = "capabilities.get"
-+	RPCMethodInboundList      = "inbounds.list"
-+	RPCMethodInboundEdit      = "inbounds.editor"
-+	RPCMethodInboundSave      = "inbounds.save"
-+	RPCMethodInboundQuickAdd  = "inbounds.quick_add"
-+	RPCMethodRelayGet         = "relay.get"
-+	RPCMethodRelayCreate      = "relay.create"
-+	RPCMethodRelayDelete      = "relay.delete"
-+	RPCMethodRelayRotate      = "relay.rotate"
-+	RPCMethodRelayRotationSet = "relay.rotation_set"
-+	RPCMethodRelayExport      = "relay.bitbrowser_export"
- )
+ const defaultRelayIPv6Timeout = 3 * time.Second
  
- // Command types the panel may send to an online agent.
-diff --git a/agent/terminal_windows.go b/agent/terminal_windows.go
-index a273b7f..f895ee4 100644
---- a/agent/terminal_windows.go
-+++ b/agent/terminal_windows.go
-@@ -7,7 +7,6 @@ import (
- 	"encoding/base64"
- 	"fmt"
- 	"io"
--	"os"
- 	"os/exec"
- 	"sync"
- )
-@@ -94,4 +93,3 @@ func pumpTerminalOutput(ctx context.Context, t *localTerminal, write func(interf
++const (
++	relayIPv6HealthyCache   = 30 * time.Second
++	relayIPv6UnhealthyCache = 5 * time.Second
++	relayIPv6ProbeTimeout   = 2 * time.Second
++)
++
++var relayFallbackIPv6ProbeTargets = []M.Socksaddr{
++	M.ParseSocksaddr("[2606:4700:4700::1111]:443"),
++	M.ParseSocksaddr("[2001:4860:4860::8888]:443"),
++}
++
+ type RelayFallbackOutboundOptions struct {
+ 	IPv6Outbound string `json:"ipv6_outbound"`
+ 	IPv4Outbound string `json:"ipv4_outbound"`
+@@ -35,6 +47,10 @@ type relayFallbackOutbound struct {
+ 	ipv6Timeout  time.Duration
+ 	ipv6Outbound adapter.Outbound
+ 	ipv4Outbound adapter.Outbound
++	healthMu     sync.Mutex
++	healthKnown  bool
++	ipv6Healthy  bool
++	healthAt     time.Time
+ }
+ 
+ var _ adapter.Outbound = (*relayFallbackOutbound)(nil)
+@@ -88,7 +104,14 @@ func (o *relayFallbackOutbound) Start() error {
+ func (o *relayFallbackOutbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+ 	if destination.IsIP() {
+ 		if destination.Addr.Is6() && !destination.Addr.Is4In6() {
+-			return o.ipv6Outbound.DialContext(ctx, network, destination)
++			conn, err := o.ipv6Outbound.DialContext(ctx, network, destination)
++			if err == nil {
++				o.markIPv6Healthy()
++			}
++			return conn, err
++		}
++		if err := o.rejectIPv4WhileIPv6Healthy(ctx, false); err != nil {
++			return nil, err
  		}
+ 		return o.ipv4Outbound.DialContext(ctx, network, destination)
+ 	}
+@@ -96,8 +119,12 @@ func (o *relayFallbackOutbound) DialContext(ctx context.Context, network string,
+ 	conn, ipv6Err := o.ipv6Outbound.DialContext(ipv6Ctx, network, destination)
+ 	cancel()
+ 	if ipv6Err == nil {
++		o.markIPv6Healthy()
+ 		return conn, nil
+ 	}
++	if err := o.rejectIPv4WhileIPv6Healthy(ctx, true); err != nil {
++		return nil, E.Errors(E.Cause(ipv6Err, "IPv6 attempt failed"), err)
++	}
+ 	conn, ipv4Err := o.ipv4Outbound.DialContext(ctx, network, destination)
+ 	if ipv4Err == nil {
+ 		return conn, nil
+@@ -108,14 +135,25 @@ func (o *relayFallbackOutbound) DialContext(ctx context.Context, network string,
+ func (o *relayFallbackOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
+ 	if destination.IsIP() {
+ 		if destination.Addr.Is6() && !destination.Addr.Is4In6() {
+-			return o.ipv6Outbound.ListenPacket(ctx, destination)
++			conn, err := o.ipv6Outbound.ListenPacket(ctx, destination)
++			if err == nil {
++				o.markIPv6Healthy()
++			}
++			return conn, err
++		}
++		if err := o.rejectIPv4WhileIPv6Healthy(ctx, false); err != nil {
++			return nil, err
+ 		}
+ 		return o.ipv4Outbound.ListenPacket(ctx, destination)
+ 	}
+ 	conn, ipv6Err := o.ipv6Outbound.ListenPacket(ctx, destination)
+ 	if ipv6Err == nil {
++		o.markIPv6Healthy()
+ 		return conn, nil
+ 	}
++	if err := o.rejectIPv4WhileIPv6Healthy(ctx, true); err != nil {
++		return nil, E.Errors(E.Cause(ipv6Err, "IPv6 packet attempt failed"), err)
++	}
+ 	conn, ipv4Err := o.ipv4Outbound.ListenPacket(ctx, destination)
+ 	if ipv4Err == nil {
+ 		return conn, nil
+@@ -131,11 +169,18 @@ func (o *relayFallbackOutbound) DialParallelNetwork(ctx context.Context, network
+ 		conn, err := dialRelayAddresses(ipv6Ctx, o.ipv6Outbound, network, destination, addresses6, strategy, networkType, fallbackNetworkType, fallbackDelay)
+ 		cancel()
+ 		if err == nil {
++			o.markIPv6Healthy()
+ 			return conn, nil
+ 		}
+ 		ipv6Err = err
+ 	}
+ 	if len(addresses4) > 0 {
++		if err := o.rejectIPv4WhileIPv6Healthy(ctx, ipv6Err != nil); err != nil {
++			if ipv6Err != nil {
++				return nil, E.Errors(E.Cause(ipv6Err, "IPv6 attempt failed"), err)
++			}
++			return nil, err
++		}
+ 		conn, ipv4Err := o.ipv4Outbound.DialContext(ctx, network, destination)
+ 		if ipv4Err == nil {
+ 			return conn, nil
+@@ -157,11 +202,18 @@ func (o *relayFallbackOutbound) ListenSerialNetworkPacket(ctx context.Context, d
+ 	for _, address := range addresses6 {
+ 		conn, err := o.ipv6Outbound.ListenPacket(ctx, M.SocksaddrFrom(address, destination.Port))
+ 		if err == nil {
++			o.markIPv6Healthy()
+ 			return conn, address, nil
+ 		}
+ 		ipv6Err = err
+ 	}
+ 	if len(addresses4) > 0 {
++		if err := o.rejectIPv4WhileIPv6Healthy(ctx, ipv6Err != nil); err != nil {
++			if ipv6Err != nil {
++				return nil, netip.Addr{}, E.Errors(E.Cause(ipv6Err, "IPv6 packet attempt failed"), err)
++			}
++			return nil, netip.Addr{}, err
++		}
+ 		conn, ipv4Err := o.ipv4Outbound.ListenPacket(ctx, destination)
+ 		if ipv4Err == nil {
+ 			return conn, addresses4[0], nil
+@@ -178,6 +230,60 @@ func (o *relayFallbackOutbound) ListenSerialNetworkPacket(ctx context.Context, d
+ 	return conn, destination.Addr, err
+ }
+ 
++func (o *relayFallbackOutbound) markIPv6Healthy() {
++	o.healthMu.Lock()
++	o.healthKnown = true
++	o.ipv6Healthy = true
++	o.healthAt = time.Now()
++	o.healthMu.Unlock()
++}
++
++// rejectIPv4WhileIPv6Healthy enforces global failover semantics for one
++// relay item. IPv4 is allowed only while the bound VPS IPv6 egress is down;
++// an IPv4-only probe cannot bypass a healthy IPv6 route.
++func (o *relayFallbackOutbound) rejectIPv4WhileIPv6Healthy(ctx context.Context, forceProbe bool) error {
++	if o.ipv6EgressHealthy(ctx, forceProbe) {
++		return E.New("IPv4 fallback suppressed while IPv6 egress is healthy")
++	}
++	return nil
++}
++
++func (o *relayFallbackOutbound) ipv6EgressHealthy(ctx context.Context, forceProbe bool) bool {
++	now := time.Now()
++	o.healthMu.Lock()
++	if o.healthKnown {
++		ttl := relayIPv6HealthyCache
++		if !o.ipv6Healthy {
++			ttl = relayIPv6UnhealthyCache
++		}
++		if now.Sub(o.healthAt) < ttl && (!forceProbe || !o.ipv6Healthy) {
++			healthy := o.ipv6Healthy
++			o.healthMu.Unlock()
++			return healthy
++		}
++	}
++	o.healthMu.Unlock()
++
++	healthy := false
++	for _, destination := range relayFallbackIPv6ProbeTargets {
++		probeCtx, cancel := context.WithTimeout(ctx, relayIPv6ProbeTimeout)
++		conn, err := o.ipv6Outbound.DialContext(probeCtx, N.NetworkTCP, destination)
++		cancel()
++		if err != nil {
++			continue
++		}
++		_ = conn.Close()
++		healthy = true
++		break
++	}
++	o.healthMu.Lock()
++	o.healthKnown = true
++	o.ipv6Healthy = healthy
++	o.healthAt = time.Now()
++	o.healthMu.Unlock()
++	return healthy
++}
++
+ func splitRelayDestinationAddresses(destination M.Socksaddr, addresses []netip.Addr) ([]netip.Addr, []netip.Addr) {
+ 	if len(addresses) == 0 && destination.IsIP() {
+ 		addresses = []netip.Addr{destination.Addr}
+diff --git a/core/relay_fallback_outbound_test.go b/core/relay_fallback_outbound_test.go
+index fe3743f..c3846e5 100644
+--- a/core/relay_fallback_outbound_test.go
++++ b/core/relay_fallback_outbound_test.go
+@@ -74,7 +74,7 @@ func TestRelayFallbackUsesIPv4SOCKSAfterIPv6Failure(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	_ = conn.Close()
+-	if ipv6.calls != 1 || ipv4.calls != 1 {
++	if ipv6.calls != 1+len(relayFallbackIPv6ProbeTargets) || ipv4.calls != 1 {
+ 		t.Fatalf("calls: IPv6=%d IPv4=%d", ipv6.calls, ipv4.calls)
+ 	}
+ 	if ipv4.destination.String() != destination.String() {
+@@ -82,6 +82,35 @@ func TestRelayFallbackUsesIPv4SOCKSAfterIPv6Failure(t *testing.T) {
  	}
  }
--
-diff --git a/api/apiHandler.go b/api/apiHandler.go
-index 2df6319..4676014 100644
---- a/api/apiHandler.go
-+++ b/api/apiHandler.go
-@@ -29,6 +29,8 @@ func (a *APIHandler) initRouter(g *gin.RouterGroup) {
- 	})
- 	g.POST("/:postAction", a.postHandler)
- 	g.POST("/relay/:id/delete", func(c *gin.Context) { a.ApiService.DeleteRelay(c, GetLoginUser(c)) })
-+	g.POST("/relay/:id/rotate", func(c *gin.Context) { a.ApiService.RotateRelayPool(c, GetLoginUser(c)) })
-+	g.POST("/relay/:id/rotation", func(c *gin.Context) { a.ApiService.SetRelayPoolRotation(c, GetLoginUser(c)) })
- 	g.POST("/relay/create", func(c *gin.Context) { a.ApiService.CreateRelay(c, GetLoginUser(c)) })
- 	g.GET("/relay/:id/bitbrowser.xlsx", a.ApiService.ExportRelayBitBrowser)
- 	g.GET("/agents", a.ApiService.GetAgents)
-@@ -43,6 +45,8 @@ func (a *APIHandler) initRouter(g *gin.RouterGroup) {
- 	g.GET("/agents/:id/relay", a.ApiService.GetAgentRelayData)
- 	g.POST("/agents/:id/relay/create", a.ApiService.CreateAgentRelay)
- 	g.POST("/agents/:id/relay/:relayId/delete", a.ApiService.DeleteAgentRelay)
-+	g.POST("/agents/:id/relay/:relayId/rotate", a.ApiService.RotateAgentRelayPool)
-+	g.POST("/agents/:id/relay/:relayId/rotation", a.ApiService.SetAgentRelayPoolRotation)
- 	g.GET("/agents/:id/relay/:relayId/bitbrowser.xlsx", a.ApiService.ExportAgentRelayBitBrowser)
- 	g.GET("/agents/:id/terminal", a.ApiService.AgentTerminal)
- 	g.POST("/agents", a.ApiService.CreateAgent)
-diff --git a/api/apiService.go b/api/apiService.go
-index 4e3a030..e587adc 100644
---- a/api/apiService.go
-+++ b/api/apiService.go
-@@ -19,6 +19,7 @@ import (
- 	"github.com/Hhz0823/1s-ui/agent"
- 	"github.com/Hhz0823/1s-ui/config"
- 	"github.com/Hhz0823/1s-ui/database"
-+	"github.com/Hhz0823/1s-ui/database/model"
- 	"github.com/Hhz0823/1s-ui/logger"
- 	"github.com/Hhz0823/1s-ui/service"
- 	"github.com/Hhz0823/1s-ui/util"
-@@ -276,6 +277,56 @@ func (a *ApiService) DeleteAgentRelay(c *gin.Context) {
- 	jsonObj(c, result, err)
- }
  
-+func (a *ApiService) RotateAgentRelayPool(c *gin.Context) {
-+	id, err := parseAgentNodeID(c)
-+	if err != nil {
-+		jsonObj(c, nil, err)
-+		return
++func TestRelayFallbackSuppressesIPv4OnlyProbeWhileIPv6Healthy(t *testing.T) {
++	ipv6 := newRelayFallbackTestOutbound("ipv6", nil)
++	ipv4 := newRelayFallbackTestOutbound("ipv4", nil)
++	outbound := &relayFallbackOutbound{ipv6Outbound: ipv6, ipv4Outbound: ipv4, ipv6Timeout: time.Second}
++	outbound.markIPv6Healthy()
++	_, err := outbound.DialParallelNetwork(context.Background(), N.NetworkTCP, M.ParseSocksaddr("v4-check.example:443"), []netip.Addr{
++		netip.MustParseAddr("192.0.2.40"),
++	}, nil, nil, nil, 0)
++	if err == nil {
++		t.Fatal("expected IPv4-only probe to be rejected while IPv6 is healthy")
 +	}
-+	relayID, err := parseAgentRelayID(c)
-+	if err != nil {
-+		jsonObj(c, nil, err)
-+		return
++	if ipv6.calls != 0 || ipv4.calls != 0 {
++		t.Fatalf("calls: IPv6=%d IPv4=%d", ipv6.calls, ipv4.calls)
 +	}
-+	actor := GetLoginUser(c)
-+	response, err := a.AgentService.DispatchRPC(id, agent.RPCMethodRelayRotate, service.RemoteRelayRotateRequest{ID: relayID, Actor: actor}, actor)
-+	if err != nil {
-+		jsonObj(c, nil, err)
-+		return
-+	}
-+	var result service.RelayRotationResult
-+	err = json.Unmarshal(response.Payload, &result)
-+	jsonObj(c, result, err)
 +}
 +
-+func (a *ApiService) SetAgentRelayPoolRotation(c *gin.Context) {
-+	id, err := parseAgentNodeID(c)
-+	if err != nil {
-+		jsonObj(c, nil, err)
-+		return
++func TestRelayFallbackProbesIPv6BeforeDirectIPv4(t *testing.T) {
++	ipv6 := newRelayFallbackTestOutbound("ipv6", nil)
++	ipv4 := newRelayFallbackTestOutbound("ipv4", nil)
++	outbound := &relayFallbackOutbound{ipv6Outbound: ipv6, ipv4Outbound: ipv4, ipv6Timeout: time.Second}
++	_, err := outbound.DialContext(context.Background(), N.NetworkTCP, M.ParseSocksaddr("192.0.2.50:443"))
++	if err == nil {
++		t.Fatal("expected direct IPv4 to be rejected after a successful IPv6 health probe")
 +	}
-+	relayID, err := parseAgentRelayID(c)
-+	if err != nil {
-+		jsonObj(c, nil, err)
-+		return
++	if ipv6.calls != 1 || ipv4.calls != 0 {
++		t.Fatalf("calls: IPv6=%d IPv4=%d", ipv6.calls, ipv4.calls)
 +	}
-+	var rotation service.RelayRotationRequest
-+	if err := c.ShouldBindJSON(&rotation); err != nil {
-+		jsonObj(c, nil, err)
-+		return
-+	}
-+	actor := GetLoginUser(c)
-+	payload := service.RemoteRelayRotationRequest{ID: relayID, Rotation: rotation, Actor: actor}
-+	response, err := a.AgentService.DispatchRPC(id, agent.RPCMethodRelayRotationSet, payload, actor)
-+	if err != nil {
-+		jsonObj(c, nil, err)
-+		return
-+	}
-+	var result model.RelayPool
-+	err = json.Unmarshal(response.Payload, &result)
-+	jsonObj(c, result, err)
 +}
 +
- func (a *ApiService) ExportAgentRelayBitBrowser(c *gin.Context) {
- 	id, err := parseAgentNodeID(c)
- 	if err != nil {
-@@ -958,6 +1009,31 @@ func (a *ApiService) DeleteRelay(c *gin.Context, loginUser string) {
- 	jsonMsg(c, "relay", err)
- }
- 
-+func (a *ApiService) RotateRelayPool(c *gin.Context, loginUser string) {
-+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
-+	if err != nil || id == 0 {
-+		jsonObj(c, nil, common.NewError("invalid relay pool id"))
-+		return
-+	}
-+	result, err := a.ConfigService.RotateRelay(uint(id), loginUser)
-+	jsonObj(c, result, err)
-+}
-+
-+func (a *ApiService) SetRelayPoolRotation(c *gin.Context, loginUser string) {
-+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
-+	if err != nil || id == 0 {
-+		jsonObj(c, nil, common.NewError("invalid relay pool id"))
-+		return
-+	}
-+	var request service.RelayRotationRequest
-+	if err := c.ShouldBindJSON(&request); err != nil {
-+		jsonObj(c, nil, err)
-+		return
-+	}
-+	pool, err := a.ConfigService.SetRelayRotation(uint(id), request, loginUser)
-+	jsonObj(c, pool, err)
-+}
-+
- type PinnedSha256Request struct {
- 	Cert       string `json:"cert"`
- 	CertPath   string `json:"certPath"`
-diff --git a/api/apiV2Handler.go b/api/apiV2Handler.go
-index 73b8819..b8b73ac 100644
---- a/api/apiV2Handler.go
-+++ b/api/apiV2Handler.go
-@@ -36,6 +36,8 @@ func (a *APIv2Handler) initRouter(g *gin.RouterGroup) {
- 	})
- 	g.POST("/:postAction", a.postHandler)
- 	g.POST("/relay/:id/delete", func(c *gin.Context) { a.ApiService.DeleteRelay(c, a.findUsername(c)) })
-+	g.POST("/relay/:id/rotate", func(c *gin.Context) { a.ApiService.RotateRelayPool(c, a.findUsername(c)) })
-+	g.POST("/relay/:id/rotation", func(c *gin.Context) { a.ApiService.SetRelayPoolRotation(c, a.findUsername(c)) })
- 	g.POST("/relay/create", func(c *gin.Context) { a.ApiService.CreateRelay(c, a.findUsername(c)) })
- 	g.GET("/relay/:id/bitbrowser.xlsx", a.ApiService.ExportRelayBitBrowser)
- 	g.GET("/:getAction", a.getHandler)
+ func TestRelayFallbackDoesNotSendIPv6OnlyDestinationToIPv4(t *testing.T) {
+ 	ipv6 := newRelayFallbackTestOutbound("ipv6", errors.New("IPv6 unreachable"))
+ 	ipv4 := newRelayFallbackTestOutbound("ipv4", nil)
 diff --git a/cronjob/cronJob.go b/cronjob/cronJob.go
-index 6cef76e..4d2be1f 100644
+index 4d2be1f..6cef76e 100644
 --- a/cronjob/cronJob.go
 +++ b/cronjob/cronJob.go
-@@ -48,6 +48,8 @@ func (c *CronJob) Start(loc *time.Location, trafficAge int, statsBucketSeconds i
+@@ -48,8 +48,6 @@ func (c *CronJob) Start(loc *time.Location, trafficAge int, statsBucketSeconds i
  		c.cron.AddJob("@every 5s", NewCheckCoreJob())
  		// database WAL checkpoint
  		c.cron.AddJob("@every 10m", NewWALCheckpointJob())
-+		// Rotate only relay pools that explicitly opted in and are due.
-+		c.cron.AddJob("@every 1m", NewRelayRotationJob())
+-		// Rotate only relay pools that explicitly opted in and are due.
+-		c.cron.AddJob("@every 1m", NewRelayRotationJob())
  	}()
  
  	return nil
 diff --git a/cronjob/relayRotationJob.go b/cronjob/relayRotationJob.go
-new file mode 100644
-index 0000000..eaec250
---- /dev/null
-+++ b/cronjob/relayRotationJob.go
-@@ -0,0 +1,23 @@
-+package cronjob
-+
-+import (
-+	"time"
-+
-+	"github.com/Hhz0823/1s-ui/config"
-+	"github.com/Hhz0823/1s-ui/service"
-+)
-+
-+type RelayRotationJob struct {
-+	service.ConfigService
-+}
-+
-+func NewRelayRotationJob() *RelayRotationJob {
-+	return &RelayRotationJob{}
-+}
-+
-+func (s *RelayRotationJob) Run() {
-+	if config.IsSkipCore() {
-+		return
+deleted file mode 100644
+index eaec250..0000000
+--- a/cronjob/relayRotationJob.go
++++ /dev/null
+@@ -1,23 +0,0 @@
+-package cronjob
+-
+-import (
+-	"time"
+-
+-	"github.com/Hhz0823/1s-ui/config"
+-	"github.com/Hhz0823/1s-ui/service"
+-)
+-
+-type RelayRotationJob struct {
+-	service.ConfigService
+-}
+-
+-func NewRelayRotationJob() *RelayRotationJob {
+-	return &RelayRotationJob{}
+-}
+-
+-func (s *RelayRotationJob) Run() {
+-	if config.IsSkipCore() {
+-		return
+-	}
+-	s.ConfigService.RotateDueRelays(time.Now())
+-}
+diff --git a/database/backup.go b/database/backup.go
+index 960733a..7354005 100644
+--- a/database/backup.go
++++ b/database/backup.go
+@@ -59,6 +59,7 @@ func GetDb(exclude string) ([]byte, error) {
+ 		&model.Client{},
+ 		&model.Changes{},
+ 		&model.RelayPool{},
++		&model.RelayRefreshLink{},
+ 	)
+ 	if err != nil {
+ 		return nil, err
+@@ -76,6 +77,7 @@ func GetDb(exclude string) ([]byte, error) {
+ 	var stats []model.Stats
+ 	var changes []model.Changes
+ 	var relayPools []model.RelayPool
++	var relayRefreshLinks []model.RelayRefreshLink
+ 
+ 	// Perform scans and handle errors
+ 	if err := db.Model(&model.Setting{}).Scan(&settings).Error; err != nil {
+@@ -148,6 +150,13 @@ func GetDb(exclude string) ([]byte, error) {
+ 			return nil, err
+ 		}
+ 	}
++	if err := db.Model(&model.RelayRefreshLink{}).Scan(&relayRefreshLinks).Error; err != nil {
++		return nil, err
++	} else if len(relayRefreshLinks) > 0 {
++		if err := backupDb.Save(relayRefreshLinks).Error; err != nil {
++			return nil, err
++		}
 +	}
-+	s.ConfigService.RotateDueRelays(time.Now())
-+}
+ 
+ 	if !exclude_stats {
+ 		if err := db.Model(&model.Stats{}).Scan(&stats).Error; err != nil {
+diff --git a/database/backup_test.go b/database/backup_test.go
+index b35bc03..a6f074c 100644
+--- a/database/backup_test.go
++++ b/database/backup_test.go
+@@ -35,6 +35,10 @@ func TestGetDbIncludesServicesAndTokens(t *testing.T) {
+ 	if err := GetDB().Create(&relayPool).Error; err != nil {
+ 		t.Fatal(err)
+ 	}
++	refreshLink := model.RelayRefreshLink{PoolID: relayPool.Id, InboundTag: "relay-in", Token: "stable-refresh-token", CreatedAt: 1}
++	if err := GetDB().Create(&refreshLink).Error; err != nil {
++		t.Fatal(err)
++	}
+ 
+ 	data, err := GetDb("")
+ 	if err != nil {
+@@ -70,4 +74,11 @@ func TestGetDbIncludesServicesAndTokens(t *testing.T) {
+ 	if relayCount != 1 {
+ 		t.Fatalf("relay pool count = %d, want 1", relayCount)
+ 	}
++	var refreshLinkCount int64
++	if err = backupDB.Model(&model.RelayRefreshLink{}).Where("token = ?", refreshLink.Token).Count(&refreshLinkCount).Error; err != nil {
++		t.Fatal(err)
++	}
++	if refreshLinkCount != 1 {
++		t.Fatalf("relay refresh link count = %d, want 1", refreshLinkCount)
++	}
+ }
+diff --git a/database/db.go b/database/db.go
+index 9f7fbd3..9a64435 100644
+--- a/database/db.go
++++ b/database/db.go
+@@ -119,6 +119,7 @@ func InitDB(dbPath string) error {
+ 		&model.Client{},
+ 		&model.Changes{},
+ 		&model.RelayPool{},
++		&model.RelayRefreshLink{},
+ 		&model.AgentNode{},
+ 	)
+ 	if err != nil {
 diff --git a/database/model/relay_pools.go b/database/model/relay_pools.go
-index d65cf5f..a6a3077 100644
+index a6a3077..841ff90 100644
 --- a/database/model/relay_pools.go
 +++ b/database/model/relay_pools.go
-@@ -6,20 +6,24 @@ import "encoding/json"
- // Items intentionally remain JSON because a pool is created and removed as a
- // single unit and the item credentials are needed for browser export.
- type RelayPool struct {
--	Id             uint            `json:"id" gorm:"primaryKey;autoIncrement"`
--	Name           string          `json:"name"`
--	Source         string          `json:"source,omitempty"`
--	Mode           string          `json:"mode"`
--	Protocol       string          `json:"protocol"`
--	CoreType       string          `json:"core_type"`
--	TlsID          uint            `json:"tls_id,omitempty"`
--	Transport      string          `json:"transport,omitempty"`
--	DomainStrategy string          `json:"domain_strategy,omitempty"`
--	ListenHost     string          `json:"listen_host"`
--	PortStart      int             `json:"port_start"`
--	Count          int             `json:"count"`
--	Items          json.RawMessage `json:"items"`
--	CreatedAt      int64           `json:"created_at"`
-+	Id                      uint            `json:"id" gorm:"primaryKey;autoIncrement"`
-+	Name                    string          `json:"name"`
-+	Source                  string          `json:"source,omitempty"`
-+	Mode                    string          `json:"mode"`
-+	Protocol                string          `json:"protocol"`
-+	CoreType                string          `json:"core_type"`
-+	TlsID                   uint            `json:"tls_id,omitempty"`
-+	Transport               string          `json:"transport,omitempty"`
-+	DomainStrategy          string          `json:"domain_strategy,omitempty"`
-+	ListenHost              string          `json:"listen_host"`
-+	PortStart               int             `json:"port_start"`
-+	Count                   int             `json:"count"`
-+	Items                   json.RawMessage `json:"items"`
-+	CreatedAt               int64           `json:"created_at"`
-+	RotationEnabled         bool            `json:"rotation_enabled" gorm:"index"`
-+	RotationIntervalMinutes int             `json:"rotation_interval_minutes"`
-+	LastRotatedAt           int64           `json:"last_rotated_at,omitempty"`
-+	NextRotateAt            int64           `json:"next_rotate_at,omitempty" gorm:"index"`
+@@ -45,8 +45,20 @@ type RelayItem struct {
+ 	Interface        string `json:"interface,omitempty"`
+ 	Prefix           int    `json:"prefix,omitempty"`
+ 	AddedByUs        bool   `json:"added_by_us,omitempty"`
++	RefreshToken     string `json:"refresh_token,omitempty"`
+ 	UpstreamServer   string `json:"upstream_server,omitempty"`
+ 	UpstreamPort     int    `json:"upstream_port,omitempty"`
+ 	UpstreamUsername string `json:"upstream_username,omitempty"`
+ 	UpstreamPassword string `json:"upstream_password,omitempty"`
  }
- 
- type RelayItem struct {
++
++// RelayRefreshLink maps one stable, bearer-style refresh URL to one relay
++// item. The token remains stable while the IPv6 address rotates.
++type RelayRefreshLink struct {
++	Id            uint   `json:"id" gorm:"primaryKey;autoIncrement"`
++	PoolID        uint   `json:"pool_id" gorm:"uniqueIndex:idx_relay_refresh_pool_item"`
++	InboundTag    string `json:"inbound_tag" gorm:"uniqueIndex:idx_relay_refresh_pool_item"`
++	Token         string `json:"token" gorm:"uniqueIndex;size:64"`
++	CreatedAt     int64  `json:"created_at"`
++	LastRotatedAt int64  `json:"last_rotated_at,omitempty"`
++}
 diff --git a/frontend/src/layouts/modals/RelayPool.vue b/frontend/src/layouts/modals/RelayPool.vue
-index 882aec7..90081cd 100644
+index 90081cd..49fcb0f 100644
 --- a/frontend/src/layouts/modals/RelayPool.vue
 +++ b/frontend/src/layouts/modals/RelayPool.vue
-@@ -104,9 +104,12 @@
-             <v-alert type="info" variant="tonal" density="compact" class="mt-3">
-               {{ $t('relay.generatedAddresses') }}
-             </v-alert>
--            <v-list v-if="ipv6.length > 0" density="compact" class="relay-list mt-3">
-+            <v-alert v-if="ipv6Truncated" type="info" variant="tonal" density="compact" class="mt-3">
-+              {{ $t('relay.ipv6ListLimited', { shown: displayedIPv6.length, total: ipv6Total }) }}
-+            </v-alert>
-+            <v-list v-if="displayedIPv6.length > 0" density="compact" class="relay-list mt-3">
-               <v-list-subheader>{{ $t('relay.detectedIPv6') }}</v-list-subheader>
--              <v-list-item v-for="item in ipv6" :key="item.interface + item.address">
-+              <v-list-item v-for="item in displayedIPv6" :key="item.interface + item.address">
-                 <v-list-item-title dir="ltr">{{ item.address }}/{{ item.prefix }}</v-list-item-title>
-                 <v-list-item-subtitle>{{ item.interface }}</v-list-item-subtitle>
-               </v-list-item>
-@@ -249,20 +252,49 @@
-           <v-window-item value="pools">
-             <v-alert v-if="pools.length === 0" type="info" variant="tonal">{{ $t('relay.noPools') }}</v-alert>
-             <v-row v-else>
--              <v-col v-for="pool in pools" :key="pool.id" cols="12" md="6">
-+              <v-col v-for="pool in visiblePools" :key="pool.id" cols="12" md="6">
-                 <v-card variant="outlined" class="relay-pool-card">
-                   <v-card-title class="d-flex align-center">
+@@ -258,7 +258,6 @@
                      <span class="text-truncate">{{ pool.name }}</span>
                      <v-spacer />
                      <v-chip v-if="pool.source" size="small" color="primary" variant="tonal">auto-add-ipv6</v-chip>
-+                    <v-chip v-if="pool.rotation_enabled" size="small" color="success" variant="tonal">{{ $t('relay.rotationOn') }}</v-chip>
+-                    <v-chip v-if="pool.rotation_enabled" size="small" color="success" variant="tonal">{{ $t('relay.rotationOn') }}</v-chip>
                      <v-chip size="small" :color="pool.mode === 'ipv6' ? 'info' : 'secondary'" variant="tonal">{{ pool.mode }}</v-chip>
                    </v-card-title>
                    <v-card-text>
-                     <div class="relay-pool-meta" dir="ltr">{{ poolAddressSummary(pool) }} / {{ pool.count }} {{ $t('relay.items') }}</div>
--                    <v-textarea :model-value="exportText(pool)" rows="4" readonly dir="ltr" hide-details />
-+                    <v-textarea :model-value="previewExportText(pool)" rows="4" readonly dir="ltr" hide-details />
-+                    <div v-if="pool.items.length > exportPreviewLimit" class="relay-preview-note">
-+                      {{ $t('relay.previewLimited', { shown: exportPreviewLimit, total: pool.items.length }) }}
-+                    </div>
-+                    <div v-if="canRotatePool(pool)" class="relay-rotation-settings">
-+                      <v-switch
-+                        v-model="pool.rotation_enabled"
-+                        color="success"
-+                        density="compact"
-+                        :label="$t('relay.autoRotation')"
-+                        :loading="savingRotation === pool.id"
-+                        hide-details
-+                        @update:model-value="saveRotation(pool)"
-+                      />
-+                      <v-text-field
-+                        v-model.number="pool.rotation_interval_minutes"
-+                        type="number"
-+                        min="5"
-+                        max="10080"
-+                        density="compact"
-+                        :label="$t('relay.rotationInterval')"
-+                        suffix="min"
-+                        hide-details
-+                        @change="saveRotation(pool)"
-+                      />
-+                      <div v-if="pool.next_rotate_at" class="relay-next-rotation">
-+                        {{ $t('relay.nextRotation') }}: {{ formatTimestamp(pool.next_rotate_at) }}
-+                      </div>
-+                    </div>
+@@ -267,29 +266,26 @@
+                     <div v-if="pool.items.length > exportPreviewLimit" class="relay-preview-note">
+                       {{ $t('relay.previewLimited', { shown: exportPreviewLimit, total: pool.items.length }) }}
+                     </div>
+-                    <div v-if="canRotatePool(pool)" class="relay-rotation-settings">
+-                      <v-switch
+-                        v-model="pool.rotation_enabled"
+-                        color="success"
+-                        density="compact"
+-                        :label="$t('relay.autoRotation')"
+-                        :loading="savingRotation === pool.id"
+-                        hide-details
+-                        @update:model-value="saveRotation(pool)"
+-                      />
+-                      <v-text-field
+-                        v-model.number="pool.rotation_interval_minutes"
+-                        type="number"
+-                        min="5"
+-                        max="10080"
+-                        density="compact"
+-                        :label="$t('relay.rotationInterval')"
+-                        suffix="min"
+-                        hide-details
+-                        @change="saveRotation(pool)"
+-                      />
+-                      <div v-if="pool.next_rotate_at" class="relay-next-rotation">
+-                        {{ $t('relay.nextRotation') }}: {{ formatTimestamp(pool.next_rotate_at) }}
++                    <div v-if="canRotatePool(pool)" class="relay-refresh-section">
++                      <div class="relay-refresh-heading">{{ $t('relay.itemRefreshLinks') }}</div>
++                      <v-list density="compact" class="relay-refresh-list">
++                        <v-list-item v-for="(item, itemIndex) in pool.items.slice(0, exportPreviewLimit)" :key="item.listen_port">
++                          <v-list-item-title dir="ltr">#{{ itemIndex + 1 }} · {{ item.ipv6 }}</v-list-item-title>
++                          <v-list-item-subtitle class="relay-refresh-url" dir="ltr">{{ itemRefreshURL(item) }}</v-list-item-subtitle>
++                          <template #append>
++                            <v-btn
++                              variant="text"
++                              icon="mdi-content-copy"
++                              size="small"
++                              :aria-label="$t('relay.copyRefreshLink')"
++                              :title="$t('relay.copyRefreshLink')"
++                              @click="copy(itemRefreshURL(item))"
++                            />
++                          </template>
++                        </v-list-item>
++                      </v-list>
++                      <div v-if="pool.items.length > exportPreviewLimit" class="relay-preview-note">
++                        {{ $t('relay.refreshPreviewLimited', { shown: exportPreviewLimit, total: pool.items.length }) }}
+                       </div>
+                     </div>
                    </v-card-text>
-                   <v-card-actions class="relay-pool-actions">
--                    <v-btn variant="tonal" prepend-icon="mdi-content-copy" @click="copy(exportText(pool))">{{ $t('relay.copy') }}</v-btn>
-+                    <v-btn variant="tonal" prepend-icon="mdi-content-copy" @click="copy(pool.export_text)">{{ $t('relay.copy') }}</v-btn>
-                     <v-btn
-                       v-if="supportsBitBrowser(pool)"
-                       variant="tonal"
-@@ -271,6 +303,17 @@
-                       :loading="downloading === pool.id"
-                       @click="downloadBitBrowser(pool)"
+@@ -305,15 +301,10 @@
                      >{{ $t('relay.exportBitBrowser') }}</v-btn>
-+                    <v-btn
-+                      v-if="canRotatePool(pool)"
-+                      class="relay-rotate-button"
-+                      color="primary"
-+                      variant="text"
-+                      icon="mdi-sync"
-+                      :aria-label="$t('relay.rotateNow')"
-+                      :title="$t('relay.rotateNow')"
-+                      :loading="rotating === pool.id"
-+                      @click="rotate(pool)"
-+                    />
+                     <v-btn
+                       v-if="canRotatePool(pool)"
+-                      class="relay-rotate-button"
+-                      color="primary"
+-                      variant="text"
+-                      icon="mdi-sync"
+-                      :aria-label="$t('relay.rotateNow')"
+-                      :title="$t('relay.rotateNow')"
+-                      :loading="rotating === pool.id"
+-                      @click="rotate(pool)"
+-                    />
++                      variant="tonal"
++                      prepend-icon="mdi-link-variant"
++                      @click="copyRefreshLinks(pool)"
++                    >{{ $t('relay.copyRefreshLinks') }}</v-btn>
                      <v-btn
                        class="relay-delete-button"
                        color="error"
-@@ -285,6 +328,7 @@
-                 </v-card>
-               </v-col>
-             </v-row>
-+            <v-pagination v-if="poolPageCount > 1" v-model="poolPage" :length="poolPageCount" density="comfortable" class="mt-3" />
-             <div class="relay-actions">
-               <v-btn variant="text" prepend-icon="mdi-refresh" :loading="refreshing" @click="loadData">{{ $t('actions.update') }}</v-btn>
-             </div>
-@@ -310,7 +354,11 @@ import { copyText } from '@/utils/clipboard'
+@@ -353,11 +344,10 @@ import { i18n } from '@/locales'
+ import { copyText } from '@/utils/clipboard'
  
  interface IPv6Item { interface: string; address: string; prefix: number }
- interface RelayItem { listen_port: number; username: string; password: string; ipv6?: string; upstream_server?: string; protocol?: string; export?: string }
--interface RelayPool { id: number; name: string; source?: string; mode: string; protocol?: string; domain_strategy?: string; listen_host: string; port_start: number; count: number; items: RelayItem[] }
-+interface RelayPool {
-+  id: number; name: string; source?: string; mode: string; protocol?: string; domain_strategy?: string
-+  listen_host: string; port_start: number; count: number; items: RelayItem[]; export_text: string
-+  rotation_enabled: boolean; rotation_interval_minutes: number; last_rotated_at?: number; next_rotate_at?: number
-+}
+-interface RelayItem { listen_port: number; username: string; password: string; ipv6?: string; upstream_server?: string; protocol?: string; export?: string }
++interface RelayItem { listen_port: number; username: string; password: string; ipv6?: string; upstream_server?: string; protocol?: string; export?: string; refresh_token?: string }
+ interface RelayPool {
+   id: number; name: string; source?: string; mode: string; protocol?: string; domain_strategy?: string
+   listen_host: string; port_start: number; count: number; items: RelayItem[]; export_text: string
+-  rotation_enabled: boolean; rotation_interval_minutes: number; last_rotated_at?: number; next_rotate_at?: number
+ }
  interface RelayCapabilities { os: string; can_add_system_ipv6: boolean; unavailable_reason?: string }
  
- const props = defineProps<{
-@@ -329,9 +377,17 @@ const loading = ref(false)
+@@ -377,8 +367,6 @@ const loading = ref(false)
  const refreshing = ref(false)
  const deleting = ref(0)
  const downloading = ref(0)
-+const rotating = ref(0)
-+const savingRotation = ref(0)
+-const rotating = ref(0)
+-const savingRotation = ref(0)
  const ipv6 = ref<IPv6Item[]>([])
  const pools = ref<RelayPool[]>([])
-+const ipv6Total = ref(0)
-+const ipv6Truncated = ref(false)
-+const rotationSupported = ref(false)
-+const poolPage = ref(1)
- const capabilities = ref<RelayCapabilities | null>(null)
-+const poolPageSize = 8
-+const exportPreviewLimit = 8
- const isRemote = computed(() => Number.isInteger(props.agentId) && Number(props.agentId) > 0)
- const form = reactive({
-   name: '', public_host: window.location.hostname, port_start: 30000, count: 10,
-@@ -341,6 +397,12 @@ const form = reactive({
- })
+ const ipv6Total = ref(0)
+@@ -471,8 +459,6 @@ const loadData = async () => {
+     pools.value = (data?.pools ?? []).map((rawPool: any) => {
+       const items = parseItems(rawPool.items)
+       const pool = { ...rawPool, items } as RelayPool
+-      pool.rotation_enabled = Boolean(rawPool.rotation_enabled)
+-      pool.rotation_interval_minutes = Number(rawPool.rotation_interval_minutes) || 60
+       pool.export_text = buildExportText(pool)
+       return pool
+     })
+@@ -582,61 +568,18 @@ const buildExportText = (pool: RelayPool) => pool.items.map((item) => {
  
- const interfaceItems = computed(() => [...new Set(ipv6.value.map((item) => item.interface))].map((value) => ({ title: value, value })))
-+const displayedIPv6 = computed(() => ipv6.value.slice(0, 32))
-+const poolPageCount = computed(() => Math.max(1, Math.ceil(pools.value.length / poolPageSize)))
-+const visiblePools = computed(() => {
-+  const start = (poolPage.value - 1) * poolPageSize
-+  return pools.value.slice(start, start + poolPageSize)
-+})
- const relayCountValid = computed(() => Number.isInteger(form.count) && form.count >= 1 && form.count <= 100)
- const canCreateIPv6 = computed(() => relayCountValid.value && (ipv6.value.length > 0 || form.base_ipv6.trim().length > 0))
- const canQuickCreateIPv6 = computed(() => canCreateIPv6.value && capabilities.value?.can_add_system_ipv6 === true)
-@@ -403,7 +465,18 @@ const loadData = async () => {
-       data = msg.obj
-     }
-     ipv6.value = data?.ipv6 ?? []
--    pools.value = (data?.pools ?? []).map((pool: any) => ({ ...pool, items: parseItems(pool.items) }))
-+    ipv6Total.value = Number(data?.ipv6_total ?? ipv6.value.length)
-+    ipv6Truncated.value = Boolean(data?.ipv6_truncated) || ipv6Total.value > displayedIPv6.value.length
-+    rotationSupported.value = data?.rotation_supported === true
-+    pools.value = (data?.pools ?? []).map((rawPool: any) => {
-+      const items = parseItems(rawPool.items)
-+      const pool = { ...rawPool, items } as RelayPool
-+      pool.rotation_enabled = Boolean(rawPool.rotation_enabled)
-+      pool.rotation_interval_minutes = Number(rawPool.rotation_interval_minutes) || 60
-+      pool.export_text = buildExportText(pool)
-+      return pool
-+    })
-+    if (poolPage.value > poolPageCount.value) poolPage.value = poolPageCount.value
-     capabilities.value = data?.capabilities ?? null
-   } catch (error: any) {
-     push.error({ message: error?.message || i18n.global.t('agent.loadFailed') })
-@@ -501,12 +574,71 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick
-   }
+ const previewExportText = (pool: RelayPool) => pool.export_text.split('\n').slice(0, exportPreviewLimit).join('\n')
+ 
+-const canRotatePool = (pool: RelayPool) => rotationSupported.value && ['ipv6', 'paired', 'dualstack'].includes(pool.mode)
++const canRotatePool = (pool: RelayPool) => !isRemote.value && rotationSupported.value
++  && ['ipv6', 'paired', 'dualstack'].includes(pool.mode)
++  && pool.items.some((item) => Boolean(item.refresh_token))
+ 
+-const formatTimestamp = (timestamp: number) => new Date(timestamp * 1000).toLocaleString()
+-
+-const rotate = async (pool: RelayPool) => {
+-  if (!window.confirm(i18n.global.t('relay.rotateConfirm'))) return
+-  rotating.value = pool.id
+-  try {
+-    const endpoint = isRemote.value
+-      ? `api/agents/${props.agentId}/relay/${pool.id}/rotate`
+-      : `api/relay/${pool.id}/rotate`
+-    const response = await fetch(endpoint, {
+-      method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' },
+-    })
+-    let msg: any
+-    try { msg = await response.json() } catch { msg = { success: false, msg: i18n.global.t('relay.invalidResponse') } }
+-    if (!response.ok || !msg.success) throw new Error(msg.msg || i18n.global.t('relay.rotateFailed'))
+-    push.success({ message: i18n.global.t('relay.rotated', { count: Number(msg.obj?.rotated) || pool.count }) })
+-    await loadData()
+-    if (isRemote.value) emit('changed')
+-    else await Data().loadData()
+-  } catch (error: any) {
+-    push.error({ message: error?.message || i18n.global.t('relay.rotateFailed') })
+-  } finally {
+-    rotating.value = 0
+-  }
++const itemRefreshURL = (item: RelayItem) => {
++  if (!item.refresh_token) return ''
++  return new URL(`refresh/${item.refresh_token}`, document.baseURI).toString()
  }
  
--const exportText = (pool: RelayPool) => pool.items.map((item) => {
-+const buildExportText = (pool: RelayPool) => pool.items.map((item) => {
-   if (item.protocol && !['socks', 'mixed'].includes(item.protocol) && item.export) return item.export
-   const host = pool.listen_host.replace(/^\[|\]$/g, '')
-   return `${host}:${item.listen_port}:${item.username}:${item.password}`
- }).join('\n')
+-const saveRotation = async (pool: RelayPool) => {
+-  const interval = Number(pool.rotation_interval_minutes)
+-  if (!Number.isInteger(interval) || interval < 5 || interval > 10080) {
+-    push.error({ message: i18n.global.t('relay.rotationIntervalInvalid') })
+-    return
+-  }
+-  savingRotation.value = pool.id
+-  try {
+-    const endpoint = isRemote.value
+-      ? `api/agents/${props.agentId}/relay/${pool.id}/rotation`
+-      : `api/relay/${pool.id}/rotation`
+-    const response = await fetch(endpoint, {
+-      method: 'POST', credentials: 'include',
+-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+-      body: JSON.stringify({ enabled: pool.rotation_enabled, interval_minutes: interval }),
+-    })
+-    let msg: any
+-    try { msg = await response.json() } catch { msg = { success: false, msg: i18n.global.t('relay.invalidResponse') } }
+-    if (!response.ok || !msg.success) throw new Error(msg.msg || i18n.global.t('relay.rotationSaveFailed'))
+-    pool.next_rotate_at = Number(msg.obj?.next_rotate_at) || 0
+-    push.success({ message: i18n.global.t('relay.rotationSaved') })
+-  } catch (error: any) {
+-    push.error({ message: error?.message || i18n.global.t('relay.rotationSaveFailed') })
+-    await loadData()
+-  } finally {
+-    savingRotation.value = 0
+-  }
++const copyRefreshLinks = async (pool: RelayPool) => {
++  const links = pool.items.map(itemRefreshURL).filter(Boolean).join('\n')
++  await copy(links)
+ }
  
-+const previewExportText = (pool: RelayPool) => pool.export_text.split('\n').slice(0, exportPreviewLimit).join('\n')
-+
-+const canRotatePool = (pool: RelayPool) => rotationSupported.value && ['ipv6', 'paired', 'dualstack'].includes(pool.mode)
-+
-+const formatTimestamp = (timestamp: number) => new Date(timestamp * 1000).toLocaleString()
-+
-+const rotate = async (pool: RelayPool) => {
-+  if (!window.confirm(i18n.global.t('relay.rotateConfirm'))) return
-+  rotating.value = pool.id
-+  try {
-+    const endpoint = isRemote.value
-+      ? `api/agents/${props.agentId}/relay/${pool.id}/rotate`
-+      : `api/relay/${pool.id}/rotate`
-+    const response = await fetch(endpoint, {
-+      method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' },
-+    })
-+    let msg: any
-+    try { msg = await response.json() } catch { msg = { success: false, msg: i18n.global.t('relay.invalidResponse') } }
-+    if (!response.ok || !msg.success) throw new Error(msg.msg || i18n.global.t('relay.rotateFailed'))
-+    push.success({ message: i18n.global.t('relay.rotated', { count: Number(msg.obj?.rotated) || pool.count }) })
-+    await loadData()
-+    if (isRemote.value) emit('changed')
-+    else await Data().loadData()
-+  } catch (error: any) {
-+    push.error({ message: error?.message || i18n.global.t('relay.rotateFailed') })
-+  } finally {
-+    rotating.value = 0
-+  }
-+}
-+
-+const saveRotation = async (pool: RelayPool) => {
-+  const interval = Number(pool.rotation_interval_minutes)
-+  if (!Number.isInteger(interval) || interval < 5 || interval > 10080) {
-+    push.error({ message: i18n.global.t('relay.rotationIntervalInvalid') })
-+    return
-+  }
-+  savingRotation.value = pool.id
-+  try {
-+    const endpoint = isRemote.value
-+      ? `api/agents/${props.agentId}/relay/${pool.id}/rotation`
-+      : `api/relay/${pool.id}/rotation`
-+    const response = await fetch(endpoint, {
-+      method: 'POST', credentials: 'include',
-+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-+      body: JSON.stringify({ enabled: pool.rotation_enabled, interval_minutes: interval }),
-+    })
-+    let msg: any
-+    try { msg = await response.json() } catch { msg = { success: false, msg: i18n.global.t('relay.invalidResponse') } }
-+    if (!response.ok || !msg.success) throw new Error(msg.msg || i18n.global.t('relay.rotationSaveFailed'))
-+    pool.next_rotate_at = Number(msg.obj?.next_rotate_at) || 0
-+    push.success({ message: i18n.global.t('relay.rotationSaved') })
-+  } catch (error: any) {
-+    push.error({ message: error?.message || i18n.global.t('relay.rotationSaveFailed') })
-+    await loadData()
-+  } finally {
-+    savingRotation.value = 0
-+  }
-+}
-+
  const supportsBitBrowser = (pool: RelayPool) => {
-   const protocol = pool.protocol || pool.items.find((item) => item.protocol)?.protocol || 'socks'
-   return ['socks', 'mixed'].includes(protocol)
-@@ -592,14 +724,17 @@ watch(() => props.connectionHost, (host) => {
+@@ -724,17 +667,12 @@ watch(() => props.connectionHost, (host) => {
  .relay-dialog-body { min-height: 0; background: rgba(var(--v-theme-surface), 0.34); overflow-y: auto !important; }
  .relay-list { border: 1px solid rgba(var(--v-theme-on-surface), 0.08); border-radius: 10px; }
  .relay-quick-section { padding: 14px; border: 1px solid rgba(var(--v-theme-primary), 0.2); border-radius: 8px; background: rgba(var(--v-theme-primary), 0.045); }
--.relay-pool-actions { display: grid !important; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 40px; gap: 8px; }
-+.relay-pool-actions { display: grid !important; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 40px 40px; gap: 8px; }
+-.relay-pool-actions { display: grid !important; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 40px 40px; gap: 8px; }
++.relay-pool-actions { display: flex !important; flex-wrap: wrap; gap: 8px; }
  .relay-pool-actions :deep(.v-btn) { margin: 0 !important; }
- .relay-pool-actions :deep(.v-btn:not(.relay-delete-button)) { min-width: 0; }
--.relay-delete-button { width: 40px; height: 40px; align-self: center; }
-+.relay-delete-button, .relay-rotate-button { width: 40px; height: 40px; align-self: center; }
-+.relay-rotate-button { grid-column: 3; }
-+.relay-delete-button { grid-column: 4; }
+-.relay-pool-actions :deep(.v-btn:not(.relay-delete-button)) { min-width: 0; }
+-.relay-delete-button, .relay-rotate-button { width: 40px; height: 40px; align-self: center; }
+-.relay-rotate-button { grid-column: 3; }
+-.relay-delete-button { grid-column: 4; }
++.relay-pool-actions :deep(.v-btn:not(.relay-delete-button)) { min-width: 0; flex: 1 1 150px; }
++.relay-delete-button { width: 40px; height: 40px; align-self: center; }
  @media (max-width: 520px) {
--  .relay-pool-actions { grid-template-columns: minmax(0, 1fr) 40px; }
-+  .relay-pool-actions { grid-template-columns: minmax(0, 1fr) 40px 40px; }
-   .relay-pool-actions :deep(.v-btn:not(.relay-delete-button)) { grid-column: 1; }
--  .relay-delete-button { grid-column: 2; grid-row: 1 / span 2; }
-+  .relay-pool-actions :deep(.relay-rotate-button) { grid-column: 2; grid-row: 1 / span 2; }
-+  .relay-delete-button { grid-column: 3; grid-row: 1 / span 2; }
+-  .relay-pool-actions { grid-template-columns: minmax(0, 1fr) 40px 40px; }
+-  .relay-pool-actions :deep(.v-btn:not(.relay-delete-button)) { grid-column: 1; }
+-  .relay-pool-actions :deep(.relay-rotate-button) { grid-column: 2; grid-row: 1 / span 2; }
+-  .relay-delete-button { grid-column: 3; grid-row: 1 / span 2; }
++	.relay-pool-actions :deep(.v-btn:not(.relay-delete-button)) { flex-basis: 100%; }
  }
  .relay-quick-heading { display: flex; justify-content: center; text-align: center; }
  .relay-source-link { color: rgb(var(--v-theme-primary)); font-size: 12px; text-decoration: none; }
-@@ -611,6 +746,9 @@ watch(() => props.connectionHost, (host) => {
- .relay-pool-card :deep(.v-card-title) { gap: 8px; }
+@@ -747,8 +685,10 @@ watch(() => props.connectionHost, (host) => {
  .relay-actions { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
  .relay-pool-meta { opacity: 0.7; margin-bottom: 10px; overflow-wrap: anywhere; }
-+.relay-preview-note { margin-top: 6px; font-size: 12px; opacity: 0.68; }
-+.relay-rotation-settings { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr); align-items: center; gap: 10px; margin-top: 12px; }
-+.relay-next-rotation { grid-column: 1 / -1; font-size: 12px; opacity: 0.72; }
+ .relay-preview-note { margin-top: 6px; font-size: 12px; opacity: 0.68; }
+-.relay-rotation-settings { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr); align-items: center; gap: 10px; margin-top: 12px; }
+-.relay-next-rotation { grid-column: 1 / -1; font-size: 12px; opacity: 0.72; }
++.relay-refresh-section { margin-top: 14px; }
++.relay-refresh-heading { margin-bottom: 6px; font-size: 13px; font-weight: 600; }
++.relay-refresh-list { border: 1px solid rgba(var(--v-theme-on-surface), 0.1); border-radius: 6px; }
++.relay-refresh-url { overflow-wrap: anywhere; white-space: normal; }
  .relay-pool-card { height: 100%; }
  
  @media (max-width: 959px) {
-@@ -627,5 +765,7 @@ watch(() => props.connectionHost, (host) => {
+@@ -765,7 +705,5 @@ watch(() => props.connectionHost, (host) => {
    .relay-dialog-body :deep(.v-tab) { min-width: 0; padding-inline: 6px; font-size: 13px; white-space: nowrap; }
    .relay-dialog :deep(.v-card-actions) { flex-wrap: wrap; justify-content: center !important; }
    .relay-dialog :deep(.v-card-actions .v-btn) { flex: 1 1 140px; }
-+  .relay-rotation-settings { grid-template-columns: minmax(0, 1fr); }
-+  .relay-next-rotation { grid-column: 1; }
+-  .relay-rotation-settings { grid-template-columns: minmax(0, 1fr); }
+-  .relay-next-rotation { grid-column: 1; }
  }
  </style>
 diff --git a/frontend/src/locales/en.ts b/frontend/src/locales/en.ts
-index 1ec6eff..3088f11 100644
+index 3088f11..103df54 100644
 --- a/frontend/src/locales/en.ts
 +++ b/frontend/src/locales/en.ts
-@@ -683,6 +683,7 @@
-     ipv6ListHint: "One address per line. Leave empty to generate addresses in the base prefix.",
-     addSystemAddresses: "Add addresses to the system interface",
-     detectedIPv6: "Detected public IPv6",
-+    ipv6ListLimited: "To keep the panel responsive, {shown} of {total} available addresses are shown. Addresses already managed by relay pools are omitted.",
-     noIPv6: "No usable public IPv6 address detected",
-     upstreamList: "Upstream list",
-     upstreamListHint: "One host:port or host:port:username:password per line, or socks5://username:password{'@'}host:port",
-@@ -690,6 +691,18 @@
-     pairedIPv6Hint: "Optional, one address per line in pairing order. Missing addresses are generated from the base IPv6 prefix.",
+@@ -663,7 +663,7 @@
+     pairedDescription: "Each upstream SOCKS5 line is paired with one VPS IPv6. IPv4 destinations use that SOCKS5 proxy and IPv6 destinations bind to the matching VPS IPv6.",
+     createPaired: "Create paired relays",
+     dualStackMode: "Dual-stack egress",
+-    dualStackDescription: "Each upstream SOCKS5 is paired with one VPS IPv6. Every site tries the matching VPS IPv6 first, then falls back to the IPv4 SOCKS5 when IPv6 fails or is unavailable.",
++    dualStackDescription: "Each upstream SOCKS5 is paired with one VPS IPv6. IPv4 is blocked while that VPS IPv6 egress is healthy and takes over only while the IPv6 egress health check is failing.",
+     createDualStack: "Create dual-stack relays",
+     pools: "Relay pools",
+     name: "Pool name",
+@@ -692,6 +692,10 @@
      create: "Create relay",
      noPools: "No relay pools",
-+    previewLimited: "Showing the first {shown} of {total}. Copy and export still include every item.",
-+    rotationOn: "Auto rotation",
-+    autoRotation: "Scheduled IPv6 rotation",
-+    rotationInterval: "Rotation interval",
-+    nextRotation: "Next rotation",
-+    rotateNow: "Rotate IPv6 now",
-+    rotateConfirm: "Replace every IPv6 in this pool now? Ports, credentials, and IPv4 SOCKS5 mappings will remain unchanged.",
-+    rotated: "Rotated {count} IPv6 addresses",
-+    rotateFailed: "IPv6 rotation failed; the previous addresses and configuration were preserved",
-+    rotationIntervalInvalid: "The rotation interval must be an integer from 5 to 10080 minutes",
-+    rotationSaveFailed: "Could not save rotation settings",
-+    rotationSaved: "Rotation settings saved",
-     items: "items",
-     copy: "Copy generic format",
-     exportBitBrowser: "Export BitBrowser",
+     previewLimited: "Showing the first {shown} of {total}. Copy and export still include every item.",
++    itemRefreshLinks: "Per-IPv6 manual refresh links",
++    copyRefreshLink: "Copy this refresh link",
++    copyRefreshLinks: "Copy all refresh links",
++    refreshPreviewLimited: "Showing the first {shown} of {total} refresh links. Copy all still includes every link.",
+     rotationOn: "Auto rotation",
+     autoRotation: "Scheduled IPv6 rotation",
+     rotationInterval: "Rotation interval",
 diff --git a/frontend/src/locales/fa.ts b/frontend/src/locales/fa.ts
-index 6b20cdb..bd60f8e 100644
+index bd60f8e..6605bdb 100644
 --- a/frontend/src/locales/fa.ts
 +++ b/frontend/src/locales/fa.ts
-@@ -636,6 +636,7 @@
-     ipv6ListHint: "هر خط یک آدرس. برای تولید تصادفی در پیشوند پایه خالی بگذارید.",
-     addSystemAddresses: "افزودن خودکار آدرس‌ها به رابط سیستم",
-     detectedIPv6: "IPv6 عمومی شناسایی‌شده",
-+    ipv6ListLimited: "To keep the panel responsive, {shown} of {total} available addresses are shown. Managed relay addresses are omitted.",
-     noIPv6: "IPv6 عمومی قابل استفاده‌ای شناسایی نشد",
-     upstreamList: "فهرست بالادستی",
-     upstreamListHint: "هر خط host:port، host:port:username:password یا socks5://username:password{'@'}host:port",
-@@ -643,6 +644,18 @@
-     pairedIPv6Hint: "اختیاری؛ هر خط یک آدرس به ترتیب جفت‌سازی. آدرس‌های کمبود از پیشوند پایه IPv6 ساخته می‌شوند.",
+@@ -616,7 +616,7 @@
+     pairedDescription: "هر خط SOCKS5 بالادستی به ترتیب با یک IPv6 از VPS جفت می‌شود. مقصدهای IPv4 از SOCKS5 متناظر و مقصدهای IPv6 از IPv6 متناظر VPS استفاده می‌کنند.",
+     createPaired: "ایجاد رله‌های جفت‌شده",
+     dualStackMode: "خروجی دوپشته",
+-    dualStackDescription: "هر SOCKS5 بالادستی با یک IPv6 سرور جفت می‌شود. همه سایت‌ها ابتدا IPv6 سرور را امتحان می‌کنند و در صورت شکست یا نبود IPv6 به SOCKS5 IPv4 متناظر برمی‌گردند.",
++    dualStackDescription: "Each upstream SOCKS5 is paired with one VPS IPv6. IPv4 is blocked while that VPS IPv6 egress is healthy and takes over only while the IPv6 egress health check is failing.",
+     createDualStack: "ایجاد رله‌های دوپشته",
+     pools: "استخرهای رله",
+     name: "نام استخر",
+@@ -645,6 +645,10 @@
      create: "ایجاد رله",
      noPools: "استخر رله‌ای وجود ندارد",
-+    previewLimited: "Showing the first {shown} of {total}. Copy and export still include every item.",
-+    rotationOn: "Auto rotation",
-+    autoRotation: "Scheduled IPv6 rotation",
-+    rotationInterval: "Rotation interval",
-+    nextRotation: "Next rotation",
-+    rotateNow: "Rotate IPv6 now",
-+    rotateConfirm: "Replace every IPv6 in this pool now? Ports, credentials, and IPv4 SOCKS5 mappings will remain unchanged.",
-+    rotated: "Rotated {count} IPv6 addresses",
-+    rotateFailed: "IPv6 rotation failed; the previous addresses and configuration were preserved",
-+    rotationIntervalInvalid: "The rotation interval must be an integer from 5 to 10080 minutes",
-+    rotationSaveFailed: "Could not save rotation settings",
-+    rotationSaved: "Rotation settings saved",
-     items: "مورد",
-     copy: "کپی قالب عمومی",
-     exportBitBrowser: "خروجی BitBrowser",
+     previewLimited: "Showing the first {shown} of {total}. Copy and export still include every item.",
++    itemRefreshLinks: "Per-IPv6 manual refresh links",
++    copyRefreshLink: "Copy this refresh link",
++    copyRefreshLinks: "Copy all refresh links",
++    refreshPreviewLimited: "Showing the first {shown} of {total} refresh links. Copy all still includes every link.",
+     rotationOn: "Auto rotation",
+     autoRotation: "Scheduled IPv6 rotation",
+     rotationInterval: "Rotation interval",
 diff --git a/frontend/src/locales/ru.ts b/frontend/src/locales/ru.ts
-index d351c8c..008c475 100644
+index 008c475..db7f388 100644
 --- a/frontend/src/locales/ru.ts
 +++ b/frontend/src/locales/ru.ts
-@@ -637,6 +637,7 @@
-     ipv6ListHint: "Один адрес в строке. Оставьте пустым для случайной генерации в базовом префиксе.",
-     addSystemAddresses: "Добавлять адреса в системный интерфейс",
-     detectedIPv6: "Обнаруженные публичные IPv6",
-+    ipv6ListLimited: "To keep the panel responsive, {shown} of {total} available addresses are shown. Managed relay addresses are omitted.",
-     noIPv6: "Подходящий публичный IPv6 не найден",
-     upstreamList: "Список вышестоящих прокси",
-     upstreamListHint: "Одна строка host:port, host:port:username:password или socks5://username:password{'@'}host:port",
-@@ -644,6 +645,18 @@
-     pairedIPv6Hint: "Необязательно, по одному адресу в порядке связывания; недостающие адреса создаются из базового префикса IPv6.",
+@@ -617,7 +617,7 @@
+     pairedDescription: "Каждая строка вышестоящего SOCKS5 последовательно связывается с IPv6 VPS. Цели IPv4 используют SOCKS5, цели IPv6 — соответствующий IPv6 VPS.",
+     createPaired: "Создать пары",
+     dualStackMode: "Двухстековый выход",
+-    dualStackDescription: "Каждый SOCKS5 связывается с одним IPv6 VPS. Для всех сайтов сначала используется IPv6 VPS, а при сбое или отсутствии IPv6 выполняется переход на соответствующий IPv4 SOCKS5.",
++    dualStackDescription: "Each upstream SOCKS5 is paired with one VPS IPv6. IPv4 is blocked while that VPS IPv6 egress is healthy and takes over only while the IPv6 egress health check is failing.",
+     createDualStack: "Создать двухстековые реле",
+     pools: "Пулы ретрансляции",
+     name: "Имя пула",
+@@ -646,6 +646,10 @@
      create: "Создать ретранслятор",
      noPools: "Пулов ретрансляции нет",
-+    previewLimited: "Showing the first {shown} of {total}. Copy and export still include every item.",
-+    rotationOn: "Auto rotation",
-+    autoRotation: "Scheduled IPv6 rotation",
-+    rotationInterval: "Rotation interval",
-+    nextRotation: "Next rotation",
-+    rotateNow: "Rotate IPv6 now",
-+    rotateConfirm: "Replace every IPv6 in this pool now? Ports, credentials, and IPv4 SOCKS5 mappings will remain unchanged.",
-+    rotated: "Rotated {count} IPv6 addresses",
-+    rotateFailed: "IPv6 rotation failed; the previous addresses and configuration were preserved",
-+    rotationIntervalInvalid: "The rotation interval must be an integer from 5 to 10080 minutes",
-+    rotationSaveFailed: "Could not save rotation settings",
-+    rotationSaved: "Rotation settings saved",
-     items: "элементов",
-     copy: "Копировать общий формат",
-     exportBitBrowser: "Экспорт BitBrowser",
+     previewLimited: "Showing the first {shown} of {total}. Copy and export still include every item.",
++    itemRefreshLinks: "Per-IPv6 manual refresh links",
++    copyRefreshLink: "Copy this refresh link",
++    copyRefreshLinks: "Copy all refresh links",
++    refreshPreviewLimited: "Showing the first {shown} of {total} refresh links. Copy all still includes every link.",
+     rotationOn: "Auto rotation",
+     autoRotation: "Scheduled IPv6 rotation",
+     rotationInterval: "Rotation interval",
 diff --git a/frontend/src/locales/vi.ts b/frontend/src/locales/vi.ts
-index 2d0d46b..30701f2 100644
+index 30701f2..5295f76 100644
 --- a/frontend/src/locales/vi.ts
 +++ b/frontend/src/locales/vi.ts
-@@ -636,6 +636,7 @@
-     ipv6ListHint: "Mỗi dòng một địa chỉ. Để trống để tạo ngẫu nhiên trong tiền tố cơ sở.",
-     addSystemAddresses: "Tự động thêm địa chỉ vào giao diện hệ thống",
-     detectedIPv6: "IPv6 công khai đã phát hiện",
-+    ipv6ListLimited: "To keep the panel responsive, {shown} of {total} available addresses are shown. Managed relay addresses are omitted.",
-     noIPv6: "Không tìm thấy IPv6 công khai khả dụng",
-     upstreamList: "Danh sách upstream",
-     upstreamListHint: "Mỗi dòng host:port, host:port:username:password hoặc socks5://username:password{'@'}host:port",
-@@ -643,6 +644,18 @@
-     pairedIPv6Hint: "Tùy chọn, mỗi dòng một địa chỉ theo thứ tự ghép; địa chỉ thiếu sẽ được tạo từ tiền tố IPv6 cơ sở.",
+@@ -616,7 +616,7 @@
+     pairedDescription: "Mỗi dòng SOCKS5 upstream được ghép tuần tự với một IPv6 VPS. Đích IPv4 dùng SOCKS5 tương ứng, đích IPv6 dùng IPv6 VPS tương ứng.",
+     createPaired: "Tạo relay ghép đôi",
+     dualStackMode: "Đầu ra ngăn xếp kép",
+-    dualStackDescription: "Mỗi SOCKS5 upstream được ghép với một IPv6 VPS. Mọi trang web thử IPv6 VPS trước, sau đó dùng SOCKS5 IPv4 nếu IPv6 lỗi hoặc không khả dụng.",
++    dualStackDescription: "Each upstream SOCKS5 is paired with one VPS IPv6. IPv4 is blocked while that VPS IPv6 egress is healthy and takes over only while the IPv6 egress health check is failing.",
+     createDualStack: "Tạo relay ngăn xếp kép",
+     pools: "Nhóm chuyển tiếp",
+     name: "Tên nhóm",
+@@ -645,6 +645,10 @@
      create: "Tạo chuyển tiếp",
      noPools: "Chưa có nhóm chuyển tiếp",
-+    previewLimited: "Showing the first {shown} of {total}. Copy and export still include every item.",
-+    rotationOn: "Auto rotation",
-+    autoRotation: "Scheduled IPv6 rotation",
-+    rotationInterval: "Rotation interval",
-+    nextRotation: "Next rotation",
-+    rotateNow: "Rotate IPv6 now",
-+    rotateConfirm: "Replace every IPv6 in this pool now? Ports, credentials, and IPv4 SOCKS5 mappings will remain unchanged.",
-+    rotated: "Rotated {count} IPv6 addresses",
-+    rotateFailed: "IPv6 rotation failed; the previous addresses and configuration were preserved",
-+    rotationIntervalInvalid: "The rotation interval must be an integer from 5 to 10080 minutes",
-+    rotationSaveFailed: "Could not save rotation settings",
-+    rotationSaved: "Rotation settings saved",
-     items: "mục",
-     copy: "Sao chép định dạng chung",
-     exportBitBrowser: "Xuất BitBrowser",
+     previewLimited: "Showing the first {shown} of {total}. Copy and export still include every item.",
++    itemRefreshLinks: "Per-IPv6 manual refresh links",
++    copyRefreshLink: "Copy this refresh link",
++    copyRefreshLinks: "Copy all refresh links",
++    refreshPreviewLimited: "Showing the first {shown} of {total} refresh links. Copy all still includes every link.",
+     rotationOn: "Auto rotation",
+     autoRotation: "Scheduled IPv6 rotation",
+     rotationInterval: "Rotation interval",
 diff --git a/frontend/src/locales/zhcn.ts b/frontend/src/locales/zhcn.ts
-index 02025d9..bdd81f4 100644
+index bdd81f4..b6279d5 100644
 --- a/frontend/src/locales/zhcn.ts
 +++ b/frontend/src/locales/zhcn.ts
-@@ -683,6 +683,7 @@
-     ipv6ListHint: "每行一个地址；留空则按基准前缀随机生成",
-     addSystemAddresses: "自动添加到系统网卡",
-     detectedIPv6: "检测到的公网 IPv6",
-+    ipv6ListLimited: "为保持面板流畅，仅显示 {shown} 条可用地址（共 {total} 条）；中转池已使用的地址不会在此重复显示。",
-     noIPv6: "未检测到可用公网 IPv6",
-     upstreamList: "上游列表",
-     upstreamListHint: "每行 host:port、host:port:username:password，或 socks5://username:password{'@'}host:port",
-@@ -690,6 +691,18 @@
-     pairedIPv6Hint: "可选，每行一个并按顺序配对；不足的地址会从基准 IPv6 前缀随机生成",
+@@ -663,7 +663,7 @@
+     pairedDescription: "每行上游 SOCKS5 按顺序配一个 VPS IPv6。访问 IPv4 目标走对应 SOCKS5，访问 IPv6 目标绑定对应 VPS IPv6 出口。",
+     createPaired: "创建配对中转",
+     dualStackMode: "双栈出口",
+-    dualStackDescription: "每行上游 SOCKS5 配一个 VPS IPv6。所有网站先尝试对应 VPS IPv6；IPv6 连接失败或目标没有 IPv6 时，回退到对应 IPv4 SOCKS5。",
++    dualStackDescription: "每行上游 SOCKS5 配一个 VPS IPv6。VPS IPv6 出口健康时完全禁止 IPv4；只有该线路 IPv6 出口检测失败时，才由对应 IPv4 SOCKS5 临时接管。",
+     createDualStack: "创建双栈中转",
+     pools: "中转批次",
+     name: "批次名称",
+@@ -692,6 +692,10 @@
      create: "创建中转",
      noPools: "暂无中转批次",
-+    previewLimited: "仅预览前 {shown} 条，共 {total} 条；复制和导出仍包含全部。",
-+    rotationOn: "自动轮转",
-+    autoRotation: "定时轮转 IPv6",
-+    rotationInterval: "轮转间隔",
-+    nextRotation: "下次轮转",
-+    rotateNow: "立即轮转 IPv6",
-+    rotateConfirm: "立即更换此批次的全部 IPv6？端口、账号、密码和 IPv4 SOCKS5 对应关系不会改变。",
-+    rotated: "已成功轮转 {count} 条 IPv6",
-+    rotateFailed: "IPv6 轮转失败，原地址和配置已保留",
-+    rotationIntervalInvalid: "轮转间隔必须是 5 到 10080 分钟之间的整数",
-+    rotationSaveFailed: "轮转设置保存失败",
-+    rotationSaved: "轮转设置已保存",
-     items: "条",
-     copy: "复制通用格式",
-     exportBitBrowser: "导出 BitBrowser",
+     previewLimited: "仅预览前 {shown} 条，共 {total} 条；复制和导出仍包含全部。",
++    itemRefreshLinks: "单条 IPv6 手动轮转链接",
++    copyRefreshLink: "复制此条轮转链接",
++    copyRefreshLinks: "复制全部轮转链接",
++    refreshPreviewLimited: "仅显示前 {shown} 条轮转链接，共 {total} 条；复制全部仍包含每一条。",
+     rotationOn: "自动轮转",
+     autoRotation: "定时轮转 IPv6",
+     rotationInterval: "轮转间隔",
 diff --git a/frontend/src/locales/zhtw.ts b/frontend/src/locales/zhtw.ts
-index d599a7a..2e1ebed 100644
+index 2e1ebed..98e19d9 100644
 --- a/frontend/src/locales/zhtw.ts
 +++ b/frontend/src/locales/zhtw.ts
-@@ -636,6 +636,7 @@
-     ipv6ListHint: "每行一個地址；留空則按基準前綴隨機生成",
-     addSystemAddresses: "自動添加到系統網卡",
-     detectedIPv6: "檢測到的公網 IPv6",
-+    ipv6ListLimited: "為保持面板流暢，僅顯示 {shown} 條可用地址（共 {total} 條）；中轉池已使用的地址不會重複顯示。",
-     noIPv6: "未檢測到可用公網 IPv6",
-     upstreamList: "上游列表",
-     upstreamListHint: "每行 host:port、host:port:username:password，或 socks5://username:password{'@'}host:port",
-@@ -643,6 +644,18 @@
-     pairedIPv6Hint: "可選，每行一個並依序配對；不足的地址會從基準 IPv6 前綴隨機生成",
+@@ -616,7 +616,7 @@
+     pairedDescription: "每行上游 SOCKS5 依序配對一個 VPS IPv6。IPv4 目標走對應 SOCKS5，IPv6 目標綁定對應 VPS IPv6 出口。",
+     createPaired: "建立配對中轉",
+     dualStackMode: "雙棧出口",
+-    dualStackDescription: "每行上游 SOCKS5 配一個 VPS IPv6。所有網站先嘗試對應 VPS IPv6；IPv6 連線失敗或目標沒有 IPv6 時，回退到對應 IPv4 SOCKS5。",
++    dualStackDescription: "每行上游 SOCKS5 配一個 VPS IPv6。VPS IPv6 出口健康時完全禁止 IPv4；只有該線路 IPv6 出口檢測失敗時，才由對應 IPv4 SOCKS5 暫時接管。",
+     createDualStack: "建立雙棧中轉",
+     pools: "中轉批次",
+     name: "批次名稱",
+@@ -645,6 +645,10 @@
      create: "創建中轉",
      noPools: "暫無中轉批次",
-+    previewLimited: "僅預覽前 {shown} 條，共 {total} 條；複製和匯出仍包含全部。",
-+    rotationOn: "自動輪轉",
-+    autoRotation: "定時輪轉 IPv6",
-+    rotationInterval: "輪轉間隔",
-+    nextRotation: "下次輪轉",
-+    rotateNow: "立即輪轉 IPv6",
-+    rotateConfirm: "立即更換此批次的全部 IPv6？端口、帳號、密碼和 IPv4 SOCKS5 對應關係不會改變。",
-+    rotated: "已成功輪轉 {count} 條 IPv6",
-+    rotateFailed: "IPv6 輪轉失敗，原地址和設定已保留",
-+    rotationIntervalInvalid: "輪轉間隔必須是 5 到 10080 分鐘之間的整數",
-+    rotationSaveFailed: "輪轉設定儲存失敗",
-+    rotationSaved: "輪轉設定已儲存",
-     items: "條",
-     copy: "複製通用格式",
-     exportBitBrowser: "匯出 BitBrowser",
+     previewLimited: "僅預覽前 {shown} 條，共 {total} 條；複製和匯出仍包含全部。",
++    itemRefreshLinks: "單條 IPv6 手動輪轉連結",
++    copyRefreshLink: "複製此條輪轉連結",
++    copyRefreshLinks: "複製全部輪轉連結",
++    refreshPreviewLimited: "僅顯示前 {shown} 條輪轉連結，共 {total} 條；複製全部仍包含每一條。",
+     rotationOn: "自動輪轉",
+     autoRotation: "定時輪轉 IPv6",
+     rotationInterval: "輪轉間隔",
 diff --git a/paired-release/1s-ui-paired-relay-guide.md b/paired-release/1s-ui-paired-relay-guide.md
-index 76609ad..83a2068 100644
+index 83a2068..2f39358 100644
 --- a/paired-release/1s-ui-paired-relay-guide.md
 +++ b/paired-release/1s-ui-paired-relay-guide.md
-@@ -60,6 +60,22 @@ socks5://user:password@203.0.113.12:1080
- 4. 上游列表有多少行，就会按顺序生成多少个 IPv6 和入口端口。
- 5. 创建成功后复制面板导出的 `VPS地址:端口:账号:密码`。
+@@ -9,11 +9,11 @@
+ - IPv4-only 目标走 SOCKS5；
+ - IPv6-only 或双栈目标优先走对应 VPS IPv6。
  
-+## IPv6 轮转
-+
-+在“入站管理 -> 一键中转 -> 中转批次”中：
-+
-+- 点击同步图标可立即更换该批次的全部 IPv6；
-+- 开启“定时轮转 IPv6”并设置 5–10080 分钟，可自动轮转；
-+- 第 N 条新 IPv6 仍对应原来的第 N 条 IPv4 SOCKS5；
-+- 入口端口、账号、密码、协议和导出内容不会改变；
-+- 面板先添加并验证全部新地址，只重载一次 sing-box，成功后再删除旧地址；失败时清理新地址并保留旧配置。
-+
-+纯“上游 SOCKS5”池没有 VPS IPv6，因此不显示轮转功能。旧版本创建的 IPv6、配对和双栈池升级后也可以直接开启轮转，无需重新创建。
-+
-+## 大量地址优化
-+
-+面板不会再把所有已管理的 IPv6 重复显示在“检测到的公网 IPv6”列表中，并限制地址与中转池的页面预览。复制、BitBrowser 导出和实际代理条目仍包含完整数据。创建和启动恢复时会按网卡批量检查 IPv6 状态，避免每个地址重复执行一次完整扫描。
-+
- ## 验证
+-双栈出口模式会在同一个入口内按以下顺序连接：
++上面的地址族固定分流属于 `paired` 模式。“双栈出口” `dualstack` 模式会在同一个入口内按以下顺序连接：
  
- 对同一个入口分别访问 IPv4-only 和 IPv6-only 查询地址：
+ 1. 先使用绑定到该入口的 VPS IPv6 连接目标 IPv6 地址；
+-2. IPv6 连接失败、超时（默认 3 秒）或域名没有 IPv6 地址时，使用同一行对应的 IPv4 SOCKS5；
+-3. IPv4 回退使用上游 SOCKS5，不会改用 VPS 原生 IPv4。
++2. 独立 IPv4 请求或目标没有 IPv6 地址时，先确认 VPS IPv6 公网出口是否健康；
++3. 只有目标 IPv6 连接和公网 IPv6 健康探测都失败时，才使用同一行对应的 IPv4 SOCKS5；IPv4 回退不会使用 VPS 原生 IPv4。
+ 
+ ## 直接安装
+ 
+@@ -64,13 +64,17 @@ socks5://user:password@203.0.113.12:1080
+ 
+ 在“入站管理 -> 一键中转 -> 中转批次”中：
+ 
+-- 点击同步图标可立即更换该批次的全部 IPv6；
+-- 开启“定时轮转 IPv6”并设置 5–10080 分钟，可自动轮转；
+-- 第 N 条新 IPv6 仍对应原来的第 N 条 IPv4 SOCKS5；
++- 每条 IPv6 都有一个稳定、独立的手动轮转链接；
++- 访问某条 `/refresh/令牌` 链接只更换这一条 IPv6，其他地址不会变化；
++- 轮转后链接本身不变，新 IPv6 仍对应原来的 IPv4 SOCKS5；
+ - 入口端口、账号、密码、协议和导出内容不会改变；
+-- 面板先添加并验证全部新地址，只重载一次 sing-box，成功后再删除旧地址；失败时清理新地址并保留旧配置。
++- 面板先添加并验证新地址，成功后再删除这一条旧地址；失败时清理新地址并保留旧配置。
+ 
+-纯“上游 SOCKS5”池没有 VPS IPv6，因此不显示轮转功能。旧版本创建的 IPv6、配对和双栈池升级后也可以直接开启轮转，无需重新创建。
++刷新链接相当于轮转密码，请勿公开。纯“上游 SOCKS5”池没有 VPS IPv6，因此不生成链接。旧版本创建的 IPv6、配对和双栈池升级后会自动补齐独立链接，无需重新创建。
++
++## IPv6 优先回退
++
++“双栈出口”按每条线路检查 VPS IPv6 出口健康状态。IPv6 健康时会拒绝独立 IPv4 请求，因此 IP 检测页面不会因为额外的 IPv4 探测而获得上游地址；只有 IPv6 连接与公网健康探测都失败时，对应 IPv4 SOCKS5 才会临时接管。IPv6 恢复后自动停止 IPv4 回退。
+ 
+ ## 大量地址优化
+ 
+@@ -85,7 +89,7 @@ curl --socks5-hostname VPS地址:端口 --proxy-user 账号:密码 https://api.i
+ curl --socks5-hostname VPS地址:端口 --proxy-user 账号:密码 https://api6.ipify.org
+ ```
+ 
+-第一条应显示该入口对应的上游 SOCKS5 IPv4；第二条应显示该入口对应的 VPS IPv6。
++IPv6 健康时第二条应显示对应 VPS IPv6，第一条应连接失败。临时阻断 VPS IPv6 出口后，第一条才应显示该入口对应的上游 SOCKS5 IPv4。
+ 
+ 测试双栈回退时，可以先临时阻断或停用该 VPS IPv6 路由，再访问一个同时有 A 和 AAAA 记录的网站；连接应在 IPv6 超时后自动回到对应 IPv4 SOCKS5。
+ 
 diff --git a/paired-release/README.md b/paired-release/README.md
-index f567c6b..7093c90 100644
+index 7093c90..c9f380c 100644
 --- a/paired-release/README.md
 +++ b/paired-release/README.md
-@@ -26,6 +26,8 @@ sudo ./install-s-ui-paired.sh
+@@ -24,9 +24,9 @@ chmod +x install-s-ui-paired.sh
+ sudo ./install-s-ui-paired.sh
+ ```
  
- 安装后进入“入站管理 -> 一键中转 -> 双栈出口”。每行上游 SOCKS5 按顺序对应一条 VPS IPv6。所有目标先尝试 VPS IPv6，连接失败后回退到同一行的 IPv4 SOCKS5。完整配置说明见 `1s-ui-paired-relay-guide.md`。
+-安装后进入“入站管理 -> 一键中转 -> 双栈出口”。每行上游 SOCKS5 按顺序对应一条 VPS IPv6。所有目标先尝试 VPS IPv6，连接失败后回退到同一行的 IPv4 SOCKS5。完整配置说明见 `1s-ui-paired-relay-guide.md`。
++安装后进入“入站管理 -> 一键中转 -> 双栈出口”。每行上游 SOCKS5 按顺序对应一条 VPS IPv6。IPv6 出口健康时禁止 IPv4，只有 IPv6 出口健康探测失败时才由同一行的 IPv4 SOCKS5 临时接管。完整配置说明见 `1s-ui-paired-relay-guide.md`。
  
-+在“中转批次”中可点击同步图标立即轮转 IPv6，或开启定时轮转并设置 5–10080 分钟间隔。轮转不会改变现有端口、账号、密码或 IPv4 SOCKS5 配对。
-+
+-在“中转批次”中可点击同步图标立即轮转 IPv6，或开启定时轮转并设置 5–10080 分钟间隔。轮转不会改变现有端口、账号、密码或 IPv4 SOCKS5 配对。
++在“中转批次”中，每条 IPv6 都有独立的手动轮转链接。访问一条链接只更换对应 IPv6，不改变其他地址、现有端口、账号、密码或 IPv4 SOCKS5 配对。
+ 
  ## 文件说明
  
- - `install-s-ui-paired.sh`: 自动识别 VPS 架构并安装。
-diff --git a/service/agent_hub.go b/service/agent_hub.go
-index 7167493..b324f76 100644
---- a/service/agent_hub.go
-+++ b/service/agent_hub.go
-@@ -499,6 +499,8 @@ func validAgentRPCMethod(method string) bool {
- 		agent.RPCMethodRelayGet,
- 		agent.RPCMethodRelayCreate,
- 		agent.RPCMethodRelayDelete,
-+		agent.RPCMethodRelayRotate,
-+		agent.RPCMethodRelayRotationSet,
- 		agent.RPCMethodRelayExport:
- 		return true
- 	default:
-@@ -508,7 +510,7 @@ func validAgentRPCMethod(method string) bool {
- 
- func agentRPCTimeout(method string) time.Duration {
- 	switch method {
--	case agent.RPCMethodInboundQuickAdd, agent.RPCMethodRelayCreate, agent.RPCMethodRelayDelete:
-+	case agent.RPCMethodInboundQuickAdd, agent.RPCMethodRelayCreate, agent.RPCMethodRelayDelete, agent.RPCMethodRelayRotate:
- 		return 10 * time.Minute
- 	default:
- 		return agentCommandTimeout
-@@ -517,7 +519,7 @@ func agentRPCTimeout(method string) time.Duration {
- 
- func agentRPCMutatesConfig(method string) bool {
- 	switch method {
--	case agent.RPCMethodInboundSave, agent.RPCMethodInboundQuickAdd, agent.RPCMethodRelayCreate, agent.RPCMethodRelayDelete:
-+	case agent.RPCMethodInboundSave, agent.RPCMethodInboundQuickAdd, agent.RPCMethodRelayCreate, agent.RPCMethodRelayDelete, agent.RPCMethodRelayRotate, agent.RPCMethodRelayRotationSet:
- 		return true
- 	default:
- 		return false
 diff --git a/service/relay.go b/service/relay.go
-index dd3005f..c663b16 100644
+index c663b16..19cb96e 100644
 --- a/service/relay.go
 +++ b/service/relay.go
-@@ -44,6 +44,10 @@ const (
- 	relayIPv6EgressErrorCode      = "relay_ipv6_egress_unreachable"
- 	relayIPv6ProbeWorkers         = 8
- 	relayDualStackIPv6Timeout     = "3s"
-+	relayIPv6DisplayLimit         = 128
-+	relayRotationMinMinutes       = 5
-+	relayRotationMaxMinutes       = 7 * 24 * 60
-+	relayRotationDefaultMinutes   = 60
- 	maxRelayItems                 = 100
- 	relayCoreSingBox              = model.CoreTypeSingBox
- )
-@@ -126,9 +130,25 @@ type RelayCreateRequest struct {
+@@ -147,6 +147,8 @@ type RelayRotationResult struct {
+ 	PoolID        uint     `json:"pool_id"`
+ 	Rotated       int      `json:"rotated"`
+ 	IPv6          []string `json:"ipv6"`
++	ItemIndex     int      `json:"item_index,omitempty"`
++	RefreshToken  string   `json:"refresh_token,omitempty"`
+ 	LastRotatedAt int64    `json:"last_rotated_at"`
+ 	NextRotateAt  int64    `json:"next_rotate_at,omitempty"`
  }
- 
- type RelayData struct {
--	Pools        []model.RelayPool `json:"pools"`
--	IPv6         []RelayIPv6       `json:"ipv6"`
--	Capabilities RelayCapabilities `json:"capabilities"`
-+	Pools             []model.RelayPool `json:"pools"`
-+	IPv6              []RelayIPv6       `json:"ipv6"`
-+	IPv6Total         int               `json:"ipv6_total"`
-+	IPv6Truncated     bool              `json:"ipv6_truncated"`
-+	RotationSupported bool              `json:"rotation_supported"`
-+	Capabilities      RelayCapabilities `json:"capabilities"`
-+}
-+
-+type RelayRotationRequest struct {
-+	Enabled         bool `json:"enabled"`
-+	IntervalMinutes int  `json:"interval_minutes"`
-+}
-+
-+type RelayRotationResult struct {
-+	PoolID        uint     `json:"pool_id"`
-+	Rotated       int      `json:"rotated"`
-+	IPv6          []string `json:"ipv6"`
-+	LastRotatedAt int64    `json:"last_rotated_at"`
-+	NextRotateAt  int64    `json:"next_rotate_at,omitempty"`
- }
- 
- type RelayCapabilities struct {
-@@ -155,11 +175,26 @@ func (s *ConfigService) GetRelayData() (*RelayData, error) {
+@@ -175,6 +177,12 @@ func (s *ConfigService) GetRelayData() (*RelayData, error) {
  	if err != nil {
  		return nil, err
  	}
--	ipv6, err := s.GetRelayIPv6()
-+	managed := make(map[string]bool)
-+	for _, pool := range pools {
-+		var items []model.RelayItem
-+		if json.Unmarshal(pool.Items, &items) != nil {
-+			continue
-+		}
-+		for _, item := range items {
-+			if item.IPv6 != "" {
-+				managed[item.IPv6] = true
-+			}
-+		}
++	if err := s.ensureRelayRefreshLinks(pools); err != nil {
++		return nil, err
 +	}
-+	ipv6, total, err := discoverRelayIPv6Summary(managed, relayIPv6DisplayLimit)
- 	if err != nil {
- 		return nil, err
- 	}
--	return &RelayData{Pools: pools, IPv6: ipv6, Capabilities: getRelayCapabilities()}, nil
-+	return &RelayData{
-+		Pools: pools, IPv6: ipv6, IPv6Total: total, IPv6Truncated: total > len(ipv6), RotationSupported: true,
-+		Capabilities: getRelayCapabilities(),
-+	}, nil
- }
- 
- func (s *ConfigService) GetRelayBitBrowserExport(id uint) ([]byte, error) {
-@@ -325,6 +360,15 @@ func (s *ConfigService) RestoreRelayIPv6() error {
- 	if err != nil {
- 		return err
- 	}
-+	detected, err := discoverRelayIPv6()
-+	if err != nil {
-+		return err
++	if err := s.populateRelayRefreshTokens(pools); err != nil {
++		return nil, err
 +	}
-+	existing := make(map[string]bool, len(detected))
-+	for _, address := range detected {
-+		existing[address.Address] = true
-+	}
-+	restored := make([]model.RelayItem, 0)
+ 	managed := make(map[string]bool)
  	for _, pool := range pools {
  		var items []model.RelayItem
- 		if err := json.Unmarshal(pool.Items, &items); err != nil {
-@@ -334,17 +378,19 @@ func (s *ConfigService) RestoreRelayIPv6() error {
- 			if !item.AddedByUs || item.IPv6 == "" {
- 				continue
- 			}
--			exists, err := relayAddressExists(item.IPv6)
--			if err != nil {
--				logger.Warningf("check relay IPv6 %s failed: %v", item.IPv6, err)
--				continue
--			}
--			if !exists {
-+			if !existing[item.IPv6] {
- 				if err := addRelayAddress(item.Interface, item.IPv6, item.Prefix); err != nil {
- 					logger.Warningf("restore relay IPv6 %s: %v", item.IPv6, err)
- 					continue
- 				}
-+				existing[item.IPv6] = true
- 			}
-+			restored = append(restored, item)
-+		}
-+	}
-+	if err := waitRelayAddressesReady(restored); err != nil {
-+		logger.Warning("batch relay IPv6 readiness check failed, checking addresses individually: ", err)
-+		for _, item := range restored {
- 			if err := waitRelayAddressReady(item.Interface, item.IPv6); err != nil {
- 				logger.Warningf("restore relay IPv6 %s readiness: %v", item.IPv6, err)
- 				_ = deleteRelayAddress(item.Interface, item.IPv6, item.Prefix)
-@@ -647,14 +693,21 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
- 			}
- 		}
- 	}()
-+	existingAddresses := make(map[string]bool)
-+	if relayModeUsesIPv6(req.Mode) {
-+		detected, discoverErr := discoverRelayIPv6()
-+		if discoverErr != nil {
-+			return nil, discoverErr
-+		}
-+		for _, address := range detected {
-+			existingAddresses[address.Address] = true
-+		}
-+	}
- 	for i := range items {
- 		if items[i].IPv6 == "" {
- 			continue
- 		}
--		already, err := relayAddressExists(items[i].IPv6)
--		if err != nil {
--			return nil, err
--		}
-+		already := existingAddresses[items[i].IPv6]
- 		if !already && !req.AddSystemAddresses {
- 			return nil, common.NewErrorf("IPv6 %s is not currently assigned; enable system address creation", items[i].IPv6)
- 		}
-@@ -664,12 +717,11 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
- 			}
- 			items[i].AddedByUs = true
- 			added = append(added, items[i])
-+			existingAddresses[items[i].IPv6] = true
- 		}
- 	}
--	for _, item := range items {
--		if err := waitRelayAddressReady(item.Interface, item.IPv6); err != nil {
--			return nil, err
--		}
-+	if err := waitRelayAddressesReady(items); err != nil {
-+		return nil, err
- 	}
- 	if relayModeUsesIPv6(req.Mode) && runtime.GOOS == "linux" {
- 		if err := validateRelayIPv6Egress(context.Background(), items, probeRelayIPv6Egress); err != nil {
-@@ -1038,6 +1090,332 @@ func (s *ConfigService) DeleteRelay(id uint, actor string) error {
- 	return nil
+@@ -197,6 +205,111 @@ func (s *ConfigService) GetRelayData() (*RelayData, error) {
+ 	}, nil
  }
  
-+func (s *ConfigService) SetRelayRotation(id uint, request RelayRotationRequest, actor string) (*model.RelayPool, error) {
-+	relayMu.Lock()
-+	defer relayMu.Unlock()
-+
-+	var pool model.RelayPool
-+	if err := database.GetDB().First(&pool, id).Error; err != nil {
-+		return nil, err
-+	}
-+	if !relayModeUsesIPv6(pool.Mode) {
-+		return nil, common.NewError("IPv4 upstream-only relay pools cannot rotate IPv6 addresses")
-+	}
-+	interval, err := normalizeRelayRotationInterval(request.Enabled, request.IntervalMinutes)
-+	if err != nil {
-+		return nil, err
-+	}
-+	nextRotateAt := int64(0)
-+	if request.Enabled {
-+		nextRotateAt = time.Now().Add(time.Duration(interval) * time.Minute).Unix()
-+	}
-+	updates := map[string]interface{}{
-+		"rotation_enabled":          request.Enabled,
-+		"rotation_interval_minutes": interval,
-+		"next_rotate_at":            nextRotateAt,
-+	}
++func (s *ConfigService) ensureRelayRefreshLinks(pools []model.RelayPool) error {
 +	db := database.GetDB()
-+	if err := db.Transaction(func(tx *gorm.DB) error {
-+		if err := tx.Model(&model.RelayPool{}).Where("id = ?", pool.Id).Updates(updates).Error; err != nil {
-+			return err
++	return db.Transaction(func(tx *gorm.DB) error {
++		poolIDs := make([]uint, 0, len(pools))
++		for _, pool := range pools {
++			poolIDs = append(poolIDs, pool.Id)
 +		}
-+		change := map[string]interface{}{
-+			"pool_id": pool.Id, "enabled": request.Enabled, "interval_minutes": interval,
-+		}
-+		return tx.Create(&model.Changes{
-+			DateTime: time.Now().Unix(), Actor: actor, Key: "relay", Action: "rotation", Obj: mustJSON(change),
-+		}).Error
-+	}); err != nil {
-+		return nil, err
-+	}
-+	pool.RotationEnabled = request.Enabled
-+	pool.RotationIntervalMinutes = interval
-+	pool.NextRotateAt = nextRotateAt
-+	LastUpdate.Store(time.Now().UnixMilli())
-+	return &pool, nil
-+}
-+
-+func normalizeRelayRotationInterval(enabled bool, interval int) (int, error) {
-+	if interval == 0 {
-+		interval = relayRotationDefaultMinutes
-+	}
-+	if enabled && (interval < relayRotationMinMinutes || interval > relayRotationMaxMinutes) {
-+		return 0, common.NewErrorf(
-+			"rotation interval must be between %d and %d minutes",
-+			relayRotationMinMinutes, relayRotationMaxMinutes,
-+		)
-+	}
-+	if interval < relayRotationMinMinutes || interval > relayRotationMaxMinutes {
-+		interval = relayRotationDefaultMinutes
-+	}
-+	return interval, nil
-+}
-+
-+func (s *ConfigService) RotateRelay(id uint, actor string) (*RelayRotationResult, error) {
-+	relayMu.Lock()
-+	defer relayMu.Unlock()
-+	return s.rotateRelayLocked(id, actor)
-+}
-+
-+func (s *ConfigService) rotateRelayLocked(id uint, actor string) (*RelayRotationResult, error) {
-+	if runtime.GOOS != "linux" {
-+		return nil, common.NewError("IPv6 rotation is supported on Linux only")
-+	}
-+	if !relayHasRoot() {
-+		return nil, common.NewError("root permission is required to rotate IPv6 addresses")
-+	}
-+
-+	db := database.GetDB()
-+	var pool model.RelayPool
-+	if err := db.First(&pool, id).Error; err != nil {
-+		return nil, err
-+	}
-+	if !relayModeUsesIPv6(pool.Mode) {
-+		return nil, common.NewError("IPv4 upstream-only relay pools cannot rotate IPv6 addresses")
-+	}
-+	var oldItems []model.RelayItem
-+	if err := json.Unmarshal(pool.Items, &oldItems); err != nil {
-+		return nil, common.NewError("invalid relay pool items: ", err.Error())
-+	}
-+	if len(oldItems) == 0 {
-+		return nil, common.NewError("relay pool has no IPv6 items")
-+	}
-+	detected, err := discoverRelayIPv6()
-+	if err != nil {
-+		return nil, err
-+	}
-+	occupied := make(map[string]bool, len(detected)+len(oldItems))
-+	for _, address := range detected {
-+		occupied[address.Address] = true
-+	}
-+	newItems, err := prepareRelayRotatedItems(oldItems, occupied)
-+	if err != nil {
-+		return nil, err
-+	}
-+
-+	added := make([]model.RelayItem, 0, len(newItems))
-+	cleanupNew := true
-+	defer func() {
-+		if !cleanupNew {
-+			return
-+		}
-+		for _, item := range added {
-+			_ = deleteRelayAddress(item.Interface, item.IPv6, item.Prefix)
-+		}
-+	}()
-+	for _, item := range newItems {
-+		if err := addRelayAddress(item.Interface, item.IPv6, item.Prefix); err != nil {
-+			return nil, err
-+		}
-+		added = append(added, item)
-+	}
-+	if err := waitRelayAddressesReady(newItems); err != nil {
-+		return nil, err
-+	}
-+	if err := validateRelayIPv6Egress(context.Background(), newItems, probeRelayIPv6Egress); err != nil {
-+		return nil, err
-+	}
-+	coreWasRunning := false
-+	coreOperation := false
-+	if corePtr != nil {
-+		startCoreMu.Lock()
-+		if startCoreInProgress {
-+			startCoreMu.Unlock()
-+			return nil, common.NewError("core operation already in progress; retry IPv6 rotation shortly")
-+		}
-+		startCoreInProgress = true
-+		coreOperation = true
-+		coreWasRunning = corePtr.IsRunning()
-+		startCoreMu.Unlock()
-+	}
-+	defer func() {
-+		if coreOperation {
-+			startCoreMu.Lock()
-+			startCoreInProgress = false
-+			startCoreMu.Unlock()
-+		}
-+	}()
-+
-+	tx := db.Begin()
-+	if tx.Error != nil {
-+		return nil, tx.Error
-+	}
-+	committed := false
-+	var oldConfig []byte
-+	defer func() {
-+		if committed {
-+			return
-+		}
-+		_ = tx.Rollback().Error
-+		if len(oldConfig) > 0 && corePtr != nil {
-+			if restoreErr := s.restoreSingBoxConfig(oldConfig); restoreErr != nil {
-+				logger.Error("restore core after relay rotation failed: ", restoreErr)
-+			}
-+		}
-+	}()
-+
-+	if err := updateRelayRotatedOutbounds(tx, pool.Mode, newItems); err != nil {
-+		return nil, err
-+	}
-+
-+	now := time.Now()
-+	nextRotateAt := int64(0)
-+	if pool.RotationEnabled {
-+		interval, intervalErr := normalizeRelayRotationInterval(true, pool.RotationIntervalMinutes)
-+		if intervalErr != nil {
-+			return nil, intervalErr
-+		}
-+		pool.RotationIntervalMinutes = interval
-+		nextRotateAt = now.Add(time.Duration(interval) * time.Minute).Unix()
-+	}
-+	pool.Items = mustJSON(newItems)
-+	pool.LastRotatedAt = now.Unix()
-+	pool.NextRotateAt = nextRotateAt
-+	if err := tx.Model(&model.RelayPool{}).Where("id = ?", pool.Id).Updates(map[string]interface{}{
-+		"items": pool.Items, "last_rotated_at": pool.LastRotatedAt,
-+		"next_rotate_at": pool.NextRotateAt, "rotation_interval_minutes": pool.RotationIntervalMinutes,
-+	}).Error; err != nil {
-+		return nil, err
-+	}
-+
-+	if coreWasRunning {
-+		oldConfigPtr, err := s.GetConfig("")
-+		if err != nil {
-+			return nil, err
-+		}
-+		oldConfig = *oldConfigPtr
-+		newConfig, err := s.GetConfigWithDB("", tx)
-+		if err != nil {
-+			return nil, err
-+		}
-+		if err := corePtr.Stop(); err != nil {
-+			return nil, err
-+		}
-+		if err := corePtr.Start(*newConfig); err != nil {
-+			return nil, common.NewErrorf("rotated relay configuration rejected by sing-box: %v", err)
-+		}
-+	}
-+	change := map[string]interface{}{"pool_id": pool.Id, "rotated": len(newItems)}
-+	if err := tx.Create(&model.Changes{
-+		DateTime: now.Unix(), Actor: actor, Key: "relay", Action: "rotate", Obj: mustJSON(change),
-+	}).Error; err != nil {
-+		return nil, err
-+	}
-+	if err := tx.Commit().Error; err != nil {
-+		return nil, err
-+	}
-+	committed = true
-+	cleanupNew = false
-+	LastUpdate.Store(time.Now().UnixMilli())
-+
-+	for _, item := range oldItems {
-+		if item.AddedByUs {
-+			if err := deleteRelayAddress(item.Interface, item.IPv6, item.Prefix); err != nil {
-+				logger.Warningf("remove rotated relay IPv6 %s: %v", item.IPv6, err)
-+			}
-+		}
-+	}
-+	addresses := make([]string, 0, len(newItems))
-+	for _, item := range newItems {
-+		addresses = append(addresses, item.IPv6)
-+	}
-+	return &RelayRotationResult{
-+		PoolID: pool.Id, Rotated: len(newItems), IPv6: addresses,
-+		LastRotatedAt: pool.LastRotatedAt, NextRotateAt: pool.NextRotateAt,
-+	}, nil
-+}
-+
-+func updateRelayRotatedOutbounds(tx *gorm.DB, mode string, items []model.RelayItem) error {
-+	for index := range items {
-+		outboundTag := relayItemIPv6OutboundTag(mode, items[index])
-+		if outboundTag == "" {
-+			return common.NewErrorf("relay item %d has no IPv6 outbound", index+1)
-+		}
-+		var outbound model.Outbound
-+		if err := tx.Where("tag = ?", outboundTag).First(&outbound).Error; err != nil {
-+			return err
-+		}
-+		if outbound.Type != "direct" {
-+			return common.NewErrorf("relay IPv6 outbound %q is not direct", outboundTag)
-+		}
-+		var options map[string]interface{}
-+		if len(outbound.Options) > 0 {
-+			if err := json.Unmarshal(outbound.Options, &options); err != nil {
++		var links []model.RelayRefreshLink
++		if len(poolIDs) > 0 {
++			if err := tx.Where("pool_id IN ?", poolIDs).Find(&links).Error; err != nil {
 +				return err
 +			}
 +		}
-+		if options == nil {
-+			options = make(map[string]interface{})
++		existing := make(map[string]bool, len(links))
++		for _, link := range links {
++			existing[fmt.Sprintf("%d:%s", link.PoolID, link.InboundTag)] = true
 +		}
-+		options["inet6_bind_address"] = items[index].IPv6
-+		if err := tx.Model(&model.Outbound{}).Where("id = ?", outbound.Id).Update("options", mustJSON(options)).Error; err != nil {
++		for _, pool := range pools {
++			if !relayModeUsesIPv6(pool.Mode) {
++				continue
++			}
++			var items []model.RelayItem
++			if err := json.Unmarshal(pool.Items, &items); err != nil {
++				return fmt.Errorf("relay pool %q: invalid items: %w", pool.Name, err)
++			}
++			for _, item := range items {
++				if item.IPv6 == "" || item.InboundTag == "" {
++					continue
++				}
++				key := fmt.Sprintf("%d:%s", pool.Id, item.InboundTag)
++				if existing[key] {
++					continue
++				}
++				link := model.RelayRefreshLink{
++					PoolID: pool.Id, InboundTag: item.InboundTag, Token: common.Random(48), CreatedAt: time.Now().Unix(),
++				}
++				if err := tx.Create(&link).Error; err != nil {
++					return err
++				}
++				existing[key] = true
++			}
++		}
++		return nil
++	})
++}
++
++func ensureRelayRefreshLinksTx(tx *gorm.DB, poolID uint, items []model.RelayItem) error {
++	for _, item := range items {
++		if item.IPv6 == "" || item.InboundTag == "" {
++			continue
++		}
++		var link model.RelayRefreshLink
++		err := tx.Where("pool_id = ? AND inbound_tag = ?", poolID, item.InboundTag).First(&link).Error
++		if err == nil {
++			continue
++		}
++		if !database.IsNotFound(err) {
++			return err
++		}
++		link = model.RelayRefreshLink{
++			PoolID: poolID, InboundTag: item.InboundTag, Token: common.Random(48), CreatedAt: time.Now().Unix(),
++		}
++		if err := tx.Create(&link).Error; err != nil {
 +			return err
 +		}
 +	}
 +	return nil
 +}
 +
-+func relayItemIPv6OutboundTag(mode string, item model.RelayItem) string {
-+	if mode == relayModeDualStack {
-+		return item.IPv6OutboundTag
-+	}
-+	return item.OutboundTag
-+}
-+
-+func prepareRelayRotatedItems(items []model.RelayItem, occupied map[string]bool) ([]model.RelayItem, error) {
-+	rotated := make([]model.RelayItem, len(items))
-+	copy(rotated, items)
-+	for index := range rotated {
-+		item := &rotated[index]
-+		oldAddress, err := netip.ParseAddr(item.IPv6)
-+		if err != nil || !oldAddress.Is6() || oldAddress.Is4In6() {
-+			return nil, common.NewErrorf("relay item %d has invalid IPv6 address", index+1)
-+		}
-+		if item.Interface == "" || item.Prefix < 1 || item.Prefix >= 128 {
-+			return nil, common.NewErrorf("relay item %d has an IPv6 prefix that cannot rotate", index+1)
-+		}
-+		base := netip.PrefixFrom(oldAddress, item.Prefix).Masked().Addr()
-+		var replacement netip.Addr
-+		for attempt := 0; attempt < 4096; attempt++ {
-+			candidate, err := randomRelayIPv6(base, item.Prefix)
-+			if err != nil {
-+				return nil, err
-+			}
-+			if candidate == oldAddress || candidate == base || occupied[candidate.String()] || !candidate.IsGlobalUnicast() {
-+				continue
-+			}
-+			replacement = candidate
-+			break
-+		}
-+		if !replacement.IsValid() {
-+			return nil, common.NewErrorf("unable to allocate a new IPv6 address for relay item %d", index+1)
-+		}
-+		item.IPv6 = replacement.String()
-+		item.AddedByUs = true
-+		occupied[item.IPv6] = true
-+	}
-+	return rotated, nil
-+}
-+
-+func (s *ConfigService) RotateDueRelays(now time.Time) {
-+	var pools []model.RelayPool
-+	if err := database.GetDB().Where(
-+		"rotation_enabled = ? AND next_rotate_at > 0 AND next_rotate_at <= ?", true, now.Unix(),
-+	).Order("next_rotate_at asc").Limit(20).Find(&pools).Error; err != nil {
-+		logger.Warning("load due relay rotations failed: ", err)
-+		return
-+	}
++func (s *ConfigService) populateRelayRefreshTokens(pools []model.RelayPool) error {
++	ids := make([]uint, 0, len(pools))
 +	for _, pool := range pools {
-+		if _, err := s.RotateRelay(pool.Id, "scheduler"); err != nil {
-+			logger.Warningf("rotate relay pool %d failed: %v", pool.Id, err)
-+			retryAt := now.Add(5 * time.Minute).Unix()
-+			if updateErr := database.GetDB().Model(&model.RelayPool{}).Where("id = ?", pool.Id).Update("next_rotate_at", retryAt).Error; updateErr != nil {
-+				logger.Warningf("schedule relay pool %d rotation retry failed: %v", pool.Id, updateErr)
++		ids = append(ids, pool.Id)
++	}
++	if len(ids) == 0 {
++		return nil
++	}
++	var links []model.RelayRefreshLink
++	if err := database.GetDB().Where("pool_id IN ?", ids).Find(&links).Error; err != nil {
++		return err
++	}
++	byItem := make(map[string]string, len(links))
++	for _, link := range links {
++		byItem[fmt.Sprintf("%d:%s", link.PoolID, link.InboundTag)] = link.Token
++	}
++	for index := range pools {
++		var items []model.RelayItem
++		if err := json.Unmarshal(pools[index].Items, &items); err != nil {
++			return fmt.Errorf("relay pool %q: invalid items: %w", pools[index].Name, err)
++		}
++		changed := false
++		for itemIndex := range items {
++			token := byItem[fmt.Sprintf("%d:%s", pools[index].Id, items[itemIndex].InboundTag)]
++			if token != "" && items[itemIndex].RefreshToken != token {
++				items[itemIndex].RefreshToken = token
++				changed = true
 +			}
 +		}
++		if changed {
++			pools[index].Items = mustJSON(items)
++		}
 +	}
++	return nil
 +}
 +
- func relayProtocolConfig(req RelayCreateRequest, item *model.RelayItem) (map[string]interface{}, map[string]interface{}, error) {
- 	password := item.Password
- 	username := item.Username
-@@ -1299,6 +1677,54 @@ func discoverRelayIPv6() ([]RelayIPv6, error) {
- 	return result, nil
+ func (s *ConfigService) GetRelayBitBrowserExport(id uint) ([]byte, error) {
+ 	var pool model.RelayPool
+ 	if err := database.GetDB().First(&pool, id).Error; err != nil {
+@@ -350,16 +463,24 @@ func buildRelayCapabilities(goos string, hasRoot, hasIPCommand bool) RelayCapabi
  }
  
-+func discoverRelayIPv6Summary(excluded map[string]bool, limit int) ([]RelayIPv6, int, error) {
-+	all, err := discoverRelayIPv6()
-+	if err != nil {
-+		return nil, 0, err
-+	}
-+	result, total := summarizeRelayIPv6(all, excluded, limit)
-+	return result, total, nil
-+}
-+
-+func summarizeRelayIPv6(all []RelayIPv6, excluded map[string]bool, limit int) ([]RelayIPv6, int) {
-+	if limit < 1 {
-+		limit = relayIPv6DisplayLimit
-+	}
-+	available := make([]RelayIPv6, 0, len(all))
-+	for _, item := range all {
-+		if !excluded[item.Address] {
-+			available = append(available, item)
-+		}
-+	}
-+	if len(available) <= limit {
-+		return available, len(available)
-+	}
-+
-+	result := make([]RelayIPv6, 0, limit)
-+	seenInterfaces := make(map[string]bool)
-+	selected := make(map[string]bool)
-+	for _, item := range available {
-+		if seenInterfaces[item.Interface] || len(result) >= limit {
-+			continue
-+		}
-+		seenInterfaces[item.Interface] = true
-+		selected[item.Interface+"\x00"+item.Address] = true
-+		result = append(result, item)
-+	}
-+	for _, item := range available {
-+		if len(result) >= limit {
-+			break
-+		}
-+		key := item.Interface + "\x00" + item.Address
-+		if selected[key] {
-+			continue
-+		}
-+		selected[key] = true
-+		result = append(result, item)
-+	}
-+	return result, len(available)
-+}
-+
- func parseRelayAddress(raw string, fallbackPrefix int) (netip.Addr, int, error) {
- 	raw = strings.TrimSpace(raw)
- 	if raw == "" {
-@@ -1391,6 +1817,65 @@ func waitRelayAddressReady(iface, ip string) error {
+ func (s *ConfigService) RestoreRelayIPv6() error {
+-	if runtime.GOOS != "linux" {
+-		return nil
+-	}
+-	if err := s.repairRelayIPv6OutboundStrategies(); err != nil {
++	if err := database.GetDB().Model(&model.RelayPool{}).
++		Where("rotation_enabled = ? OR next_rotate_at <> 0", true).
++		Updates(map[string]interface{}{"rotation_enabled": false, "next_rotate_at": 0}).Error; err != nil {
+ 		return err
  	}
- }
- 
-+func waitRelayAddressesReady(items []model.RelayItem) error {
+ 	pools, err := s.GetRelayPools()
+ 	if err != nil {
+ 		return err
+ 	}
++	if err := s.ensureRelayRefreshLinks(pools); err != nil {
++		return err
++	}
 +	if runtime.GOOS != "linux" {
 +		return nil
 +	}
-+	pending := make(map[string]map[string]bool)
-+	for _, item := range items {
-+		if item.IPv6 == "" {
-+			continue
-+		}
-+		if item.Interface == "" {
-+			return common.NewError("IPv6 interface is required")
-+		}
-+		if _, err := netip.ParseAddr(item.IPv6); err != nil {
-+			return err
-+		}
-+		if pending[item.Interface] == nil {
-+			pending[item.Interface] = make(map[string]bool)
-+		}
-+		pending[item.Interface][item.IPv6] = true
++	if err := s.repairRelayIPv6OutboundStrategies(); err != nil {
++		return err
 +	}
-+	if len(pending) == 0 {
-+		return nil
+ 	detected, err := discoverRelayIPv6()
+ 	if err != nil {
+ 		return err
+@@ -891,6 +1012,9 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
+ 	if err := tx.Create(&pool).Error; err != nil {
+ 		return nil, err
+ 	}
++	if err := ensureRelayRefreshLinksTx(tx, pool.Id, items); err != nil {
++		return nil, err
 +	}
-+
-+	deadline := time.Now().Add(10 * time.Second)
-+	for {
-+		for iface, addresses := range pending {
-+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-+			output, err := exec.CommandContext(ctx, "ip", "-6", "-o", "addr", "show", "dev", iface).CombinedOutput()
-+			cancel()
-+			if err != nil {
-+				return fmt.Errorf("check IPv6 address readiness failed: %v: %s", err, strings.TrimSpace(string(output)))
-+			}
-+			for address := range addresses {
-+				switch relayIPv6AddressState(string(output), address) {
-+				case relayAddressReady:
-+					delete(addresses, address)
-+				case relayAddressDADFailed:
-+					return common.NewErrorf("IPv6 duplicate-address detection failed for %s", address)
-+				}
-+			}
-+			if len(addresses) == 0 {
-+				delete(pending, iface)
-+			}
-+		}
-+		if len(pending) == 0 {
-+			return nil
-+		}
-+		if time.Now().After(deadline) {
-+			for _, addresses := range pending {
-+				for address := range addresses {
-+					return common.NewErrorf("IPv6 address %s did not become ready before timeout", address)
-+				}
-+			}
-+		}
-+		time.Sleep(200 * time.Millisecond)
+ 	if err := updateRelayRouteRules(tx, items, req.DomainStrategy == relayDomainStrategyIPv6Only, false); err != nil {
+ 		return nil, err
+ 	}
+@@ -932,6 +1056,14 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
+ 			return &pool, common.NewErrorf("relay saved, but core update failed: %v", err)
+ 		}
+ 	}
++	returnedPools := []model.RelayPool{pool}
++	if err := s.populateRelayRefreshTokens(returnedPools); err == nil {
++		// Return the generated per-item links without storing bearer tokens in
++		// the large relay pool JSON column.
++		pool = returnedPools[0]
++	} else {
++		logger.Warning("populate relay refresh tokens after create failed: ", err)
 +	}
-+}
-+
- type relayIPv6EgressProbe func(context.Context, netip.Addr) error
- 
- func validateRelayIPv6Egress(ctx context.Context, items []model.RelayItem, probe relayIPv6EgressProbe) error {
-@@ -1542,24 +2027,6 @@ func deleteRelayAddress(iface, ip string, prefix int) error {
- 	return nil
+ 	return &pool, nil
  }
  
--func relayAddressExists(ip string) (bool, error) {
--	want, err := netip.ParseAddr(ip)
--	if err != nil {
--		return false, err
--	}
--	detected, err := discoverRelayIPv6()
--	if err != nil {
--		return false, err
--	}
--	for _, item := range detected {
--		candidate, _ := netip.ParseAddr(item.Address)
--		if candidate == want {
--			return true, nil
--		}
--	}
--	return false, nil
--}
--
- func findRelayInterface(ip netip.Addr, prefix int) string {
- 	detected, _ := discoverRelayIPv6()
- 	network := netip.PrefixFrom(ip, prefix)
+@@ -1052,6 +1184,9 @@ func (s *ConfigService) DeleteRelay(id uint, actor string) error {
+ 			return err
+ 		}
+ 	}
++	if err := tx.Where("pool_id = ?", pool.Id).Delete(&model.RelayRefreshLink{}).Error; err != nil {
++		return err
++	}
+ 	if err := tx.Delete(&pool).Error; err != nil {
+ 		return err
+ 	}
+@@ -1101,6 +1236,9 @@ func (s *ConfigService) SetRelayRotation(id uint, request RelayRotationRequest,
+ 	if !relayModeUsesIPv6(pool.Mode) {
+ 		return nil, common.NewError("IPv4 upstream-only relay pools cannot rotate IPv6 addresses")
+ 	}
++	if request.Enabled {
++		return nil, common.NewError("scheduled pool rotation is disabled; use the per-item manual refresh links")
++	}
+ 	interval, err := normalizeRelayRotationInterval(request.Enabled, request.IntervalMinutes)
+ 	if err != nil {
+ 		return nil, err
+@@ -1154,10 +1292,33 @@ func normalizeRelayRotationInterval(enabled bool, interval int) (int, error) {
+ func (s *ConfigService) RotateRelay(id uint, actor string) (*RelayRotationResult, error) {
+ 	relayMu.Lock()
+ 	defer relayMu.Unlock()
+-	return s.rotateRelayLocked(id, actor)
++	return s.rotateRelayItemsLocked(id, "", actor)
+ }
+ 
+-func (s *ConfigService) rotateRelayLocked(id uint, actor string) (*RelayRotationResult, error) {
++// RotateRelayItemByToken rotates exactly one IPv6 address selected by its
++// bearer refresh token. The token is stable across rotations.
++func (s *ConfigService) RotateRelayItemByToken(token, actor string) (*RelayRotationResult, error) {
++	token = strings.TrimSpace(token)
++	if token == "" || len(token) > 64 {
++		return nil, common.NewError("invalid relay refresh token")
++	}
++	relayMu.Lock()
++	defer relayMu.Unlock()
++	var link model.RelayRefreshLink
++	if err := database.GetDB().Where("token = ?", token).First(&link).Error; err != nil {
++		if database.IsNotFound(err) {
++			return nil, common.NewError("relay refresh link not found")
++		}
++		return nil, err
++	}
++	result, err := s.rotateRelayItemsLocked(link.PoolID, link.InboundTag, actor)
++	if err == nil {
++		result.RefreshToken = token
++	}
++	return result, err
++}
++
++func (s *ConfigService) rotateRelayItemsLocked(id uint, inboundTag, actor string) (*RelayRotationResult, error) {
+ 	if runtime.GOOS != "linux" {
+ 		return nil, common.NewError("IPv6 rotation is supported on Linux only")
+ 	}
+@@ -1188,12 +1349,36 @@ func (s *ConfigService) rotateRelayLocked(id uint, actor string) (*RelayRotation
+ 	for _, address := range detected {
+ 		occupied[address.Address] = true
+ 	}
+-	newItems, err := prepareRelayRotatedItems(oldItems, occupied)
++	selectedIndexes := make([]int, 0, len(oldItems))
++	if inboundTag == "" {
++		for index := range oldItems {
++			selectedIndexes = append(selectedIndexes, index)
++		}
++	} else {
++		for index := range oldItems {
++			if oldItems[index].InboundTag == inboundTag {
++				selectedIndexes = append(selectedIndexes, index)
++				break
++			}
++		}
++		if len(selectedIndexes) != 1 {
++			return nil, common.NewError("relay refresh link item no longer exists")
++		}
++	}
++	selectedOldItems := make([]model.RelayItem, len(selectedIndexes))
++	for index, itemIndex := range selectedIndexes {
++		selectedOldItems[index] = oldItems[itemIndex]
++	}
++	rotatedItems, err := prepareRelayRotatedItems(selectedOldItems, occupied)
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	newItems := append([]model.RelayItem(nil), oldItems...)
++	for index, itemIndex := range selectedIndexes {
++		newItems[itemIndex] = rotatedItems[index]
++	}
+ 
+-	added := make([]model.RelayItem, 0, len(newItems))
++	added := make([]model.RelayItem, 0, len(rotatedItems))
+ 	cleanupNew := true
+ 	defer func() {
+ 		if !cleanupNew {
+@@ -1203,16 +1388,16 @@ func (s *ConfigService) rotateRelayLocked(id uint, actor string) (*RelayRotation
+ 			_ = deleteRelayAddress(item.Interface, item.IPv6, item.Prefix)
+ 		}
+ 	}()
+-	for _, item := range newItems {
++	for _, item := range rotatedItems {
+ 		if err := addRelayAddress(item.Interface, item.IPv6, item.Prefix); err != nil {
+ 			return nil, err
+ 		}
+ 		added = append(added, item)
+ 	}
+-	if err := waitRelayAddressesReady(newItems); err != nil {
++	if err := waitRelayAddressesReady(rotatedItems); err != nil {
+ 		return nil, err
+ 	}
+-	if err := validateRelayIPv6Egress(context.Background(), newItems, probeRelayIPv6Egress); err != nil {
++	if err := validateRelayIPv6Egress(context.Background(), rotatedItems, probeRelayIPv6Egress); err != nil {
+ 		return nil, err
+ 	}
+ 	coreWasRunning := false
+@@ -1254,13 +1439,20 @@ func (s *ConfigService) rotateRelayLocked(id uint, actor string) (*RelayRotation
+ 		}
+ 	}()
+ 
+-	if err := updateRelayRotatedOutbounds(tx, pool.Mode, newItems); err != nil {
++	if err := updateRelayRotatedOutbounds(tx, pool.Mode, rotatedItems); err != nil {
+ 		return nil, err
+ 	}
++	for _, item := range rotatedItems {
++		if err := tx.Model(&model.RelayRefreshLink{}).
++			Where("pool_id = ? AND inbound_tag = ?", pool.Id, item.InboundTag).
++			Update("last_rotated_at", time.Now().Unix()).Error; err != nil {
++			return nil, err
++		}
++	}
+ 
+ 	now := time.Now()
+ 	nextRotateAt := int64(0)
+-	if pool.RotationEnabled {
++	if pool.RotationEnabled && inboundTag == "" {
+ 		interval, intervalErr := normalizeRelayRotationInterval(true, pool.RotationIntervalMinutes)
+ 		if intervalErr != nil {
+ 			return nil, intervalErr
+@@ -1295,7 +1487,10 @@ func (s *ConfigService) rotateRelayLocked(id uint, actor string) (*RelayRotation
+ 			return nil, common.NewErrorf("rotated relay configuration rejected by sing-box: %v", err)
+ 		}
+ 	}
+-	change := map[string]interface{}{"pool_id": pool.Id, "rotated": len(newItems)}
++	change := map[string]interface{}{"pool_id": pool.Id, "rotated": len(rotatedItems)}
++	if inboundTag != "" {
++		change["inbound_tag"] = inboundTag
++	}
+ 	if err := tx.Create(&model.Changes{
+ 		DateTime: now.Unix(), Actor: actor, Key: "relay", Action: "rotate", Obj: mustJSON(change),
+ 	}).Error; err != nil {
+@@ -1308,19 +1503,24 @@ func (s *ConfigService) rotateRelayLocked(id uint, actor string) (*RelayRotation
+ 	cleanupNew = false
+ 	LastUpdate.Store(time.Now().UnixMilli())
+ 
+-	for _, item := range oldItems {
++	for _, itemIndex := range selectedIndexes {
++		item := oldItems[itemIndex]
+ 		if item.AddedByUs {
+ 			if err := deleteRelayAddress(item.Interface, item.IPv6, item.Prefix); err != nil {
+ 				logger.Warningf("remove rotated relay IPv6 %s: %v", item.IPv6, err)
+ 			}
+ 		}
+ 	}
+-	addresses := make([]string, 0, len(newItems))
+-	for _, item := range newItems {
++	addresses := make([]string, 0, len(rotatedItems))
++	for _, item := range rotatedItems {
+ 		addresses = append(addresses, item.IPv6)
+ 	}
++	itemIndex := 0
++	if len(selectedIndexes) == 1 {
++		itemIndex = selectedIndexes[0] + 1
++	}
+ 	return &RelayRotationResult{
+-		PoolID: pool.Id, Rotated: len(newItems), IPv6: addresses,
++		PoolID: pool.Id, Rotated: len(rotatedItems), IPv6: addresses, ItemIndex: itemIndex,
+ 		LastRotatedAt: pool.LastRotatedAt, NextRotateAt: pool.NextRotateAt,
+ 	}, nil
+ }
 diff --git a/service/relay_test.go b/service/relay_test.go
-index f5bfff7..1d49746 100644
+index 1d49746..79c0930 100644
 --- a/service/relay_test.go
 +++ b/service/relay_test.go
-@@ -11,6 +11,7 @@ import (
- 	"path/filepath"
- 	"strings"
- 	"testing"
-+	"time"
- 
- 	"github.com/Hhz0823/1s-ui/database"
- 	"github.com/Hhz0823/1s-ui/database/model"
-@@ -889,6 +890,107 @@ func TestUpdateRelayPairedDNSResolver(t *testing.T) {
+@@ -925,7 +925,7 @@ func TestPrepareRelayRotatedItemsPreservesMappings(t *testing.T) {
  	}
  }
  
-+func TestPrepareRelayRotatedItemsPreservesMappings(t *testing.T) {
-+	items := []model.RelayItem{
-+		{
-+			InboundID: 1, InboundTag: "in-1", OutboundTag: "dual-1", IPv6OutboundTag: "v6-1", IPv4OutboundTag: "v4-1",
-+			ListenPort: 30001, Username: "user-1", Password: "pass-1", IPv6: "2001:db8:100::10", Interface: "eth0", Prefix: 64,
-+		},
-+		{
-+			InboundID: 2, InboundTag: "in-2", OutboundTag: "dual-2", IPv6OutboundTag: "v6-2", IPv4OutboundTag: "v4-2",
-+			ListenPort: 30002, Username: "user-2", Password: "pass-2", IPv6: "2001:db8:100::20", Interface: "eth0", Prefix: 64,
-+		},
-+	}
-+	occupied := map[string]bool{items[0].IPv6: true, items[1].IPv6: true}
-+	rotated, err := prepareRelayRotatedItems(items, occupied)
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	wantPrefix := netip.MustParsePrefix("2001:db8:100::/64")
-+	seen := make(map[string]bool)
-+	for index, item := range rotated {
-+		address := netip.MustParseAddr(item.IPv6)
-+		if !wantPrefix.Contains(address) || item.IPv6 == items[index].IPv6 || seen[item.IPv6] {
-+			t.Fatalf("rotated item %d has invalid address %s", index, item.IPv6)
-+		}
-+		seen[item.IPv6] = true
-+		if item.InboundTag != items[index].InboundTag || item.OutboundTag != items[index].OutboundTag ||
-+			item.IPv6OutboundTag != items[index].IPv6OutboundTag || item.IPv4OutboundTag != items[index].IPv4OutboundTag ||
-+			item.ListenPort != items[index].ListenPort || item.Username != items[index].Username || item.Password != items[index].Password {
-+			t.Fatalf("rotation changed relay mapping: got %#v want mapping from %#v", item, items[index])
-+		}
-+		if !item.AddedByUs {
-+			t.Fatal("rotated address must be marked as panel-managed")
-+		}
-+	}
-+}
-+
-+func TestRelayRotationSettingsAreOptIn(t *testing.T) {
+-func TestRelayRotationSettingsAreOptIn(t *testing.T) {
++func TestRelayRotationIsManualOnly(t *testing.T) {
+ 	dbDir := t.TempDir()
+ 	t.Setenv("SUI_DB_FOLDER", dbDir)
+ 	if err := database.InitDB(filepath.Join(dbDir, "relay-rotation.db")); err != nil {
+@@ -946,12 +946,8 @@ func TestRelayRotationSettingsAreOptIn(t *testing.T) {
+ 	if pool.RotationEnabled || pool.NextRotateAt != 0 {
+ 		t.Fatalf("new pool rotated by default: %#v", pool)
+ 	}
+-	updated, err := (&ConfigService{}).SetRelayRotation(pool.Id, RelayRotationRequest{Enabled: true, IntervalMinutes: 30}, "test")
+-	if err != nil {
+-		t.Fatal(err)
+-	}
+-	if !updated.RotationEnabled || updated.RotationIntervalMinutes != 30 || updated.NextRotateAt <= time.Now().Unix() {
+-		t.Fatalf("rotation settings were not enabled: %#v", updated)
++	if _, err := (&ConfigService{}).SetRelayRotation(pool.Id, RelayRotationRequest{Enabled: true, IntervalMinutes: 30}, "test"); err == nil {
++		t.Fatal("expected scheduled rotation to be rejected")
+ 	}
+ 	disabled, err := (&ConfigService{}).SetRelayRotation(pool.Id, RelayRotationRequest{Enabled: false, IntervalMinutes: 30}, "test")
+ 	if err != nil {
+@@ -962,6 +958,54 @@ func TestRelayRotationSettingsAreOptIn(t *testing.T) {
+ 	}
+ }
+ 
++func TestRelayRefreshLinksAreStableAndPerItem(t *testing.T) {
 +	dbDir := t.TempDir()
 +	t.Setenv("SUI_DB_FOLDER", dbDir)
-+	if err := database.InitDB(filepath.Join(dbDir, "relay-rotation.db")); err != nil {
++	if err := database.InitDB(filepath.Join(dbDir, "relay-refresh-links.db")); err != nil {
 +		t.Fatal(err)
 +	}
 +	db := database.GetDB()
@@ -1524,134 +1252,74 @@ index f5bfff7..1d49746 100644
 +		t.Fatal(err)
 +	}
 +	defer sqlDB.Close()
-+	pool := model.RelayPool{
-+		Name: "rotation", Mode: relayModeDualStack, Items: json.RawMessage(`[]`), CreatedAt: time.Now().Unix(),
++	items := []model.RelayItem{
++		{InboundTag: "relay-in-1", IPv6: "2001:db8::10"},
++		{InboundTag: "relay-in-2", IPv6: "2001:db8::20"},
 +	}
++	pool := model.RelayPool{Name: "refresh", Mode: relayModeDualStack, Items: mustJSON(items), CreatedAt: time.Now().Unix()}
 +	if err := db.Create(&pool).Error; err != nil {
 +		t.Fatal(err)
 +	}
-+	if pool.RotationEnabled || pool.NextRotateAt != 0 {
-+		t.Fatalf("new pool rotated by default: %#v", pool)
-+	}
-+	updated, err := (&ConfigService{}).SetRelayRotation(pool.Id, RelayRotationRequest{Enabled: true, IntervalMinutes: 30}, "test")
-+	if err != nil {
++	service := &ConfigService{}
++	pools := []model.RelayPool{pool}
++	if err := service.ensureRelayRefreshLinks(pools); err != nil {
 +		t.Fatal(err)
 +	}
-+	if !updated.RotationEnabled || updated.RotationIntervalMinutes != 30 || updated.NextRotateAt <= time.Now().Unix() {
-+		t.Fatalf("rotation settings were not enabled: %#v", updated)
-+	}
-+	disabled, err := (&ConfigService{}).SetRelayRotation(pool.Id, RelayRotationRequest{Enabled: false, IntervalMinutes: 30}, "test")
-+	if err != nil {
++	if err := service.populateRelayRefreshTokens(pools); err != nil {
 +		t.Fatal(err)
 +	}
-+	if disabled.RotationEnabled || disabled.NextRotateAt != 0 {
-+		t.Fatalf("rotation settings were not disabled: %#v", disabled)
++	var hydrated []model.RelayItem
++	if err := json.Unmarshal(pools[0].Items, &hydrated); err != nil {
++		t.Fatal(err)
++	}
++	if hydrated[0].RefreshToken == "" || hydrated[1].RefreshToken == "" || hydrated[0].RefreshToken == hydrated[1].RefreshToken {
++		t.Fatalf("refresh tokens are not unique per item: %#v", hydrated)
++	}
++	firstTokens := []string{hydrated[0].RefreshToken, hydrated[1].RefreshToken}
++	if err := service.ensureRelayRefreshLinks(pools); err != nil {
++		t.Fatal(err)
++	}
++	var links []model.RelayRefreshLink
++	if err := db.Where("pool_id = ?", pool.Id).Order("inbound_tag").Find(&links).Error; err != nil {
++		t.Fatal(err)
++	}
++	if len(links) != 2 || links[0].Token != firstTokens[0] || links[1].Token != firstTokens[1] {
++		t.Fatalf("refresh links changed after repair: %#v", links)
 +	}
 +}
 +
-+func TestSummarizeRelayIPv6FiltersAndLimits(t *testing.T) {
-+	all := []RelayIPv6{
-+		{Interface: "eth0", Address: "2001:db8::1", Prefix: 64},
-+		{Interface: "eth0", Address: "2001:db8::2", Prefix: 64},
-+		{Interface: "eth1", Address: "2001:db8:1::1", Prefix: 64},
-+		{Interface: "eth1", Address: "2001:db8:1::2", Prefix: 64},
-+		{Interface: "eth1", Address: "2001:db8:1::3", Prefix: 64},
-+	}
-+	result, total := summarizeRelayIPv6(all, map[string]bool{"2001:db8::2": true}, 2)
-+	if total != 4 || len(result) != 2 {
-+		t.Fatalf("summary length=%d total=%d", len(result), total)
-+	}
-+	if result[0].Interface == result[1].Interface {
-+		t.Fatalf("summary did not preserve interface coverage: %#v", result)
-+	}
-+}
-+
-+func TestNormalizeRelayRotationInterval(t *testing.T) {
-+	if interval, err := normalizeRelayRotationInterval(false, 0); err != nil || interval != relayRotationDefaultMinutes {
-+		t.Fatalf("disabled default interval=%d err=%v", interval, err)
-+	}
-+	if _, err := normalizeRelayRotationInterval(true, relayRotationMinMinutes-1); err == nil {
-+		t.Fatal("expected short enabled interval to fail")
-+	}
-+	if interval, err := normalizeRelayRotationInterval(true, 120); err != nil || interval != 120 {
-+		t.Fatalf("enabled interval=%d err=%v", interval, err)
-+	}
-+}
-+
- func relayRuleHasCIDR(rule map[string]interface{}, expected string) bool {
- 	switch values := rule["ip_cidr"].(type) {
- 	case []interface{}:
-diff --git a/service/remote_relay.go b/service/remote_relay.go
-index 11153cc..f2b4091 100644
---- a/service/remote_relay.go
-+++ b/service/remote_relay.go
-@@ -18,6 +18,17 @@ type RemoteRelayDeleteRequest struct {
- 	Actor string `json:"actor"`
- }
+ func TestSummarizeRelayIPv6FiltersAndLimits(t *testing.T) {
+ 	all := []RelayIPv6{
+ 		{Interface: "eth0", Address: "2001:db8::1", Prefix: 64},
+diff --git a/web/web.go b/web/web.go
+index 570b1c2..ebc9b7a 100644
+--- a/web/web.go
++++ b/web/web.go
+@@ -109,6 +109,27 @@ func (s *Server) initRouter() (*gin.Engine, error) {
+ 	// Serve the assets folder
+ 	engine.StaticFS(assetsBasePath, http.FS(assetsFS))
  
-+type RemoteRelayRotateRequest struct {
-+	ID    uint   `json:"id"`
-+	Actor string `json:"actor"`
-+}
++	// Refresh links are bearer URLs: possession of the per-item random token
++	// authorizes rotating only that relay item's IPv6 address.
++	engine.GET(base_url+"refresh/:token", func(c *gin.Context) {
++		c.Header("Cache-Control", "no-store")
++		var relayService service.ConfigService
++		result, rotateErr := relayService.RotateRelayItemByToken(c.Param("token"), "refresh-link:"+c.ClientIP())
++		if rotateErr != nil {
++			status := http.StatusServiceUnavailable
++			if strings.Contains(rotateErr.Error(), "not found") || strings.Contains(rotateErr.Error(), "invalid relay refresh token") {
++				status = http.StatusNotFound
++			}
++			c.String(status, "IPv6 rotation failed: %s\n", rotateErr.Error())
++			return
++		}
++		address := ""
++		if len(result.IPv6) > 0 {
++			address = result.IPv6[0]
++		}
++		c.String(http.StatusOK, "success\nitem=%d\nipv6=%s\n", result.ItemIndex, address)
++	})
 +
-+type RemoteRelayRotationRequest struct {
-+	ID       uint                 `json:"id"`
-+	Rotation RelayRotationRequest `json:"rotation"`
-+	Actor    string               `json:"actor"`
-+}
-+
- type RemoteRelayExportRequest struct {
- 	ID uint `json:"id"`
- }
-@@ -53,6 +64,28 @@ func (s *LocalControlService) DeleteRemoteRelay(request RemoteRelayDeleteRequest
- 	return s.ConfigService.DeleteRelay(request.ID, "agent:"+actor)
- }
+ 	group_apiv2 := engine.Group(base_url + "apiv2")
+ 	apiv2 := api.NewAPIv2Handler(group_apiv2)
  
-+func (s *LocalControlService) RotateRemoteRelay(request RemoteRelayRotateRequest) (*RelayRotationResult, error) {
-+	if request.ID == 0 {
-+		return nil, common.NewError("invalid relay pool id")
-+	}
-+	actor, err := normalizeRemoteActor(request.Actor)
-+	if err != nil {
-+		return nil, err
-+	}
-+	return s.ConfigService.RotateRelay(request.ID, "agent:"+actor)
-+}
-+
-+func (s *LocalControlService) SetRemoteRelayRotation(request RemoteRelayRotationRequest) (*model.RelayPool, error) {
-+	if request.ID == 0 {
-+		return nil, common.NewError("invalid relay pool id")
-+	}
-+	actor, err := normalizeRemoteActor(request.Actor)
-+	if err != nil {
-+		return nil, err
-+	}
-+	return s.ConfigService.SetRelayRotation(request.ID, request.Rotation, "agent:"+actor)
-+}
-+
- func (s *LocalControlService) ExportRemoteRelay(request RemoteRelayExportRequest) (*RemoteRelayExportResponse, error) {
- 	if request.ID == 0 {
- 		return nil, common.NewError("invalid relay pool id")
-diff --git a/web/control_socket.go b/web/control_socket.go
-index 124831c..e4bab3b 100644
---- a/web/control_socket.go
-+++ b/web/control_socket.go
-@@ -111,6 +111,18 @@ func (s *Server) startControlSocket() error {
- 				callErr = local.DeleteRemoteRelay(payload)
- 				result = map[string]bool{"deleted": callErr == nil}
- 			}
-+		case agent.RPCMethodRelayRotate:
-+			var payload service.RemoteRelayRotateRequest
-+			callErr = decodeLocalRPCPayload(request.Payload, &payload)
-+			if callErr == nil {
-+				result, callErr = local.RotateRemoteRelay(payload)
-+			}
-+		case agent.RPCMethodRelayRotationSet:
-+			var payload service.RemoteRelayRotationRequest
-+			callErr = decodeLocalRPCPayload(request.Payload, &payload)
-+			if callErr == nil {
-+				result, callErr = local.SetRemoteRelayRotation(payload)
-+			}
- 		case agent.RPCMethodRelayExport:
- 			var payload service.RemoteRelayExportRequest
- 			callErr = decodeLocalRPCPayload(request.Payload, &payload)
