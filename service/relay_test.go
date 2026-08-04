@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Hhz0823/1s-ui/database"
 	"github.com/Hhz0823/1s-ui/database/model"
@@ -886,6 +887,107 @@ func TestUpdateRelayPairedDNSResolver(t *testing.T) {
 	servers = config["dns"].(map[string]interface{})["servers"].([]interface{})
 	if len(servers) != 1 || servers[0].(map[string]interface{})["tag"] != "existing-local" {
 		t.Fatalf("DNS servers after cleanup = %#v", servers)
+	}
+}
+
+func TestPrepareRelayRotatedItemsPreservesMappings(t *testing.T) {
+	items := []model.RelayItem{
+		{
+			InboundID: 1, InboundTag: "in-1", OutboundTag: "dual-1", IPv6OutboundTag: "v6-1", IPv4OutboundTag: "v4-1",
+			ListenPort: 30001, Username: "user-1", Password: "pass-1", IPv6: "2001:db8:100::10", Interface: "eth0", Prefix: 64,
+		},
+		{
+			InboundID: 2, InboundTag: "in-2", OutboundTag: "dual-2", IPv6OutboundTag: "v6-2", IPv4OutboundTag: "v4-2",
+			ListenPort: 30002, Username: "user-2", Password: "pass-2", IPv6: "2001:db8:100::20", Interface: "eth0", Prefix: 64,
+		},
+	}
+	occupied := map[string]bool{items[0].IPv6: true, items[1].IPv6: true}
+	rotated, err := prepareRelayRotatedItems(items, occupied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := netip.MustParsePrefix("2001:db8:100::/64")
+	seen := make(map[string]bool)
+	for index, item := range rotated {
+		address := netip.MustParseAddr(item.IPv6)
+		if !wantPrefix.Contains(address) || item.IPv6 == items[index].IPv6 || seen[item.IPv6] {
+			t.Fatalf("rotated item %d has invalid address %s", index, item.IPv6)
+		}
+		seen[item.IPv6] = true
+		if item.InboundTag != items[index].InboundTag || item.OutboundTag != items[index].OutboundTag ||
+			item.IPv6OutboundTag != items[index].IPv6OutboundTag || item.IPv4OutboundTag != items[index].IPv4OutboundTag ||
+			item.ListenPort != items[index].ListenPort || item.Username != items[index].Username || item.Password != items[index].Password {
+			t.Fatalf("rotation changed relay mapping: got %#v want mapping from %#v", item, items[index])
+		}
+		if !item.AddedByUs {
+			t.Fatal("rotated address must be marked as panel-managed")
+		}
+	}
+}
+
+func TestRelayRotationSettingsAreOptIn(t *testing.T) {
+	dbDir := t.TempDir()
+	t.Setenv("SUI_DB_FOLDER", dbDir)
+	if err := database.InitDB(filepath.Join(dbDir, "relay-rotation.db")); err != nil {
+		t.Fatal(err)
+	}
+	db := database.GetDB()
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+	pool := model.RelayPool{
+		Name: "rotation", Mode: relayModeDualStack, Items: json.RawMessage(`[]`), CreatedAt: time.Now().Unix(),
+	}
+	if err := db.Create(&pool).Error; err != nil {
+		t.Fatal(err)
+	}
+	if pool.RotationEnabled || pool.NextRotateAt != 0 {
+		t.Fatalf("new pool rotated by default: %#v", pool)
+	}
+	updated, err := (&ConfigService{}).SetRelayRotation(pool.Id, RelayRotationRequest{Enabled: true, IntervalMinutes: 30}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.RotationEnabled || updated.RotationIntervalMinutes != 30 || updated.NextRotateAt <= time.Now().Unix() {
+		t.Fatalf("rotation settings were not enabled: %#v", updated)
+	}
+	disabled, err := (&ConfigService{}).SetRelayRotation(pool.Id, RelayRotationRequest{Enabled: false, IntervalMinutes: 30}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disabled.RotationEnabled || disabled.NextRotateAt != 0 {
+		t.Fatalf("rotation settings were not disabled: %#v", disabled)
+	}
+}
+
+func TestSummarizeRelayIPv6FiltersAndLimits(t *testing.T) {
+	all := []RelayIPv6{
+		{Interface: "eth0", Address: "2001:db8::1", Prefix: 64},
+		{Interface: "eth0", Address: "2001:db8::2", Prefix: 64},
+		{Interface: "eth1", Address: "2001:db8:1::1", Prefix: 64},
+		{Interface: "eth1", Address: "2001:db8:1::2", Prefix: 64},
+		{Interface: "eth1", Address: "2001:db8:1::3", Prefix: 64},
+	}
+	result, total := summarizeRelayIPv6(all, map[string]bool{"2001:db8::2": true}, 2)
+	if total != 4 || len(result) != 2 {
+		t.Fatalf("summary length=%d total=%d", len(result), total)
+	}
+	if result[0].Interface == result[1].Interface {
+		t.Fatalf("summary did not preserve interface coverage: %#v", result)
+	}
+}
+
+func TestNormalizeRelayRotationInterval(t *testing.T) {
+	if interval, err := normalizeRelayRotationInterval(false, 0); err != nil || interval != relayRotationDefaultMinutes {
+		t.Fatalf("disabled default interval=%d err=%v", interval, err)
+	}
+	if _, err := normalizeRelayRotationInterval(true, relayRotationMinMinutes-1); err == nil {
+		t.Fatal("expected short enabled interval to fail")
+	}
+	if interval, err := normalizeRelayRotationInterval(true, 120); err != nil || interval != 120 {
+		t.Fatalf("enabled interval=%d err=%v", interval, err)
 	}
 }
 

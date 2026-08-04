@@ -19,6 +19,7 @@ import (
 	"github.com/Hhz0823/1s-ui/agent"
 	"github.com/Hhz0823/1s-ui/config"
 	"github.com/Hhz0823/1s-ui/database"
+	"github.com/Hhz0823/1s-ui/database/model"
 	"github.com/Hhz0823/1s-ui/logger"
 	"github.com/Hhz0823/1s-ui/service"
 	"github.com/Hhz0823/1s-ui/util"
@@ -272,6 +273,56 @@ func (a *ApiService) DeleteAgentRelay(c *gin.Context) {
 		return
 	}
 	var result map[string]bool
+	err = json.Unmarshal(response.Payload, &result)
+	jsonObj(c, result, err)
+}
+
+func (a *ApiService) RotateAgentRelayPool(c *gin.Context) {
+	id, err := parseAgentNodeID(c)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	relayID, err := parseAgentRelayID(c)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	actor := GetLoginUser(c)
+	response, err := a.AgentService.DispatchRPC(id, agent.RPCMethodRelayRotate, service.RemoteRelayRotateRequest{ID: relayID, Actor: actor}, actor)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	var result service.RelayRotationResult
+	err = json.Unmarshal(response.Payload, &result)
+	jsonObj(c, result, err)
+}
+
+func (a *ApiService) SetAgentRelayPoolRotation(c *gin.Context) {
+	id, err := parseAgentNodeID(c)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	relayID, err := parseAgentRelayID(c)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	var rotation service.RelayRotationRequest
+	if err := c.ShouldBindJSON(&rotation); err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	actor := GetLoginUser(c)
+	payload := service.RemoteRelayRotationRequest{ID: relayID, Rotation: rotation, Actor: actor}
+	response, err := a.AgentService.DispatchRPC(id, agent.RPCMethodRelayRotationSet, payload, actor)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	var result model.RelayPool
 	err = json.Unmarshal(response.Payload, &result)
 	jsonObj(c, result, err)
 }
@@ -956,6 +1007,31 @@ func (a *ApiService) DeleteRelay(c *gin.Context, loginUser string) {
 	}
 	err = a.ConfigService.DeleteRelay(uint(id), loginUser)
 	jsonMsg(c, "relay", err)
+}
+
+func (a *ApiService) RotateRelayPool(c *gin.Context, loginUser string) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || id == 0 {
+		jsonObj(c, nil, common.NewError("invalid relay pool id"))
+		return
+	}
+	result, err := a.ConfigService.RotateRelay(uint(id), loginUser)
+	jsonObj(c, result, err)
+}
+
+func (a *ApiService) SetRelayPoolRotation(c *gin.Context, loginUser string) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || id == 0 {
+		jsonObj(c, nil, common.NewError("invalid relay pool id"))
+		return
+	}
+	var request service.RelayRotationRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	pool, err := a.ConfigService.SetRelayRotation(uint(id), request, loginUser)
+	jsonObj(c, pool, err)
 }
 
 type PinnedSha256Request struct {

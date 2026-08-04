@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"sync"
 )
@@ -94,4 +93,3 @@ func pumpTerminalOutput(ctx context.Context, t *localTerminal, write func(interf
 		}
 	}
 }
-

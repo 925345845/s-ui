@@ -188,6 +188,8 @@ IPv4/IPv6 配对模式按上游 SOCKS5 列表顺序为每个入口分配一个 V
 
 双栈出口模式使用同样的 IPv4/IPv6 配对，但由内置复合 outbound 负责连接级回退：所有目标先尝试对应 VPS IPv6，IPv6 连接失败或目标没有 AAAA 记录时，再使用同一行对应的 IPv4 SOCKS5。IPv4 回退不会使用 VPS 原生 IPv4；IPv6 连接最多等待 3 秒后回退。
 
+IPv6、IPv4/IPv6 配对和双栈出口池支持手动或定时轮转 IPv6（5 分钟到 7 天）。轮转保持入口端口、账号、密码和 IPv4 SOCKS5 顺序不变；新地址添加、DAD/公网检查和 sing-box 配置验证全部成功后才删除旧地址，失败自动保留原配置。大量地址场景会批量检查 DAD、过滤已由面板管理的地址并限制界面预览，避免地址数量增长拖慢面板。
+
 实现参考 [help660vip/auto-add-ipv6](https://github.com/help660vip/auto-add-ipv6) 的流程，但 1S-UI 使用内置 Go 逻辑，不执行第三方远程脚本。
 
 ### v1.5.8 更新重点

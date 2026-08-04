@@ -91,7 +91,7 @@ func CallLocalRPC(ctx context.Context, socketPath string, request RPCRequest) RP
 
 func localRPCTimeout(method string) time.Duration {
 	switch method {
-	case RPCMethodInboundQuickAdd, RPCMethodRelayCreate, RPCMethodRelayDelete:
+	case RPCMethodInboundQuickAdd, RPCMethodRelayCreate, RPCMethodRelayDelete, RPCMethodRelayRotate:
 		return 10 * time.Minute
 	default:
 		return 45 * time.Second

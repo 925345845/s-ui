@@ -111,6 +111,18 @@ func (s *Server) startControlSocket() error {
 				callErr = local.DeleteRemoteRelay(payload)
 				result = map[string]bool{"deleted": callErr == nil}
 			}
+		case agent.RPCMethodRelayRotate:
+			var payload service.RemoteRelayRotateRequest
+			callErr = decodeLocalRPCPayload(request.Payload, &payload)
+			if callErr == nil {
+				result, callErr = local.RotateRemoteRelay(payload)
+			}
+		case agent.RPCMethodRelayRotationSet:
+			var payload service.RemoteRelayRotationRequest
+			callErr = decodeLocalRPCPayload(request.Payload, &payload)
+			if callErr == nil {
+				result, callErr = local.SetRemoteRelayRotation(payload)
+			}
 		case agent.RPCMethodRelayExport:
 			var payload service.RemoteRelayExportRequest
 			callErr = decodeLocalRPCPayload(request.Payload, &payload)

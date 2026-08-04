@@ -18,6 +18,17 @@ type RemoteRelayDeleteRequest struct {
 	Actor string `json:"actor"`
 }
 
+type RemoteRelayRotateRequest struct {
+	ID    uint   `json:"id"`
+	Actor string `json:"actor"`
+}
+
+type RemoteRelayRotationRequest struct {
+	ID       uint                 `json:"id"`
+	Rotation RelayRotationRequest `json:"rotation"`
+	Actor    string               `json:"actor"`
+}
+
 type RemoteRelayExportRequest struct {
 	ID uint `json:"id"`
 }
@@ -51,6 +62,28 @@ func (s *LocalControlService) DeleteRemoteRelay(request RemoteRelayDeleteRequest
 		return err
 	}
 	return s.ConfigService.DeleteRelay(request.ID, "agent:"+actor)
+}
+
+func (s *LocalControlService) RotateRemoteRelay(request RemoteRelayRotateRequest) (*RelayRotationResult, error) {
+	if request.ID == 0 {
+		return nil, common.NewError("invalid relay pool id")
+	}
+	actor, err := normalizeRemoteActor(request.Actor)
+	if err != nil {
+		return nil, err
+	}
+	return s.ConfigService.RotateRelay(request.ID, "agent:"+actor)
+}
+
+func (s *LocalControlService) SetRemoteRelayRotation(request RemoteRelayRotationRequest) (*model.RelayPool, error) {
+	if request.ID == 0 {
+		return nil, common.NewError("invalid relay pool id")
+	}
+	actor, err := normalizeRemoteActor(request.Actor)
+	if err != nil {
+		return nil, err
+	}
+	return s.ConfigService.SetRelayRotation(request.ID, request.Rotation, "agent:"+actor)
 }
 
 func (s *LocalControlService) ExportRemoteRelay(request RemoteRelayExportRequest) (*RemoteRelayExportResponse, error) {

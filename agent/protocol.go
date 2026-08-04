@@ -37,15 +37,17 @@ const (
 )
 
 const (
-	RPCMethodCapabilities    = "capabilities.get"
-	RPCMethodInboundList     = "inbounds.list"
-	RPCMethodInboundEdit     = "inbounds.editor"
-	RPCMethodInboundSave     = "inbounds.save"
-	RPCMethodInboundQuickAdd = "inbounds.quick_add"
-	RPCMethodRelayGet        = "relay.get"
-	RPCMethodRelayCreate     = "relay.create"
-	RPCMethodRelayDelete     = "relay.delete"
-	RPCMethodRelayExport     = "relay.bitbrowser_export"
+	RPCMethodCapabilities     = "capabilities.get"
+	RPCMethodInboundList      = "inbounds.list"
+	RPCMethodInboundEdit      = "inbounds.editor"
+	RPCMethodInboundSave      = "inbounds.save"
+	RPCMethodInboundQuickAdd  = "inbounds.quick_add"
+	RPCMethodRelayGet         = "relay.get"
+	RPCMethodRelayCreate      = "relay.create"
+	RPCMethodRelayDelete      = "relay.delete"
+	RPCMethodRelayRotate      = "relay.rotate"
+	RPCMethodRelayRotationSet = "relay.rotation_set"
+	RPCMethodRelayExport      = "relay.bitbrowser_export"
 )
 
 // Command types the panel may send to an online agent.

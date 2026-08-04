@@ -499,6 +499,8 @@ func validAgentRPCMethod(method string) bool {
 		agent.RPCMethodRelayGet,
 		agent.RPCMethodRelayCreate,
 		agent.RPCMethodRelayDelete,
+		agent.RPCMethodRelayRotate,
+		agent.RPCMethodRelayRotationSet,
 		agent.RPCMethodRelayExport:
 		return true
 	default:
@@ -508,7 +510,7 @@ func validAgentRPCMethod(method string) bool {
 
 func agentRPCTimeout(method string) time.Duration {
 	switch method {
-	case agent.RPCMethodInboundQuickAdd, agent.RPCMethodRelayCreate, agent.RPCMethodRelayDelete:
+	case agent.RPCMethodInboundQuickAdd, agent.RPCMethodRelayCreate, agent.RPCMethodRelayDelete, agent.RPCMethodRelayRotate:
 		return 10 * time.Minute
 	default:
 		return agentCommandTimeout
@@ -517,7 +519,7 @@ func agentRPCTimeout(method string) time.Duration {
 
 func agentRPCMutatesConfig(method string) bool {
 	switch method {
-	case agent.RPCMethodInboundSave, agent.RPCMethodInboundQuickAdd, agent.RPCMethodRelayCreate, agent.RPCMethodRelayDelete:
+	case agent.RPCMethodInboundSave, agent.RPCMethodInboundQuickAdd, agent.RPCMethodRelayCreate, agent.RPCMethodRelayDelete, agent.RPCMethodRelayRotate, agent.RPCMethodRelayRotationSet:
 		return true
 	default:
 		return false
