@@ -30,9 +30,11 @@ import (
 const (
 	relayModeIPv6                 = "ipv6"
 	relayModeUpstream             = "upstream"
+	relayModePaired               = "paired"
 	relaySourceAutoAddIPv6        = "help660vip/auto-add-ipv6"
 	relayDomainStrategyIPv6Only   = "ipv6_only"
 	relayDomainStrategyPreferIPv6 = "prefer_ipv6"
+	relayPairedDNSResolverTag     = "relay-paired-local-dns"
 	relayAddressReady             = "ready"
 	relayAddressTentative         = "tentative"
 	relayAddressDADFailed         = "dadfailed"
@@ -530,10 +532,10 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		return nil, err
 	}
 	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
-	if req.Mode != relayModeIPv6 && req.Mode != relayModeUpstream {
-		return nil, common.NewError("relay mode must be ipv6 or upstream")
+	if req.Mode != relayModeIPv6 && req.Mode != relayModeUpstream && req.Mode != relayModePaired {
+		return nil, common.NewError("relay mode must be ipv6, upstream, or paired")
 	}
-	if req.Mode == relayModeUpstream && len(req.Upstreams) == 0 {
+	if (req.Mode == relayModeUpstream || req.Mode == relayModePaired) && len(req.Upstreams) == 0 {
 		parsed, parseErr := parseRelayUpstreams(req.UpstreamText)
 		if parseErr != nil {
 			return nil, parseErr
@@ -543,7 +545,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	if req.Mode == relayModeIPv6 && req.Count <= 0 {
 		return nil, common.NewError("relay count must be greater than zero")
 	}
-	if req.Mode == relayModeUpstream {
+	if req.Mode == relayModeUpstream || req.Mode == relayModePaired {
 		for i := range req.Upstreams {
 			req.Upstreams[i].Server = strings.Trim(req.Upstreams[i].Server, "[]")
 		}
@@ -654,7 +656,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 			return nil, err
 		}
 	}
-	if req.Mode == relayModeIPv6 && runtime.GOOS == "linux" {
+	if (req.Mode == relayModeIPv6 || req.Mode == relayModePaired) && runtime.GOOS == "linux" {
 		if err := validateRelayIPv6Egress(context.Background(), items, probeRelayIPv6Egress); err != nil {
 			return nil, err
 		}
@@ -716,7 +718,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	}
 	for i := range items {
 		listenAddress := "::"
-		if req.Mode == relayModeIPv6 {
+		if req.Mode == relayModeIPv6 || req.Mode == relayModePaired {
 			listenAddress = relayInboundListenAddress(req.Mode, publicHost)
 		}
 		inboundOptions, clientConfig, err := relayProtocolConfig(req, &items[i])
@@ -763,6 +765,21 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 			return nil, err
 		}
 		items[i].OutboundTag = outbound.Tag
+		if req.Mode == relayModePaired {
+			upstream := req.Upstreams[i]
+			ipv4Outbound := model.Outbound{
+				Type: "socks",
+				Tag:  fmt.Sprintf("relay-ipv4-%s", common.Random(7)),
+				Options: mustJSON(map[string]interface{}{
+					"server": upstream.Server, "server_port": upstream.Port,
+					"version": "5", "username": upstream.Username, "password": upstream.Password,
+				}),
+			}
+			if err := tx.Create(&ipv4Outbound).Error; err != nil {
+				return nil, err
+			}
+			items[i].IPv4OutboundTag = ipv4Outbound.Tag
+		}
 		client := model.Client{
 			Enable: true, Name: items[i].Username,
 			Config:    mustJSON(clientConfig),
@@ -836,6 +853,13 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 }
 
 func normalizeRelayDomainStrategy(mode, value string) (string, error) {
+	if mode == relayModePaired {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || value == relayDomainStrategyPreferIPv6 {
+			return relayDomainStrategyPreferIPv6, nil
+		}
+		return "", common.NewError("paired relay mode requires prefer_ipv6 domain strategy")
+	}
 	if mode != relayModeIPv6 {
 		return "", nil
 	}
@@ -917,6 +941,9 @@ func (s *ConfigService) DeleteRelay(id uint, actor string) error {
 	for _, item := range items {
 		inboundTags = append(inboundTags, item.InboundTag)
 		outboundTags = append(outboundTags, item.OutboundTag)
+		if item.IPv4OutboundTag != "" {
+			outboundTags = append(outboundTags, item.IPv4OutboundTag)
+		}
 		if item.ClientID > 0 {
 			clientIDs = append(clientIDs, item.ClientID)
 		}
@@ -1158,6 +1185,16 @@ func (s *ConfigService) prepareRelayItems(req RelayCreateRequest) ([]model.Relay
 	usedUsernames = make(map[string]bool)
 	for i, ip := range addresses {
 		items[i] = model.RelayItem{ListenPort: req.PortStart + i, Username: uniqueRelayUsername(req.UsernamePrefix, i, usedUsernames), Password: common.Random(req.PasswordLength), IPv6: ip.String(), Interface: iface, Prefix: prefix}
+		if req.Mode == relayModePaired {
+			upstream := req.Upstreams[i]
+			if err := validateUpstream(upstream); err != nil {
+				return nil, fmt.Errorf("upstream line %d: %w", i+1, err)
+			}
+			items[i].UpstreamServer = upstream.Server
+			items[i].UpstreamPort = upstream.Port
+			items[i].UpstreamUsername = upstream.Username
+			items[i].UpstreamPassword = upstream.Password
+		}
 	}
 	return items, nil
 }
@@ -1555,12 +1592,15 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 		rules = []interface{}{}
 	}
 	targets := make(map[string]string, len(items))
+	ipv4Targets := make(map[string]string, len(items))
 	for _, item := range items {
 		if item.InboundTag != "" && item.OutboundTag != "" {
 			targets[item.InboundTag] = item.OutboundTag
+			if item.IPv4OutboundTag != "" {
+				ipv4Targets[item.InboundTag] = item.IPv4OutboundTag
+			}
 		}
 	}
-	routeExists := make(map[string]bool, len(targets))
 	filtered := make([]interface{}, 0, len(rules))
 	for _, raw := range rules {
 		entry, ok := raw.(map[string]interface{})
@@ -1574,28 +1614,39 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 			continue
 		}
 		outbound := fmt.Sprint(entry["outbound"])
-		routeMatch := false
+		generated := false
 		for _, inbound := range matchedInbounds {
-			if targets[inbound] == outbound {
-				routeExists[inbound] = true
-				routeMatch = true
+			if targets[inbound] == outbound || (ipv4Targets[inbound] != "" && ipv4Targets[inbound] == outbound) {
+				generated = true
+			}
+			if ipv4Targets[inbound] != "" && fmt.Sprint(entry["action"]) == "resolve" && fmt.Sprint(entry["server"]) == relayPairedDNSResolverTag {
+				generated = true
 			}
 		}
 		ipv4Reject := fmt.Sprint(entry["action"]) == "reject" && relayRuleIPVersion(entry) == 4
-		if remove && (routeMatch || ipv4Reject) {
-			continue
-		}
-		// Reinsert generated reject rules at the front so they always run before
-		// the corresponding route rule. Dual-stack repair intentionally drops them.
-		if ipv4Reject {
+		if generated || ipv4Reject {
 			continue
 		}
 		filtered = append(filtered, raw)
 	}
 	if !remove {
-		newRules := make([]interface{}, 0, len(items)*2)
+		newRules := make([]interface{}, 0, len(items)*3)
 		for _, item := range items {
 			if _, ok := targets[item.InboundTag]; !ok {
+				continue
+			}
+			if item.IPv4OutboundTag != "" {
+				newRules = append(newRules,
+					map[string]interface{}{
+						"inbound": []string{item.InboundTag}, "action": "resolve", "strategy": relayDomainStrategyPreferIPv6, "server": relayPairedDNSResolverTag,
+					},
+					map[string]interface{}{
+						"inbound": []string{item.InboundTag}, "ip_cidr": []string{"::/0"}, "action": "route", "outbound": item.OutboundTag,
+					},
+					map[string]interface{}{
+						"inbound": []string{item.InboundTag}, "ip_cidr": []string{"0.0.0.0/0"}, "action": "route", "outbound": item.IPv4OutboundTag,
+					},
+				)
 				continue
 			}
 			if ipv6Only {
@@ -1603,22 +1654,63 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 					"inbound": []string{item.InboundTag}, "ip_version": 4, "action": "reject",
 				})
 			}
-			if !routeExists[item.InboundTag] {
-				newRules = append(newRules, map[string]interface{}{
-					"inbound": []string{item.InboundTag}, "action": "route", "outbound": item.OutboundTag,
-				})
-			}
+			newRules = append(newRules, map[string]interface{}{
+				"inbound": []string{item.InboundTag}, "action": "route", "outbound": item.OutboundTag,
+			})
 		}
 		rules = append(newRules, filtered...)
 	} else {
 		rules = filtered
 	}
 	route["rules"] = rules
+	if err := updateRelayPairedDNSResolver(config, relayPairedDNSResolverRequired(rules)); err != nil {
+		return err
+	}
 	updated, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return err
 	}
 	return tx.Model(&model.Setting{}).Where("key = ?", "config").Update("value", string(updated)).Error
+}
+
+func relayPairedDNSResolverRequired(rules []interface{}) bool {
+	for _, raw := range rules {
+		entry, ok := raw.(map[string]interface{})
+		if ok && fmt.Sprint(entry["action"]) == "resolve" && fmt.Sprint(entry["server"]) == relayPairedDNSResolverTag {
+			return true
+		}
+	}
+	return false
+}
+
+func updateRelayPairedDNSResolver(config map[string]interface{}, required bool) error {
+	dns, _ := config["dns"].(map[string]interface{})
+	if dns == nil {
+		dns = map[string]interface{}{}
+		config["dns"] = dns
+	}
+	servers, _ := dns["servers"].([]interface{})
+	filtered := make([]interface{}, 0, len(servers)+1)
+	found := false
+	for _, raw := range servers {
+		server, ok := raw.(map[string]interface{})
+		if !ok || fmt.Sprint(server["tag"]) != relayPairedDNSResolverTag {
+			filtered = append(filtered, raw)
+			continue
+		}
+		if fmt.Sprint(server["type"]) != "local" {
+			return common.NewErrorf("DNS server tag %q is reserved by paired relays", relayPairedDNSResolverTag)
+		}
+		found = true
+		if required {
+			filtered = append(filtered, raw)
+		}
+	}
+	if required && !found {
+		filtered = append(filtered, map[string]interface{}{"type": "local", "tag": relayPairedDNSResolverTag})
+	}
+	dns["servers"] = filtered
+	return nil
 }
 
 func relayRuleTargetInbounds(entry map[string]interface{}, targets map[string]string) []string {
@@ -1726,9 +1818,17 @@ func parseRelayUpstreamLine(line string) (RelayUpstream, error) {
 		}
 		return RelayUpstream{Server: parsed.Hostname(), Port: port, Username: username, Password: password}, validateUpstream(RelayUpstream{Server: parsed.Hostname(), Port: port, Username: username, Password: password})
 	}
+	if server, portText, err := net.SplitHostPort(line); err == nil {
+		port, err := strconv.Atoi(portText)
+		if err != nil {
+			return RelayUpstream{}, common.NewError("invalid SOCKS5 port")
+		}
+		upstream := RelayUpstream{Server: strings.Trim(server, "[]"), Port: port}
+		return upstream, validateUpstream(upstream)
+	}
 	parts := strings.Split(line, ":")
 	if len(parts) < 4 {
-		return RelayUpstream{}, common.NewError("expected host:port:username:password")
+		return RelayUpstream{}, common.NewError("expected host:port or host:port:username:password")
 	}
 	password := parts[len(parts)-1]
 	username := parts[len(parts)-2]
@@ -1800,7 +1900,7 @@ func formatRelayHost(host string) string {
 }
 
 func relayInboundListenAddress(mode, publicHost string) string {
-	if mode == relayModeIPv6 {
+	if mode == relayModeIPv6 || mode == relayModePaired {
 		if address, err := netip.ParseAddr(strings.Trim(publicHost, "[]")); err == nil && address.Is6() {
 			return "::"
 		}

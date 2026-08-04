@@ -176,13 +176,15 @@ Agent 主动出站连接中心面板，远端无需开放 Agent 控制端口：
 
 | 项目 | 支持 |
 | --- | --- |
-| 来源 | 本机公网 IPv6 池、上游 SOCKS5 |
+| 来源 | 本机公网 IPv6 池、上游 SOCKS5、IPv4/IPv6 配对 |
 | 协议 | SOCKS5、HTTP、Mixed、Shadowsocks、VLESS、VMess、Trojan、Hysteria2、TUIC、Naive、AnyTLS |
 | 批量 | 每批 1–100 条；已用端口自动跳过并继续分配 |
 | 导出 | BitBrowser Excel、纯文本 `IP:端口:账号:密码` |
 | IPv6 连接方式 | 客户端连接原 VPS IPv4/域名，每条代理仅绑定对应 IPv6 出口 |
 
 IPv6 池模式只会向选定网卡添加地址，不修改系统默认路由。每个地址都经过 DAD 和公网出口验证，失败会回滚。VPS 必须拥有服务商已路由或授权的 IPv6 前缀；仅添加随机 `/64` 地址无法绕过源地址过滤。
+
+IPv4/IPv6 配对模式按上游 SOCKS5 列表顺序为每个入口分配一个 VPS IPv6。IPv4-only 目标使用对应上游 SOCKS5，IPv6 或双栈目标优先绑定对应 VPS IPv6；支持直接粘贴 `host:port`、`host:port:user:pass` 或 `socks5://` 列表。
 
 实现参考 [help660vip/auto-add-ipv6](https://github.com/help660vip/auto-add-ipv6) 的流程，但 1S-UI 使用内置 Go 逻辑，不执行第三方远程脚本。
 
@@ -207,7 +209,7 @@ IPv6 池模式只会向选定网卡添加地址，不修改系统默认路由。
 - Complete Web UI for inbounds, outbounds, endpoints, routing, DNS, users, subscriptions, TLS, logs, backup, and traffic.
 - 1–100 node quick creation with safe protocol defaults and automatic used-port skipping.
 - sing-box plus Xray protocols including XHTTP, RAW, gRPC, WebSocket, Hysteria2, Dokodemo-door, and WireGuard.
-- IPv6 egress pools and upstream SOCKS5 relays with BitBrowser Excel/plain-text export.
+- IPv6 egress pools, upstream SOCKS5 relays, and per-entry IPv4/IPv6 egress pairs with BitBrowser Excel/plain-text export.
 - Outbound Agent connections over WebSocket/HTTP; no inbound Agent control port is required.
 - A reusable controller connection API lets each child panel bind by pasting one value; optional 15-minute single-use links remain available.
 - Live CPU, memory, disk, process, network, RTT/P95/loss metrics, history charts, remote commands, and PTY terminal.
@@ -334,6 +336,10 @@ cd frontend && npm run build
 ```
 
 正式 Release 使用 GitHub Actions 构建带 CGO、musl 和 Naive 支持的 Linux 多架构包；普通本地 `go build` 不等同于正式 Release 构建。
+
+## IPv4/IPv6 配对交付文件
+
+本仓库的 [`paired-release/`](paired-release/) 目录包含可直接安装的 amd64/arm64 包、通用安装脚本、补丁、完整源码包和使用说明。直接安装时，先执行 `uname -m`，再下载 `install-s-ui-paired.sh` 与对应架构的 `s-ui-linux-*-paired.tar.gz` 到 VPS 同一目录。
 
 ## 目录结构
 

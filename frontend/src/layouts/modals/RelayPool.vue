@@ -11,6 +11,7 @@
         <v-tabs v-model="tab" align-tabs="center" grow class="mb-3">
           <v-tab value="ipv6">{{ $t('relay.ipv6Mode') }}</v-tab>
           <v-tab value="upstream">{{ $t('relay.upstreamMode') }}</v-tab>
+          <v-tab value="paired">{{ $t('relay.pairedMode') }}</v-tab>
           <v-tab value="pools">{{ $t('relay.pools') }}</v-tab>
         </v-tabs>
 
@@ -156,6 +157,50 @@
             </div>
           </v-window-item>
 
+          <v-window-item value="paired">
+            <v-alert type="info" variant="tonal" density="compact" class="mb-3">
+              {{ $t('relay.pairedDescription') }}
+            </v-alert>
+            <v-row>
+              <v-col cols="12" sm="6" md="4">
+                <v-text-field v-model="form.name" :label="$t('relay.name')" hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-text-field v-model="form.public_host" :label="$t('relay.publicHost')" dir="ltr" hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-text-field v-model.number="form.port_start" type="number" min="1" max="65535" :label="$t('relay.portStart')" hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-text-field v-model="form.username_prefix" :label="$t('relay.usernamePrefix')" dir="ltr" hide-details />
+              </v-col>
+              <v-col cols="12" sm="6" md="4">
+                <v-text-field v-model.number="form.password_length" type="number" min="8" max="64" :label="$t('relay.passwordLength')" hide-details />
+              </v-col>
+              <v-col cols="12">
+                <v-textarea v-model="form.ipv6_text" :label="$t('relay.ipv6List')" :hint="$t('relay.pairedIPv6Hint')" persistent-hint rows="3" dir="ltr" hide-details="auto" />
+              </v-col>
+              <v-col cols="12">
+                <v-textarea v-model="form.upstream_text" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
+              </v-col>
+              <v-col cols="12">
+                <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
+              </v-col>
+            </v-row>
+            <div class="relay-actions">
+              <v-btn color="primary" prepend-icon="mdi-link-variant-plus" :loading="loading" :disabled="!canCreatePaired" @click="create('paired')">{{ $t('relay.createPaired') }}</v-btn>
+            </div>
+          </v-window-item>
+
           <v-window-item value="pools">
             <v-alert v-if="pools.length === 0" type="info" variant="tonal">{{ $t('relay.noPools') }}</v-alert>
             <v-row v-else>
@@ -219,7 +264,7 @@ import { i18n } from '@/locales'
 import { copyText } from '@/utils/clipboard'
 
 interface IPv6Item { interface: string; address: string; prefix: number }
-interface RelayItem { listen_port: number; username: string; password: string; ipv6?: string; protocol?: string; export?: string }
+interface RelayItem { listen_port: number; username: string; password: string; ipv6?: string; upstream_server?: string; protocol?: string; export?: string }
 interface RelayPool { id: number; name: string; source?: string; mode: string; protocol?: string; domain_strategy?: string; listen_host: string; port_start: number; count: number; items: RelayItem[] }
 interface RelayCapabilities { os: string; can_add_system_ipv6: boolean; unavailable_reason?: string }
 
@@ -254,6 +299,12 @@ const interfaceItems = computed(() => [...new Set(ipv6.value.map((item) => item.
 const relayCountValid = computed(() => Number.isInteger(form.count) && form.count >= 1 && form.count <= 100)
 const canCreateIPv6 = computed(() => relayCountValid.value && (ipv6.value.length > 0 || form.base_ipv6.trim().length > 0))
 const canQuickCreateIPv6 = computed(() => canCreateIPv6.value && capabilities.value?.can_add_system_ipv6 === true)
+const pairedUpstreamCount = computed(() => form.upstream_text.split(/\r?\n/).filter((line) => {
+  const value = line.trim()
+  return value.length > 0 && !value.startsWith('#')
+}).length)
+const canCreatePaired = computed(() => pairedUpstreamCount.value >= 1 && pairedUpstreamCount.value <= 100
+  && (ipv6.value.length > 0 || form.base_ipv6.trim().length > 0))
 const capabilityMessage = computed(() => {
   const capability = capabilities.value
   if (!capability || capability.can_add_system_ipv6) return ''
@@ -322,6 +373,10 @@ const parseItems = (items: any): RelayItem[] => {
 }
 
 const poolAddressSummary = (pool: RelayPool) => {
+  if (pool.mode === 'paired') {
+    const ipv6Addresses = [...new Set(pool.items.map((item) => item.ipv6).filter(Boolean))]
+    return `${pool.listen_host} -> ${pool.count} IPv4 SOCKS5 + ${ipv6Addresses.length} VPS IPv6`
+  }
   if (pool.mode !== 'ipv6') return pool.listen_host
   const addresses = [...new Set(pool.items.map((item) => item.ipv6).filter(Boolean))]
   const mode = pool.domain_strategy === 'prefer_ipv6'
@@ -332,7 +387,7 @@ const poolAddressSummary = (pool: RelayPool) => {
   return `${pool.listen_host} -> ${addresses[0]}, ${addresses[1]} ... (+${addresses.length - 2} IPv6) / ${mode}`
 }
 
-const create = async (mode: 'ipv6' | 'upstream', quick = false) => {
+const create = async (mode: 'ipv6' | 'upstream' | 'paired', quick = false) => {
   if (mode === 'ipv6' && !relayCountValid.value) {
     push.error({ message: i18n.global.t('relay.countRange') })
     return
@@ -344,6 +399,14 @@ const create = async (mode: 'ipv6' | 'upstream', quick = false) => {
     if (quick) {
       payload.protocol = 'socks'
       payload.add_system_addresses = true
+      payload.tls_id = 0
+      payload.transport = ''
+    }
+    if (mode === 'paired') {
+      payload.count = pairedUpstreamCount.value
+      payload.protocol = 'socks'
+      payload.core_type = 'sing-box'
+      payload.domain_strategy = 'prefer_ipv6'
       payload.tls_id = 0
       payload.transport = ''
     }

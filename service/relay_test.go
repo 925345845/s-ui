@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,8 @@ func TestParseRelayUpstreamLine(t *testing.T) {
 		want RelayUpstream
 	}{
 		{name: "colon format", line: "proxy.example:1080:user:pass", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
+		{name: "ipwo host port", line: "203.0.113.10:1080", want: RelayUpstream{Server: "203.0.113.10", Port: 1080}},
+		{name: "IPv6 host port", line: "[2001:db8::10]:1080", want: RelayUpstream{Server: "2001:db8::10", Port: 1080}},
 		{name: "ipv6 colon format", line: "[2001:db8::10]:1080:user:pass", want: RelayUpstream{Server: "2001:db8::10", Port: 1080, Username: "user", Password: "pass"}},
 		{name: "socks url", line: "socks5://user:p%40ss@[2001:db8::10]:1080", want: RelayUpstream{Server: "2001:db8::10", Port: 1080, Username: "user", Password: "p@ss"}},
 	}
@@ -353,6 +356,9 @@ func TestNormalizeRelayDomainStrategy(t *testing.T) {
 		{name: "IPv6 only", mode: relayModeIPv6, value: relayDomainStrategyIPv6Only, want: relayDomainStrategyIPv6Only, valid: true},
 		{name: "dual stack", mode: relayModeIPv6, value: relayDomainStrategyPreferIPv6, want: relayDomainStrategyPreferIPv6, valid: true},
 		{name: "upstream ignores strategy", mode: relayModeUpstream, value: relayDomainStrategyIPv6Only, valid: true},
+		{name: "paired default", mode: relayModePaired, want: relayDomainStrategyPreferIPv6, valid: true},
+		{name: "paired prefer IPv6", mode: relayModePaired, value: relayDomainStrategyPreferIPv6, want: relayDomainStrategyPreferIPv6, valid: true},
+		{name: "paired rejects IPv6 only", mode: relayModePaired, value: relayDomainStrategyIPv6Only},
 		{name: "invalid", mode: relayModeIPv6, value: "prefer_ipv4"},
 	}
 	for _, test := range tests {
@@ -701,6 +707,125 @@ func TestUpdateRelayRouteRulesAddsAndRemovesOnlyRelayRules(t *testing.T) {
 	if len(rules) != 2 {
 		t.Fatalf("rule count after removal = %d, want 2", len(rules))
 	}
+}
+
+func TestUpdateRelayRouteRulesCreatesPairedAddressFamilyRoutes(t *testing.T) {
+	dbDir := t.TempDir()
+	t.Setenv("SUI_DB_FOLDER", dbDir)
+	if err := database.InitDB(filepath.Join(dbDir, "relay-paired-rules.db")); err != nil {
+		t.Fatal(err)
+	}
+	db := database.GetDB()
+	if _, err := (&SettingService{}).GetAllSetting(); err != nil {
+		t.Fatal(err)
+	}
+	item := model.RelayItem{
+		InboundTag: "relay-paired-in", OutboundTag: "relay-paired-ipv6", IPv4OutboundTag: "relay-paired-ipv4",
+	}
+	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, false); err != nil {
+		t.Fatal(err)
+	}
+	var setting model.Setting
+	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
+		t.Fatal(err)
+	}
+	rules := config["route"].(map[string]interface{})["rules"].([]interface{})
+	if len(rules) != 5 {
+		t.Fatalf("paired rule count = %d, want 5", len(rules))
+	}
+	resolve := rules[0].(map[string]interface{})
+	ipv6 := rules[1].(map[string]interface{})
+	ipv4 := rules[2].(map[string]interface{})
+	if resolve["action"] != "resolve" || resolve["strategy"] != relayDomainStrategyPreferIPv6 || resolve["server"] != relayPairedDNSResolverTag {
+		t.Fatalf("resolve rule = %#v", resolve)
+	}
+	if !relayRuleHasCIDR(ipv4, "0.0.0.0/0") || ipv4["outbound"] != item.IPv4OutboundTag {
+		t.Fatalf("IPv4 route = %#v", ipv4)
+	}
+	if !relayRuleHasCIDR(ipv6, "::/0") || ipv6["outbound"] != item.OutboundTag {
+		t.Fatalf("IPv6 route = %#v", ipv6)
+	}
+	dnsServers := config["dns"].(map[string]interface{})["servers"].([]interface{})
+	if len(dnsServers) != 1 || dnsServers[0].(map[string]interface{})["tag"] != relayPairedDNSResolverTag {
+		t.Fatalf("paired DNS servers = %#v", dnsServers)
+	}
+	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
+		t.Fatal(err)
+	}
+	rules = config["route"].(map[string]interface{})["rules"].([]interface{})
+	if len(rules) != 5 {
+		t.Fatalf("paired rule count after idempotent update = %d, want 5", len(rules))
+	}
+	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
+		t.Fatal(err)
+	}
+	rules = config["route"].(map[string]interface{})["rules"].([]interface{})
+	if len(rules) != 2 {
+		t.Fatalf("paired rule count after removal = %d, want 2", len(rules))
+	}
+	dnsServers = config["dns"].(map[string]interface{})["servers"].([]interface{})
+	if len(dnsServers) != 0 {
+		t.Fatalf("paired DNS server was not removed: %#v", dnsServers)
+	}
+}
+
+func TestUpdateRelayPairedDNSResolver(t *testing.T) {
+	config := map[string]interface{}{
+		"dns": map[string]interface{}{
+			"servers": []interface{}{map[string]interface{}{"type": "local", "tag": "existing-local"}},
+		},
+	}
+	if err := updateRelayPairedDNSResolver(config, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateRelayPairedDNSResolver(config, true); err != nil {
+		t.Fatal(err)
+	}
+	servers := config["dns"].(map[string]interface{})["servers"].([]interface{})
+	if len(servers) != 2 {
+		t.Fatalf("DNS server count = %d, want 2", len(servers))
+	}
+	if err := updateRelayPairedDNSResolver(config, false); err != nil {
+		t.Fatal(err)
+	}
+	servers = config["dns"].(map[string]interface{})["servers"].([]interface{})
+	if len(servers) != 1 || servers[0].(map[string]interface{})["tag"] != "existing-local" {
+		t.Fatalf("DNS servers after cleanup = %#v", servers)
+	}
+}
+
+func relayRuleHasCIDR(rule map[string]interface{}, expected string) bool {
+	switch values := rule["ip_cidr"].(type) {
+	case []interface{}:
+		for _, value := range values {
+			if fmt.Sprint(value) == expected {
+				return true
+			}
+		}
+	case []string:
+		for _, value := range values {
+			if value == expected {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func mustParseRelayTestAddr(value string) (addr netip.Addr) {
