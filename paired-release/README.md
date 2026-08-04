@@ -4,7 +4,15 @@
 
 ## 直接安装
 
-在 VPS 上下载 `install-s-ui-paired.sh`，并根据 `uname -m` 再下载对应的压缩包到同一目录：
+以 root 身份执行一行在线安装命令：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/925345845/s-ui/main/paired-release/install-s-ui-paired-online.sh | bash
+```
+
+脚本会自动识别 amd64/arm64、下载对应安装包并调用本地安装脚本。
+
+也可以手动下载。先在 VPS 上下载 `install-s-ui-paired.sh`，并根据 `uname -m` 再下载对应的压缩包到同一目录：
 
 - `x86_64` / `amd64`: `s-ui-linux-amd64-paired.tar.gz`
 - `aarch64` / `arm64`: `s-ui-linux-arm64-paired.tar.gz`
@@ -21,6 +29,7 @@ sudo ./install-s-ui-paired.sh
 ## 文件说明
 
 - `install-s-ui-paired.sh`: 自动识别 VPS 架构并安装。
+- `install-s-ui-paired-online.sh`: 自动下载对应架构安装包并安装。
 - `s-ui-linux-amd64-paired.tar.gz`: Linux amd64 预编译包。
 - `s-ui-linux-arm64-paired.tar.gz`: Linux arm64 预编译包。
 - `1s-ui-ipv4-ipv6-paired.patch`: 应用到原始源码的 Git 补丁。
