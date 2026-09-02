@@ -127,80 +127,30 @@ func (o *relayFallbackOutbound) ListenPacket(ctx context.Context, destination M.
 
 func (o *relayFallbackOutbound) DialParallelNetwork(ctx context.Context, network string, destination M.Socksaddr, destinationAddresses []netip.Addr, strategy *C.NetworkStrategy, networkType []C.InterfaceType, fallbackNetworkType []C.InterfaceType, fallbackDelay time.Duration) (net.Conn, error) {
 	addresses6, addresses4 := splitRelayDestinationAddresses(destination, destinationAddresses)
-	if len(addresses6) > 0 && len(addresses4) > 0 {
-		return o.dialDualStackConcurrent(ctx, network, destination, addresses6, addresses4, strategy, networkType, fallbackNetworkType, fallbackDelay)
-	}
+	var ipv6Err error
 	if len(addresses6) > 0 {
 		ipv6Ctx, cancel := context.WithTimeout(ctx, o.ipv6Timeout)
-		defer cancel()
 		conn, err := dialRelayAddresses(ipv6Ctx, o.ipv6Outbound, network, destination, addresses6, strategy, networkType, fallbackNetworkType, fallbackDelay)
+		cancel()
 		if err == nil {
 			return conn, nil
 		}
-		return nil, E.Cause(err, "IPv6 connection failed and the destination has no IPv4 address")
+		ipv6Err = err
 	}
 	if len(addresses4) > 0 {
 		conn, err := o.dialIPv4(ctx, network, destination, addresses4, strategy, networkType, fallbackNetworkType, fallbackDelay)
 		if err == nil {
 			return conn, nil
 		}
+		if ipv6Err != nil {
+			return nil, E.Errors(E.Cause(ipv6Err, "IPv6 attempt failed"), E.Cause(err, "IPv4 SOCKS5 fallback failed"))
+		}
 		return nil, E.Cause(err, "IPv4 SOCKS5 connection failed")
 	}
+	if ipv6Err != nil {
+		return nil, E.Cause(ipv6Err, "IPv6 connection failed and the destination has no IPv4 address")
+	}
 	return o.DialContext(ctx, network, destination)
-}
-
-// dialDualStackConcurrent races IPv6 and IPv4 for destinations that have
-// both address families. This avoids waiting for a slow/broken IPv6 path
-// before trying the paired IPv4 SOCKS5 upstream (important for browsers that
-// open several API/upload connections in parallel).
-func (o *relayFallbackOutbound) dialDualStackConcurrent(ctx context.Context, network string, destination M.Socksaddr, addresses6, addresses4 []netip.Addr, strategy *C.NetworkStrategy, networkType, fallbackNetworkType []C.InterfaceType, fallbackDelay time.Duration) (net.Conn, error) {
-	type result struct {
-		family int
-		conn   net.Conn
-		err    error
-	}
-	results := make(chan result, 2)
-	ipv6Ctx, cancel6 := context.WithTimeout(ctx, o.ipv6Timeout)
-	ipv4Ctx, cancel4 := context.WithCancel(ctx)
-	go func() {
-		conn, err := dialRelayAddresses(ipv6Ctx, o.ipv6Outbound, network, destination, addresses6, strategy, networkType, fallbackNetworkType, fallbackDelay)
-		results <- result{family: 6, conn: conn, err: err}
-	}()
-	go func() {
-		conn, err := o.dialIPv4(ipv4Ctx, network, destination, addresses4, strategy, networkType, fallbackNetworkType, fallbackDelay)
-		results <- result{family: 4, conn: conn, err: err}
-	}()
-
-	var err6, err4 error
-	for i := 0; i < 2; i++ {
-		select {
-		case <-ctx.Done():
-			cancel6()
-			cancel4()
-			return nil, ctx.Err()
-		case r := <-results:
-			if r.err == nil && r.conn != nil {
-				cancel6()
-				cancel4()
-				// The losing dial may complete just after cancellation. Drain its
-				// result and close the connection so racing does not leak sockets.
-				go func() {
-					if loser := <-results; loser.conn != nil {
-						_ = loser.conn.Close()
-					}
-				}()
-				return r.conn, nil
-			}
-			if r.family == 6 {
-				err6 = r.err
-			} else {
-				err4 = r.err
-			}
-		}
-	}
-	cancel6()
-	cancel4()
-	return nil, E.Errors(E.Cause(err6, "IPv6 attempt failed"), E.Cause(err4, "IPv4 SOCKS5 attempt failed"))
 }
 
 func (o *relayFallbackOutbound) ListenSerialNetworkPacket(ctx context.Context, destination M.Socksaddr, destinationAddresses []netip.Addr, _ *C.NetworkStrategy, _ []C.InterfaceType, _ []C.InterfaceType, _ time.Duration) (net.PacketConn, netip.Addr, error) {

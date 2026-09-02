@@ -186,7 +186,7 @@ IPv6 池模式只会向选定网卡添加地址，不修改系统默认路由。
 
 IPv4/IPv6 配对模式按上游 SOCKS5 列表顺序为每个入口分配一个 VPS IPv6。IPv4-only 目标使用对应上游 SOCKS5，IPv6 或双栈目标优先绑定对应 VPS IPv6；支持直接粘贴 `host:port`、`host:port:user:pass` 或 `socks5://` 列表。
 
-双栈出口模式使用同样的 IPv4/IPv6 配对。目标同时有 A/AAAA 时会并发尝试对应 VPS IPv6 与同一行的 IPv4 SOCKS5，哪个连接先成功就使用哪个；目标只有 A 记录或直接使用 IPv4 地址时使用对应 IPv4 SOCKS5，只有 AAAA 时使用对应 VPS IPv6。IPv4 连接不会使用 VPS 原生 IPv4。
+双栈出口模式使用同样的 IPv4/IPv6 配对。目标默认使用对应 VPS IPv6；目标只有 A 记录或 IPv6 连接失败时，才使用同一行的 IPv4 SOCKS5；只有 AAAA 时使用对应 VPS IPv6。IPv4 连接不会使用 VPS 原生 IPv4。
 
 配对和双栈入口会将 Apple ID 登录域名 `appleid.apple.com`、`idmsa.apple.com`、`gsa.apple.com` 固定路由到对应 IPv4 SOCKS5，其余域名按上述双栈规则处理。
 

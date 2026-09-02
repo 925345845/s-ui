@@ -663,7 +663,7 @@
     pairedDescription: "每行上游 SOCKS5 按顺序配一个 VPS IPv6。访问 IPv4 目标走对应 SOCKS5，访问 IPv6 目标绑定对应 VPS IPv6 出口。",
     createPaired: "创建配对中转",
     dualStackMode: "双栈出口",
-    dualStackDescription: "每行上游 SOCKS5 配一个 VPS IPv6。Apple ID 登录域名固定走对应 IPv4 SOCKS5，其余双栈目标同时尝试 IPv6 和 IPv4，哪个连接先成功就使用哪个。",
+    dualStackDescription: "每行上游 SOCKS5 配一个 VPS IPv6。Apple ID 登录域名固定走对应 IPv4 SOCKS5，其余网站默认使用 VPS IPv6，IPv6 连接失败时才回退到对应 IPv4。",
     createDualStack: "创建双栈中转",
     pools: "中转批次",
     name: "批次名称",

@@ -7,7 +7,7 @@
 以 root 身份执行一行在线安装命令：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/925345845/s-ui/main/paired-release/install-s-ui-paired-online.sh | S_UI_PAIRED_VERSION=v1.5.11 bash
+curl -fsSL https://raw.githubusercontent.com/925345845/s-ui/main/paired-release/install-s-ui-paired-online.sh | S_UI_PAIRED_VERSION=v1.5.12 bash
 ```
 
 脚本会自动识别 amd64/arm64、下载对应安装包并调用本地安装脚本。
@@ -26,7 +26,7 @@ sudo ./install-s-ui-paired.sh
 
 安装后进入“入站管理 -> 一键中转 -> 双栈出口”。每行上游 SOCKS5 按顺序对应一条 VPS IPv6。双栈目标会同时尝试 VPS IPv6 和同一行的 IPv4 SOCKS5，哪个连接先成功就使用哪个；单栈目标仍只使用对应地址族。完整配置说明见 `1s-ui-paired-relay-guide.md`。
 
-Apple ID 登录域名 `appleid.apple.com`、`idmsa.apple.com`、`gsa.apple.com` 会自动固定走同一行的 IPv4 SOCKS5，其他域名继续使用双栈竞速。
+Apple ID 登录域名 `appleid.apple.com`、`idmsa.apple.com`、`gsa.apple.com` 会自动固定走同一行的 IPv4 SOCKS5，其他域名默认使用 VPS IPv6，失败时才回退 IPv4。
 
 在“中转批次”中，每条 IPv6 都有独立的手动轮转链接。访问一条链接只更换对应 IPv6，不改变其他地址、现有端口、账号、密码或 IPv4 SOCKS5 配对。
 
