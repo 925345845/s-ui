@@ -399,6 +399,16 @@ func TestRelayDualStackDirectOutboundStaysIPv6Only(t *testing.T) {
 	}
 }
 
+func TestRelayAppleIDIPv4OnlyDirectOutboundStaysIPv6Only(t *testing.T) {
+	item := model.RelayItem{IPv6: "2001:db8::10"}
+	options := relayDirectOutboundOptions(RelayCreateRequest{
+		Mode: relayModePaired, DomainStrategy: relayDomainStrategyPreferIPv6, AppleIDIPv4Only: true,
+	}, item)
+	if options["inet6_bind_address"] != item.IPv6 || options["domain_strategy"] != relayDomainStrategyIPv6Only {
+		t.Fatalf("unexpected Apple-ID IPv6 direct options: %#v", options)
+	}
+}
+
 func TestValidateRelayIPv6EgressDeduplicatesAddresses(t *testing.T) {
 	items := []model.RelayItem{
 		{IPv6: "2001:db8::10"},
@@ -796,6 +806,51 @@ func TestUpdateRelayRouteRulesCreatesPairedAddressFamilyRoutes(t *testing.T) {
 	dnsServers = config["dns"].(map[string]interface{})["servers"].([]interface{})
 	if len(dnsServers) != 0 {
 		t.Fatalf("paired DNS server was not removed: %#v", dnsServers)
+	}
+}
+
+func TestUpdateRelayRouteRulesAppleIDUsesIPv4OnlyForAppleAndIPv6DirectOtherwise(t *testing.T) {
+	dbDir := t.TempDir()
+	t.Setenv("SUI_DB_FOLDER", dbDir)
+	if err := database.InitDB(filepath.Join(dbDir, "relay-apple-rules.db")); err != nil {
+		t.Fatal(err)
+	}
+	db := database.GetDB()
+	if _, err := (&SettingService{}).GetAllSetting(); err != nil {
+		t.Fatal(err)
+	}
+	item := model.RelayItem{
+		InboundTag: "relay-apple-in", OutboundTag: "relay-dual-fallback",
+		IPv6OutboundTag: "relay-dual-ipv6", IPv4OutboundTag: "relay-apple-ipv4",
+		AppleIDIPv4Only: true,
+	}
+	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, false); err != nil {
+		t.Fatal(err)
+	}
+	var setting model.Setting
+	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
+		t.Fatal(err)
+	}
+	rules := config["route"].(map[string]interface{})["rules"].([]interface{})
+	var sawAppleIPv4, sawIPv6Reject, sawIPv6Route bool
+	for _, raw := range rules {
+		rule := raw.(map[string]interface{})
+		if fmt.Sprint(rule["action"]) == "route" && rule["outbound"] == item.IPv4OutboundTag {
+			sawAppleIPv4 = true
+		}
+		if fmt.Sprint(rule["action"]) == "reject" && relayRuleIPVersion(rule) == 4 {
+			sawIPv6Reject = true
+		}
+		if fmt.Sprint(rule["action"]) == "route" && rule["outbound"] == item.IPv6OutboundTag {
+			sawIPv6Route = true
+		}
+	}
+	if !sawAppleIPv4 || !sawIPv6Reject || !sawIPv6Route {
+		t.Fatalf("Apple-ID route rules missing expected split: %#v", rules)
 	}
 }
 

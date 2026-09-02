@@ -34,6 +34,7 @@ const (
 	relayModePaired               = "paired"
 	relayModeDualStack            = "dualstack"
 	relaySourceAutoAddIPv6        = "help660vip/auto-add-ipv6"
+	relayDomainStrategyIPv4Only   = "ipv4_only"
 	relayDomainStrategyIPv6Only   = "ipv6_only"
 	relayDomainStrategyPreferIPv6 = "prefer_ipv6"
 	relayPairedDNSResolverTag     = "relay-paired-local-dns"
@@ -638,6 +639,40 @@ func (s *ConfigService) repairRelayIPv6OutboundStrategies() error {
 			if err := json.Unmarshal(pool.Items, &items); err != nil {
 				return fmt.Errorf("relay pool %q: invalid items: %w", pool.Name, err)
 			}
+			// Older paired/dual-stack pools may have been created before the
+			// Apple-ID-only switch was introduced.  Keep their generated IPv6
+			// direct outbounds IPv6-only whenever the item is marked for the
+			// Apple-ID IPv4 exception; otherwise a pure IPv4 hostname could be
+			// resolved and sent through the VPS's native IPv4 route.
+			for _, item := range items {
+				if !item.AppleIDIPv4Only || item.IPv6 == "" || item.OutboundTag == "" {
+					continue
+				}
+				var outbound model.Outbound
+				if err := tx.Where("tag = ?", item.OutboundTag).First(&outbound).Error; err != nil {
+					if database.IsNotFound(err) {
+						continue
+					}
+					return err
+				}
+				if outbound.Type != "direct" {
+					continue
+				}
+				var options map[string]interface{}
+				if len(outbound.Options) > 0 {
+					if err := json.Unmarshal(outbound.Options, &options); err != nil {
+						return err
+					}
+				}
+				if options == nil {
+					options = map[string]interface{}{}
+				}
+				options["inet6_bind_address"] = item.IPv6
+				options["domain_strategy"] = relayDomainStrategyIPv6Only
+				if err := tx.Model(&model.Outbound{}).Where("id = ?", outbound.Id).Update("options", mustJSON(options)).Error; err != nil {
+					return err
+				}
+			}
 			dualStackItems = append(dualStackItems, items...)
 		}
 		if len(dualStackItems) > 0 {
@@ -1013,6 +1048,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 				Options: mustJSON(map[string]interface{}{
 					"server": upstream.Server, "server_port": upstream.Port,
 					"version": "5", "username": upstream.Username, "password": upstream.Password,
+					"domain_strategy": relayDomainStrategyIPv4Only,
 				}),
 			}
 			if err := tx.Create(&ipv4Outbound).Error; err != nil {
@@ -1144,7 +1180,7 @@ func normalizeRelayDomainStrategy(mode, value string) (string, error) {
 
 func relayDirectOutboundOptions(req RelayCreateRequest, item model.RelayItem) map[string]interface{} {
 	strategy := req.DomainStrategy
-	if req.Mode == relayModeDualStack {
+	if req.Mode == relayModeDualStack || req.AppleIDIPv4Only {
 		strategy = relayDomainStrategyIPv6Only
 	}
 	if strategy == "" {
@@ -1600,6 +1636,9 @@ func updateRelayRotatedOutbounds(tx *gorm.DB, mode string, items []model.RelayIt
 			options = make(map[string]interface{})
 		}
 		options["inet6_bind_address"] = items[index].IPv6
+		if items[index].AppleIDIPv4Only {
+			options["domain_strategy"] = relayDomainStrategyIPv6Only
+		}
 		if err := tx.Model(&model.Outbound{}).Where("id = ?", outbound.Id).Update("options", mustJSON(options)).Error; err != nil {
 			return err
 		}
@@ -2402,6 +2441,10 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 				})
 			}
 			if item.AppleIDIPv4Only && item.IPv4OutboundTag != "" {
+				ipv6Outbound := item.IPv6OutboundTag
+				if ipv6Outbound == "" {
+					ipv6Outbound = item.OutboundTag
+				}
 				newRules = append(newRules,
 					map[string]interface{}{
 						"inbound": []string{item.InboundTag}, "action": "resolve", "strategy": relayDomainStrategyIPv6Only, "server": relayPairedDNSResolverTag,
@@ -2410,7 +2453,7 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 						"inbound": []string{item.InboundTag}, "ip_version": 4, "action": "reject",
 					},
 					map[string]interface{}{
-						"inbound": []string{item.InboundTag}, "action": "route", "outbound": item.OutboundTag,
+						"inbound": []string{item.InboundTag}, "action": "route", "outbound": ipv6Outbound,
 					},
 				)
 				continue
