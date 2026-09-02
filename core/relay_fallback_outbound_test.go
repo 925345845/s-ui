@@ -80,6 +80,9 @@ func TestRelayFallbackRacesIPv6AndIPv4(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = conn.Close()
+	for i := 0; i < 100 && (ipv6.calls == 0 || ipv4.calls == 0); i++ {
+		time.Sleep(time.Millisecond)
+	}
 	if ipv6.calls != 1 || ipv4.calls != 1 {
 		t.Fatalf("calls: IPv6=%d IPv4=%d", ipv6.calls, ipv4.calls)
 	}
