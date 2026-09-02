@@ -663,7 +663,7 @@
     pairedDescription: "每行上游 SOCKS5 按顺序配一个 VPS IPv6。访问 IPv4 目标走对应 SOCKS5，访问 IPv6 目标绑定对应 VPS IPv6 出口。",
     createPaired: "创建配对中转",
     dualStackMode: "双栈出口",
-    dualStackDescription: "每行上游 SOCKS5 配一个 VPS IPv6。双栈目标严格优先使用 VPS IPv6；目标只有 IPv4，或本次 IPv6 连接失败时，才使用对应 IPv4 SOCKS5。",
+    dualStackDescription: "每行上游 SOCKS5 配一个 VPS IPv6。双栈目标同时尝试 IPv6 和 IPv4，哪个连接先成功就使用哪个；IPv4-only/IPv6-only 目标仍按地址族连接。",
     createDualStack: "创建双栈中转",
     pools: "中转批次",
     name: "批次名称",

@@ -76,7 +76,7 @@ socks5://user:password@203.0.113.12:1080
 
 ## IPv6 优先回退
 
-“双栈出口”按当前目标的地址族严格优先 IPv6。双栈目标先走对应 VPS IPv6，只有本次连接失败才由对应 IPv4 SOCKS5 接管；IPv4-only 目标直接走 IPv4 SOCKS5；IPv6-only 目标失败时不会错误发送给 IPv4。此规则可以访问 `appleid.apple.com` 等 IPv4-only 服务，同时让支持 IPv6 的站点保持 IPv6 优先。
+“双栈出口”对同时拥有 A/AAAA 的目标并发尝试对应 VPS IPv6 和 IPv4 SOCKS5，哪个连接先成功就使用哪个，避免某一地址族慢或不可达导致浏览器等待超时；IPv4-only 目标直接走 IPv4 SOCKS5，IPv6-only 目标不会错误发送给 IPv4。IPv4 和 IPv6 两条链路在每个连接建立时都会保持可用。
 
 ## 大量地址优化
 

@@ -67,7 +67,7 @@ func (o *relayFallbackTestOutbound) ListenPacket(context.Context, M.Socksaddr) (
 	return nil, errors.New("not implemented")
 }
 
-func TestRelayFallbackPrefersIPv6(t *testing.T) {
+func TestRelayFallbackRacesIPv6AndIPv4(t *testing.T) {
 	ipv6 := newRelayFallbackTestOutbound("ipv6", nil)
 	ipv4 := newRelayFallbackTestOutbound("ipv4", nil)
 	outbound := &relayFallbackOutbound{ipv6Outbound: ipv6, ipv4Outbound: ipv4, ipv6Timeout: time.Second}
@@ -80,7 +80,7 @@ func TestRelayFallbackPrefersIPv6(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = conn.Close()
-	if ipv6.calls != 1 || ipv4.calls != 0 {
+	if ipv6.calls != 1 || ipv4.calls != 1 {
 		t.Fatalf("calls: IPv6=%d IPv4=%d", ipv6.calls, ipv4.calls)
 	}
 }
