@@ -11,7 +11,7 @@ case "$(uname -m)" in
 esac
 
 base_url="${S_UI_PAIRED_BASE_URL:-https://raw.githubusercontent.com/925345845/s-ui/main/paired-release}"
-release_version="${S_UI_PAIRED_VERSION:-v1.5.13}"
+release_version="${S_UI_PAIRED_VERSION:-v1.5.14}"
 tmp_dir="$(mktemp -d /tmp/1s-ui-paired-online.XXXXXX)"
 cleanup() {
   rm -rf -- "$tmp_dir"

@@ -76,7 +76,7 @@ socks5://user:password@203.0.113.12:1080
 
 ## IPv6 优先回退
 
-“双栈出口”默认使用对应 VPS IPv6；目标只有 IPv4 或 IPv6 连接失败时才使用同一行的 IPv4 SOCKS5。IPv6-only 目标不会错误发送给 IPv4。Apple ID 登录域名 `appleid.apple.com`、`idmsa.apple.com`、`gsa.apple.com` 自动固定走对应 IPv4 SOCKS5，其余流量保持 IPv6 优先。
+启用“Apple ID 专用 IPv4，其余仅 IPv6”后，默认使用对应 VPS IPv6；只有 `appleid.apple.com`、`idmsa.apple.com`、`gsa.apple.com` 固定走同一行 IPv4 SOCKS5，其他 IPv4-only 网站不会回退 IPv4。未启用该选项时保持原有配对/双栈行为。
 
 ## 大量地址优化
 

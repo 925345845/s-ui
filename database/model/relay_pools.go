@@ -32,6 +32,7 @@ type RelayItem struct {
 	OutboundTag      string `json:"outbound_tag"`
 	IPv6OutboundTag  string `json:"ipv6_outbound_tag,omitempty"`
 	IPv4OutboundTag  string `json:"ipv4_outbound_tag,omitempty"`
+	AppleIDIPv4Only  bool   `json:"apple_id_ipv4_only,omitempty"`
 	ClientID         uint   `json:"client_id"`
 	ListenPort       int    `json:"listen_port"`
 	Username         string `json:"username"`

@@ -188,7 +188,7 @@ IPv4/IPv6 配对模式按上游 SOCKS5 列表顺序为每个入口分配一个 V
 
 双栈出口模式使用同样的 IPv4/IPv6 配对。目标默认使用对应 VPS IPv6；目标只有 A 记录或 IPv6 连接失败时，才使用同一行的 IPv4 SOCKS5；只有 AAAA 时使用对应 VPS IPv6。IPv4 连接不会使用 VPS 原生 IPv4。
 
-配对和双栈入口会将 Apple ID 登录域名 `appleid.apple.com`、`idmsa.apple.com`、`gsa.apple.com` 固定路由到对应 IPv4 SOCKS5，其余域名按上述双栈规则处理。
+配对和双栈入口提供“Apple ID 专用 IPv4，其余仅 IPv6”选项；开启后将 `appleid.apple.com`、`idmsa.apple.com`、`gsa.apple.com` 固定路由到对应 IPv4 SOCKS5，其余域名仅使用对应 VPS IPv6。
 
 IPv6、IPv4/IPv6 配对和双栈出口池会为每条 IPv6 生成一个稳定的手动轮转链接。访问某条链接只更换对应 IPv6，不会改变同批次其他地址、入口端口、账号、密码或 IPv4 SOCKS5 配对；新地址添加、DAD/公网检查和 sing-box 配置验证全部成功后才删除旧地址，失败自动保留原配置。大量地址场景会批量检查 DAD、过滤已由面板管理的地址并限制界面预览，避免地址数量增长拖慢面板。
 

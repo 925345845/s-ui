@@ -136,6 +136,7 @@ type RelayCreateRequest struct {
 	Transport          string          `json:"transport"`
 	DomainStrategy     string          `json:"domain_strategy"`
 	ShadowsocksMethod  string          `json:"shadowsocks_method"`
+	AppleIDIPv4Only    bool            `json:"apple_id_ipv4_only"`
 }
 
 type RelayData struct {
@@ -1004,6 +1005,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		}
 		items[i].OutboundTag = outbound.Tag
 		if relayModePairsUpstream(req.Mode) {
+			items[i].AppleIDIPv4Only = req.AppleIDIPv4Only
 			upstream := req.Upstreams[i]
 			ipv4Outbound := model.Outbound{
 				Type: "socks",
@@ -2393,11 +2395,25 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 			if _, ok := targets[item.InboundTag]; !ok {
 				continue
 			}
-			if item.IPv4OutboundTag != "" && (item.IPv6OutboundTag != "" || item.OutboundTag != "") {
+			if item.AppleIDIPv4Only && item.IPv4OutboundTag != "" && (item.IPv6OutboundTag != "" || item.OutboundTag != "") {
 				newRules = append(newRules, map[string]interface{}{
 					"inbound": []string{item.InboundTag}, "domain_suffix": relayAppleIDDomains,
 					"action": "route", "outbound": item.IPv4OutboundTag,
 				})
+			}
+			if item.AppleIDIPv4Only && item.IPv4OutboundTag != "" {
+				newRules = append(newRules,
+					map[string]interface{}{
+						"inbound": []string{item.InboundTag}, "action": "resolve", "strategy": relayDomainStrategyIPv6Only, "server": relayPairedDNSResolverTag,
+					},
+					map[string]interface{}{
+						"inbound": []string{item.InboundTag}, "ip_version": 4, "action": "reject",
+					},
+					map[string]interface{}{
+						"inbound": []string{item.InboundTag}, "action": "route", "outbound": item.OutboundTag,
+					},
+				)
+				continue
 			}
 			if item.IPv6OutboundTag != "" && item.IPv4OutboundTag != "" {
 				newRules = append(newRules,

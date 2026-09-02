@@ -664,6 +664,8 @@
     createPaired: "创建配对中转",
     dualStackMode: "双栈出口",
     dualStackDescription: "每行上游 SOCKS5 配一个 VPS IPv6。Apple ID 登录域名固定走对应 IPv4 SOCKS5，其余网站默认使用 VPS IPv6，IPv6 连接失败时才回退到对应 IPv4。",
+    appleIDIPv4Only: "Apple ID 专用 IPv4，其余仅 IPv6",
+    appleIDIPv4OnlyHint: "开启后仅 Apple ID 域名使用对应 IPv4 SOCKS5；其他 IPv4-only 网站不再回退 IPv4。",
     createDualStack: "创建双栈中转",
     pools: "中转批次",
     name: "批次名称",

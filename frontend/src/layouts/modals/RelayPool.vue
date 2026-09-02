@@ -199,6 +199,9 @@
               <v-col cols="12">
                 <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
               </v-col>
+              <v-col cols="12">
+                <v-switch v-model="form.apple_id_ipv4_only" color="primary" :label="$t('relay.appleIDIPv4Only')" :hint="$t('relay.appleIDIPv4OnlyHint')" persistent-hint hide-details="auto" />
+              </v-col>
             </v-row>
             <div class="relay-actions">
               <v-btn color="primary" prepend-icon="mdi-link-variant-plus" :loading="loading" :disabled="!canCreatePaired" @click="create('paired')">{{ $t('relay.createPaired') }}</v-btn>
@@ -242,6 +245,9 @@
               </v-col>
               <v-col cols="12">
                 <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
+              </v-col>
+              <v-col cols="12">
+                <v-switch v-model="form.apple_id_ipv4_only" color="primary" :label="$t('relay.appleIDIPv4Only')" :hint="$t('relay.appleIDIPv4OnlyHint')" persistent-hint hide-details="auto" />
               </v-col>
             </v-row>
             <div class="relay-actions">
@@ -381,7 +387,7 @@ const form = reactive({
   name: '', public_host: window.location.hostname, port_start: 30000, count: 10,
   username_prefix: 'relay', password_length: 12, interface: '', base_ipv6: '', prefix: 64,
   ipv6_text: '', upstream_text: '', add_system_addresses: true, protocol: 'socks',
-  transport: 'http', tls_id: 0, domain_strategy: 'ipv6_only', shadowsocks_method: '2022-blake3-aes-256-gcm',
+  transport: 'http', tls_id: 0, domain_strategy: 'ipv6_only', shadowsocks_method: '2022-blake3-aes-256-gcm', apple_id_ipv4_only: true,
 })
 
 const interfaceItems = computed(() => [...new Set(ipv6.value.map((item) => item.interface))].map((value) => ({ title: value, value })))
