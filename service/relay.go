@@ -2450,7 +2450,7 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 						"inbound": []string{item.InboundTag}, "action": "resolve", "strategy": relayDomainStrategyIPv6Only, "server": relayPairedDNSResolverTag,
 					},
 					map[string]interface{}{
-						"inbound": []string{item.InboundTag}, "ip_version": 4, "action": "reject",
+						"inbound": []string{item.InboundTag}, "ip_version": 4, "ip_cidr": []string{"0.0.0.0/0"}, "action": "reject",
 					},
 					map[string]interface{}{
 						"inbound": []string{item.InboundTag}, "action": "route", "outbound": ipv6Outbound,
