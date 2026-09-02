@@ -7,7 +7,7 @@
 以 root 身份执行一行在线安装命令：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/925345845/s-ui/main/paired-release/install-s-ui-paired-online.sh | S_UI_PAIRED_VERSION=v1.5.12 bash
+curl -fsSL https://raw.githubusercontent.com/925345845/s-ui/main/paired-release/install-s-ui-paired-online.sh | S_UI_PAIRED_VERSION=v1.5.13 bash
 ```
 
 脚本会自动识别 amd64/arm64、下载对应安装包并调用本地安装脚本。
