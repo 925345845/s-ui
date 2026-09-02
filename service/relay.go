@@ -567,6 +567,12 @@ func (s *ConfigService) repairRelayIPv6OutboundStrategies() error {
 	if err := db.Where("mode = ?", relayModeIPv6).Find(&pools).Error; err != nil {
 		return err
 	}
+	// Paired and dual-stack pools created before the Apple ID route was added
+	// need their generated IPv4 rules backfilled on the next startup.
+	var pairedPools []model.RelayPool
+	if err := db.Where("mode IN ?", []string{relayModePaired, relayModeDualStack}).Find(&pairedPools).Error; err != nil {
+		return err
+	}
 	return db.Transaction(func(tx *gorm.DB) error {
 		var ipv6OnlyItems, dualStackItems []model.RelayItem
 		for _, pool := range pools {
@@ -625,6 +631,13 @@ func (s *ConfigService) repairRelayIPv6OutboundStrategies() error {
 			if err := repairRelayIPv6ConnectionHost(tx, pool, items); err != nil {
 				return err
 			}
+		}
+		for _, pool := range pairedPools {
+			var items []model.RelayItem
+			if err := json.Unmarshal(pool.Items, &items); err != nil {
+				return fmt.Errorf("relay pool %q: invalid items: %w", pool.Name, err)
+			}
+			dualStackItems = append(dualStackItems, items...)
 		}
 		if len(dualStackItems) > 0 {
 			if err := updateRelayRouteRules(tx, dualStackItems, false, false); err != nil {
