@@ -52,6 +52,15 @@ const (
 	relayCoreSingBox              = model.CoreTypeSingBox
 )
 
+// Apple ID authentication uses a small, stable set of hosts. Keep these on
+// the paired IPv4 SOCKS5 path so the login flow does not mix addresses with
+// the VPS IPv6 used by the rest of the browser session.
+var relayAppleIDDomains = []string{
+	"appleid.apple.com",
+	"idmsa.apple.com",
+	"gsa.apple.com",
+}
+
 func relayModeUsesUpstream(mode string) bool {
 	return mode == relayModeUpstream || mode == relayModePaired || mode == relayModeDualStack
 }
@@ -2370,6 +2379,12 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 		for _, item := range items {
 			if _, ok := targets[item.InboundTag]; !ok {
 				continue
+			}
+			if item.IPv4OutboundTag != "" && (item.IPv6OutboundTag != "" || item.OutboundTag != "") {
+				newRules = append(newRules, map[string]interface{}{
+					"inbound": []string{item.InboundTag}, "domain_suffix": relayAppleIDDomains,
+					"action": "route", "outbound": item.IPv4OutboundTag,
+				})
 			}
 			if item.IPv6OutboundTag != "" && item.IPv4OutboundTag != "" {
 				newRules = append(newRules,

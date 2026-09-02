@@ -748,12 +748,16 @@ func TestUpdateRelayRouteRulesCreatesPairedAddressFamilyRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	rules := config["route"].(map[string]interface{})["rules"].([]interface{})
-	if len(rules) != 5 {
-		t.Fatalf("paired rule count = %d, want 5", len(rules))
+	if len(rules) != 6 {
+		t.Fatalf("paired rule count = %d, want 6", len(rules))
 	}
-	resolve := rules[0].(map[string]interface{})
-	ipv6 := rules[1].(map[string]interface{})
-	ipv4 := rules[2].(map[string]interface{})
+	apple := rules[0].(map[string]interface{})
+	resolve := rules[1].(map[string]interface{})
+	ipv6 := rules[2].(map[string]interface{})
+	ipv4 := rules[3].(map[string]interface{})
+	if apple["action"] != "route" || apple["outbound"] != item.IPv4OutboundTag || !relayRuleHasDomainSuffix(apple, "appleid.apple.com") {
+		t.Fatalf("Apple ID IPv4 route = %#v", apple)
+	}
 	if resolve["action"] != "resolve" || resolve["strategy"] != relayDomainStrategyPreferIPv6 || resolve["server"] != relayPairedDNSResolverTag {
 		t.Fatalf("resolve rule = %#v", resolve)
 	}
@@ -777,8 +781,8 @@ func TestUpdateRelayRouteRulesCreatesPairedAddressFamilyRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	rules = config["route"].(map[string]interface{})["rules"].([]interface{})
-	if len(rules) != 5 {
-		t.Fatalf("paired rule count after idempotent update = %d, want 5", len(rules))
+	if len(rules) != 6 {
+		t.Fatalf("paired rule count after idempotent update = %d, want 6", len(rules))
 	}
 	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, true); err != nil {
 		t.Fatal(err)
@@ -825,11 +829,15 @@ func TestUpdateRelayRouteRulesCreatesDualStackFallbackRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	rules := config["route"].(map[string]interface{})["rules"].([]interface{})
-	if len(rules) != 4 {
-		t.Fatalf("dual-stack rule count = %d, want 4", len(rules))
+	if len(rules) != 5 {
+		t.Fatalf("dual-stack rule count = %d, want 5", len(rules))
 	}
-	resolve := rules[0].(map[string]interface{})
-	route := rules[1].(map[string]interface{})
+	apple := rules[0].(map[string]interface{})
+	resolve := rules[1].(map[string]interface{})
+	route := rules[2].(map[string]interface{})
+	if apple["action"] != "route" || apple["outbound"] != item.IPv4OutboundTag || !relayRuleHasDomainSuffix(apple, "appleid.apple.com") {
+		t.Fatalf("Apple ID IPv4 route = %#v", apple)
+	}
 	if resolve["action"] != "resolve" || resolve["strategy"] != relayDomainStrategyPreferIPv6 || resolve["server"] != relayPairedDNSResolverTag {
 		t.Fatalf("dual-stack resolve rule = %#v", resolve)
 	}
@@ -849,8 +857,8 @@ func TestUpdateRelayRouteRulesCreatesDualStackFallbackRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	rules = config["route"].(map[string]interface{})["rules"].([]interface{})
-	if len(rules) != 4 {
-		t.Fatalf("dual-stack rule count after idempotent update = %d, want 4", len(rules))
+	if len(rules) != 5 {
+		t.Fatalf("dual-stack rule count after idempotent update = %d, want 5", len(rules))
 	}
 	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, true); err != nil {
 		t.Fatal(err)
@@ -1062,6 +1070,24 @@ func TestNormalizeRelayRotationInterval(t *testing.T) {
 
 func relayRuleHasCIDR(rule map[string]interface{}, expected string) bool {
 	switch values := rule["ip_cidr"].(type) {
+	case []interface{}:
+		for _, value := range values {
+			if fmt.Sprint(value) == expected {
+				return true
+			}
+		}
+	case []string:
+		for _, value := range values {
+			if value == expected {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func relayRuleHasDomainSuffix(rule map[string]interface{}, expected string) bool {
+	switch values := rule["domain_suffix"].(type) {
 	case []interface{}:
 		for _, value := range values {
 			if fmt.Sprint(value) == expected {
