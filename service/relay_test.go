@@ -836,11 +836,19 @@ func TestUpdateRelayRouteRulesAppleIDUsesIPv4OnlyForAppleAndIPv6DirectOtherwise(
 		t.Fatal(err)
 	}
 	rules := config["route"].(map[string]interface{})["rules"].([]interface{})
-	var sawAppleIPv4, sawIPv6Reject, sawIPv6Route bool
+	var sawAppleIPv4, sawCaptchaIPv4, sawIPv6Reject, sawIPv6Route bool
 	for _, raw := range rules {
 		rule := raw.(map[string]interface{})
 		if fmt.Sprint(rule["action"]) == "route" && rule["outbound"] == item.IPv4OutboundTag {
-			sawAppleIPv4 = true
+			domains, _ := rule["domain_suffix"].([]interface{})
+			for _, domain := range domains {
+				if domain == "appleid.apple.com" {
+					sawAppleIPv4 = true
+				}
+				if domain == "geo.captcha-delivery.com" {
+					sawCaptchaIPv4 = true
+				}
+			}
 		}
 		if fmt.Sprint(rule["action"]) == "reject" && relayRuleIPVersion(rule) == 4 {
 			sawIPv6Reject = true
@@ -849,7 +857,7 @@ func TestUpdateRelayRouteRulesAppleIDUsesIPv4OnlyForAppleAndIPv6DirectOtherwise(
 			sawIPv6Route = true
 		}
 	}
-	if !sawAppleIPv4 || !sawIPv6Reject || !sawIPv6Route {
+	if !sawAppleIPv4 || !sawCaptchaIPv4 || !sawIPv6Reject || !sawIPv6Route {
 		t.Fatalf("Apple-ID route rules missing expected split: %#v", rules)
 	}
 }

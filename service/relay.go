@@ -62,6 +62,16 @@ var relayAppleIDDomains = []string{
 	"gsa.apple.com",
 }
 
+// Vinted's DataDome challenge is served from a small set of hosts that may be
+// IPv4-only. Keep this exception narrow: Vinted itself and all other ordinary
+// traffic remain on the per-item IPv6 direct outbound.
+var relayVintedCaptchaDomains = []string{
+	"geo.captcha-delivery.com",
+	"captcha-delivery.com",
+	"js.datadome.co",
+	"api-js.datadome.co",
+}
+
 func relayModeUsesUpstream(mode string) bool {
 	return mode == relayModeUpstream || mode == relayModePaired || mode == relayModeDualStack
 }
@@ -2437,6 +2447,10 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 			if item.AppleIDIPv4Only && item.IPv4OutboundTag != "" && (item.IPv6OutboundTag != "" || item.OutboundTag != "") {
 				newRules = append(newRules, map[string]interface{}{
 					"inbound": []string{item.InboundTag}, "domain_suffix": relayAppleIDDomains,
+					"action": "route", "outbound": item.IPv4OutboundTag,
+				})
+				newRules = append(newRules, map[string]interface{}{
+					"inbound": []string{item.InboundTag}, "domain_suffix": relayVintedCaptchaDomains,
 					"action": "route", "outbound": item.IPv4OutboundTag,
 				})
 			}
