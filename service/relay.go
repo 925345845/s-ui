@@ -512,6 +512,9 @@ func buildRelayCapabilities(goos string, hasRoot, hasIPCommand bool) RelayCapabi
 }
 
 func (s *ConfigService) RestoreRelayIPv6() error {
+	relayMu.Lock()
+	defer relayMu.Unlock()
+
 	if err := database.GetDB().Model(&model.RelayPool{}).
 		Where("rotation_enabled = ? OR next_rotate_at <> 0", true).
 		Updates(map[string]interface{}{"rotation_enabled": false, "next_rotate_at": 0}).Error; err != nil {
@@ -559,13 +562,59 @@ func (s *ConfigService) RestoreRelayIPv6() error {
 		}
 	}
 	if err := waitRelayAddressesReady(restored); err != nil {
-		logger.Warning("batch relay IPv6 readiness check failed, checking addresses individually: ", err)
-		for _, item := range restored {
-			if err := waitRelayAddressReady(item.Interface, item.IPv6); err != nil {
-				logger.Warningf("restore relay IPv6 %s readiness: %v", item.IPv6, err)
-				_ = deleteRelayAddress(item.Interface, item.IPv6, item.Prefix)
-			}
+		// Do not remove an address here.  A temporary DAD/routing failure after
+		// a VPS restart must not erase the address from the persisted relay pool.
+		// The periodic health job will retry once the interface is ready.
+		logger.Warning("relay IPv6 readiness check is not complete; keeping persisted addresses for retry: ", err)
+	}
+	return nil
+}
+
+// EnsureRelayIPv6Addresses re-adds IPv6 addresses owned by relay items when a
+// network restart or provider reboot removed them from the interface. It is
+// intentionally non-destructive: transient network/DAD failures must not
+// delete the addresses from the database.
+func (s *ConfigService) EnsureRelayIPv6Addresses() error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	relayMu.Lock()
+	defer relayMu.Unlock()
+
+	pools, err := s.GetRelayPools()
+	if err != nil {
+		return err
+	}
+	detected, err := discoverRelayIPv6()
+	if err != nil {
+		return err
+	}
+	existing := make(map[string]bool, len(detected))
+	for _, address := range detected {
+		existing[address.Address] = true
+	}
+	restored := make([]model.RelayItem, 0)
+	for _, pool := range pools {
+		var items []model.RelayItem
+		if err := json.Unmarshal(pool.Items, &items); err != nil {
+			return fmt.Errorf("relay pool %q: invalid items: %w", pool.Name, err)
 		}
+		for _, item := range items {
+			if !item.AddedByUs || item.IPv6 == "" || item.Interface == "" {
+				continue
+			}
+			if !existing[item.IPv6] {
+				if err := addRelayAddress(item.Interface, item.IPv6, item.Prefix); err != nil {
+					logger.Warningf("ensure relay IPv6 %s: %v", item.IPv6, err)
+					continue
+				}
+				existing[item.IPv6] = true
+			}
+			restored = append(restored, item)
+		}
+	}
+	if err := waitRelayAddressesReady(restored); err != nil {
+		logger.Warning("relay IPv6 addresses are pending readiness; will retry automatically: ", err)
 	}
 	return nil
 }

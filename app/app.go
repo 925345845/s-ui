@@ -89,15 +89,19 @@ func (a *APP) Start() error {
 		return err
 	}
 
+	if err := a.configService.RestoreRelayIPv6(); err != nil {
+		logger.Warning("restore relay IPv6 addresses failed: ", err)
+	}
+
 	// Low-memory / safe install path: keep panel UI up without loading cores.
+	// IPv6 restoration above is independent of the proxy cores and must still
+	// run, otherwise a normal VPS reboot would leave persisted relay addresses
+	// missing until the periodic repair job executes.
 	if config.IsSkipCore() {
 		logger.Warning("SUI_SKIP_CORE is enabled: sing-box/Xray will not auto-start. Start cores from the panel when ready.")
 		return nil
 	}
 
-	if err := a.configService.RestoreRelayIPv6(); err != nil {
-		logger.Warning("restore relay IPv6 addresses failed: ", err)
-	}
 	err = a.configService.StartCore()
 	if err != nil {
 		logger.Error(err)

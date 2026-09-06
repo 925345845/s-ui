@@ -46,6 +46,8 @@ func (c *CronJob) Start(loc *time.Location, trafficAge int, statsBucketSeconds i
 		}
 		// Start core if it is not running
 		c.cron.AddJob("@every 5s", NewCheckCoreJob())
+		// Restore persisted relay IPv6 addresses removed by network/VPS restarts.
+		c.cron.AddJob("@every 1m", NewRestoreRelayIPv6Job())
 		// database WAL checkpoint
 		c.cron.AddJob("@every 10m", NewWALCheckpointJob())
 	}()
