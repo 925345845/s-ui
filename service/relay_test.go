@@ -342,7 +342,7 @@ func TestCreateRelayRejectsCountAboveMaximum(t *testing.T) {
 		PortStart:      30000,
 		PasswordLength: 12,
 	}, "test", "203.0.113.10")
-	if err == nil || !strings.Contains(err.Error(), "cannot exceed 100") {
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("cannot exceed %d", maxRelayItems)) {
 		t.Fatalf("unexpected relay count validation error: %v", err)
 	}
 }

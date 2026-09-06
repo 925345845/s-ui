@@ -675,7 +675,7 @@
     preferIPv6: "IPv6 优先（双栈）",
     portStart: "起始端口",
     count: "数量",
-    countRange: "数量必须是 1 到 100 之间的整数",
+    countRange: "数量必须是 1 到 500 之间的整数",
     usernamePrefix: "账号前缀",
     passwordLength: "密码长度",
     interface: "网卡",

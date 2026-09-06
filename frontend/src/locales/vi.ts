@@ -626,7 +626,7 @@
     preferIPv6: "Ưu tiên IPv6 (dual stack)",
     portStart: "Cổng bắt đầu",
     count: "Số lượng",
-    countRange: "Số lượng phải là số nguyên từ 1 đến 100",
+    countRange: "Số lượng phải là số nguyên từ 1 đến 500",
     usernamePrefix: "Tiền tố tên người dùng",
     passwordLength: "Độ dài mật khẩu",
     interface: "Giao diện",

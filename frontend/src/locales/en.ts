@@ -673,7 +673,7 @@
     preferIPv6: "Prefer IPv6 (dual stack)",
     portStart: "Starting port",
     count: "Count",
-    countRange: "Count must be an integer from 1 to 100",
+    countRange: "Count must be an integer from 1 to 500",
     usernamePrefix: "Username prefix",
     passwordLength: "Password length",
     interface: "Interface",

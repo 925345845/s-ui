@@ -626,7 +626,7 @@
     preferIPv6: "اولویت IPv6 (دوگانه)",
     portStart: "پورت شروع",
     count: "تعداد",
-    countRange: "تعداد باید عددی صحیح بین ۱ تا ۱۰۰ باشد",
+    countRange: "تعداد باید عددی صحیح بین ۱ تا ۵۰۰ باشد",
     usernamePrefix: "پیشوند نام کاربری",
     passwordLength: "طول رمز عبور",
     interface: "رابط شبکه",

@@ -626,7 +626,7 @@
     preferIPv6: "IPv6 優先（雙棧）",
     portStart: "起始端口",
     count: "數量",
-    countRange: "數量必須是 1 到 100 之間的整數",
+    countRange: "數量必須是 1 到 500 之間的整數",
     usernamePrefix: "帳號前綴",
     passwordLength: "密碼長度",
     interface: "網卡",

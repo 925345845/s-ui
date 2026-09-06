@@ -49,8 +49,10 @@ const (
 	relayRotationMinMinutes       = 5
 	relayRotationMaxMinutes       = 7 * 24 * 60
 	relayRotationDefaultMinutes   = 60
-	maxRelayItems                 = 100
-	relayCoreSingBox              = model.CoreTypeSingBox
+	// A relay pool may contain up to 500 upstreams. Keep this bounded because
+	// each item creates an inbound, outbound and route entry in sing-box.
+	maxRelayItems    = 500
+	relayCoreSingBox = model.CoreTypeSingBox
 )
 
 // Apple ID authentication uses a small, stable set of hosts. Keep these on

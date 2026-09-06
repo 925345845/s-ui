@@ -30,7 +30,7 @@
                   <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
                 </v-col>
                 <v-col cols="6" sm="3" md="1">
-                  <v-text-field v-model.number="form.count" type="number" min="1" max="100" :label="$t('relay.count')" :error-messages="relayCountValid ? [] : [$t('relay.countRange')]" hide-details="auto" />
+                  <v-text-field v-model.number="form.count" type="number" min="1" max="500" :label="$t('relay.count')" :error-messages="relayCountValid ? [] : [$t('relay.countRange')]" hide-details="auto" />
                 </v-col>
                 <v-col cols="6" sm="3" md="2">
                   <v-text-field v-model.number="form.port_start" type="number" min="1" max="65535" :label="$t('relay.portStart')" hide-details />
@@ -397,14 +397,14 @@ const visiblePools = computed(() => {
   const start = (poolPage.value - 1) * poolPageSize
   return pools.value.slice(start, start + poolPageSize)
 })
-const relayCountValid = computed(() => Number.isInteger(form.count) && form.count >= 1 && form.count <= 100)
+const relayCountValid = computed(() => Number.isInteger(form.count) && form.count >= 1 && form.count <= 500)
 const canCreateIPv6 = computed(() => relayCountValid.value && (ipv6.value.length > 0 || form.base_ipv6.trim().length > 0))
 const canQuickCreateIPv6 = computed(() => canCreateIPv6.value && capabilities.value?.can_add_system_ipv6 === true)
 const pairedUpstreamCount = computed(() => form.upstream_text.split(/\r?\n/).filter((line) => {
   const value = line.trim()
   return value.length > 0 && !value.startsWith('#')
 }).length)
-const canCreatePaired = computed(() => pairedUpstreamCount.value >= 1 && pairedUpstreamCount.value <= 100
+const canCreatePaired = computed(() => pairedUpstreamCount.value >= 1 && pairedUpstreamCount.value <= 500
   && (ipv6.value.length > 0 || form.base_ipv6.trim().length > 0))
 const capabilityMessage = computed(() => {
   const capability = capabilities.value
