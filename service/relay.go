@@ -700,6 +700,57 @@ func (s *ConfigService) repairRelayIPv6OutboundStrategies() error {
 			if err := json.Unmarshal(pool.Items, &items); err != nil {
 				return fmt.Errorf("relay pool %q: invalid items: %w", pool.Name, err)
 			}
+			// Rebuild every paired IPv4 SOCKS5 outbound from the upstream
+			// credentials persisted on its own RelayItem.  This repairs pools
+			// created by older versions where the runtime configuration could
+			// retain one shared upstream even though the items were different.
+			usedIPv4Tags := make(map[string]bool, len(items))
+			itemsChanged := false
+			for index := range items {
+				item := &items[index]
+				if item.IPv4OutboundTag == "" || item.UpstreamServer == "" || item.UpstreamPort < 1 {
+					continue
+				}
+				var ipv4Outbound model.Outbound
+				if err := tx.Where("tag = ?", item.IPv4OutboundTag).First(&ipv4Outbound).Error; err != nil {
+					if database.IsNotFound(err) {
+						logger.Warningf("relay pool %q item %d IPv4 outbound %q was not found", pool.Name, index+1, item.IPv4OutboundTag)
+						continue
+					}
+					return err
+				}
+				if ipv4Outbound.Type != "socks" {
+					return fmt.Errorf("relay pool %q item %d IPv4 outbound %q is %s, expected socks", pool.Name, index+1, item.IPv4OutboundTag, ipv4Outbound.Type)
+				}
+			desired := mustJSON(map[string]interface{}{
+					"server": item.UpstreamServer, "server_port": item.UpstreamPort,
+					"version": "5", "username": item.UpstreamUsername, "password": item.UpstreamPassword,
+					"domain_strategy": relayDomainStrategyIPv4Only,
+				})
+				// A buggy/very old pool may have several items pointing at one
+				// IPv4 outbound tag. Never overwrite that shared outbound: clone
+				// it for this item and persist the new tag in the pool mapping.
+				if usedIPv4Tags[item.IPv4OutboundTag] {
+					clone := model.Outbound{Type: "socks", Tag: fmt.Sprintf("relay-ipv4-%s", common.Random(7)), Options: desired}
+					if err := tx.Create(&clone).Error; err != nil {
+						return err
+					}
+					item.IPv4OutboundTag = clone.Tag
+					ipv4Outbound = clone
+					itemsChanged = true
+				}
+				usedIPv4Tags[item.IPv4OutboundTag] = true
+				if string(ipv4Outbound.Options) != string(desired) {
+					if err := tx.Model(&model.Outbound{}).Where("id = ?", ipv4Outbound.Id).Update("options", desired).Error; err != nil {
+						return err
+					}
+				}
+			}
+			if itemsChanged {
+				if err := tx.Model(&model.RelayPool{}).Where("id = ?", pool.Id).Update("items", mustJSON(items)).Error; err != nil {
+					return err
+				}
+			}
 			// Older paired/dual-stack pools may have been created before the
 			// Apple-ID-only switch was introduced.  Keep their generated IPv6
 			// direct outbounds IPv6-only whenever the item is marked for the
@@ -950,6 +1001,20 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	if err != nil {
 		return nil, err
 	}
+	// Pairing must be based on the prepared item, not on a second lookup into
+	// the request slice.  This keeps the IPv6/upstream relationship stable
+	// even when a remote agent or an older frontend sends an empty/rewritten
+	// `upstreams` array together with `upstream_text`.
+	if relayModePairsUpstream(req.Mode) {
+		if len(items) != len(req.Upstreams) {
+			return nil, common.NewErrorf("relay pairing requires exactly one upstream for each IPv6 item (got %d items, %d upstreams)", len(items), len(req.Upstreams))
+		}
+		for i := range items {
+			if items[i].UpstreamServer == "" || items[i].UpstreamPort < 1 {
+				return nil, common.NewErrorf("relay pairing item %d has no upstream SOCKS5 endpoint", i+1)
+			}
+		}
+	}
 	added := make([]model.RelayItem, 0)
 	cleanup := true
 	defer func() {
@@ -1080,16 +1145,11 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 			Tag:  fmt.Sprintf("relay-out-%s", common.Random(7)),
 		}
 		if req.Mode == relayModeUpstream {
-			upstream := req.Upstreams[i]
 			outbound.Type = "socks"
 			outbound.Options, err = json.Marshal(map[string]interface{}{
-				"server": upstream.Server, "server_port": upstream.Port,
-				"version": "5", "username": upstream.Username, "password": upstream.Password,
+				"server": items[i].UpstreamServer, "server_port": items[i].UpstreamPort,
+				"version": "5", "username": items[i].UpstreamUsername, "password": items[i].UpstreamPassword,
 			})
-			items[i].UpstreamServer = upstream.Server
-			items[i].UpstreamPort = upstream.Port
-			items[i].UpstreamUsername = upstream.Username
-			items[i].UpstreamPassword = upstream.Password
 		} else {
 			outbound.Options, err = json.Marshal(relayDirectOutboundOptions(req, items[i]))
 		}
@@ -1102,13 +1162,12 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		items[i].OutboundTag = outbound.Tag
 		if relayModePairsUpstream(req.Mode) {
 			items[i].AppleIDIPv4Only = req.AppleIDIPv4Only
-			upstream := req.Upstreams[i]
 			ipv4Outbound := model.Outbound{
 				Type: "socks",
 				Tag:  fmt.Sprintf("relay-ipv4-%s", common.Random(7)),
 				Options: mustJSON(map[string]interface{}{
-					"server": upstream.Server, "server_port": upstream.Port,
-					"version": "5", "username": upstream.Username, "password": upstream.Password,
+					"server": items[i].UpstreamServer, "server_port": items[i].UpstreamPort,
+					"version": "5", "username": items[i].UpstreamUsername, "password": items[i].UpstreamPassword,
 					"domain_strategy": relayDomainStrategyIPv4Only,
 				}),
 			}
