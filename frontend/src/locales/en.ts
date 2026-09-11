@@ -687,7 +687,7 @@
     noIPv6: "No usable public IPv6 address detected",
     upstreamList: "Upstream list",
     upstreamListHint: "One host:port or host:port:username:password per line, or socks5://username:password{'@'}host:port",
-    pairedUpstreamHint: "Paste the IPWO API response. Each host:port or authenticated entry is paired with one VPS IPv6.",
+    pairedUpstreamHint: "Common SOCKS formats are supported: host:port, host:port:user:pass, user:pass@host:port, socks5://..., comma/pipe-separated fields, or JSON. Each entry pairs with one VPS IPv6.",
     pairedIPv6Hint: "Optional, one address per line in pairing order. Missing addresses are generated from the base IPv6 prefix.",
     create: "Create relay",
     noPools: "No relay pools",

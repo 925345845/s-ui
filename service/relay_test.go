@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,59 @@ func TestParseRelayUpstreamLine(t *testing.T) {
 	for _, key := range []string{"mixed", "socks", "http"} {
 		if mixed[key] == nil {
 			t.Fatalf("mixed client config does not contain %q", key)
+		}
+	}
+}
+
+func TestParseRelayUpstreamCommonProviderFormats(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want RelayUpstream
+	}{
+		{name: "credentials before endpoint", line: "user:pass@proxy.example:1080", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
+		{name: "credentials after endpoint", line: "proxy.example:1080@user:pass", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
+		{name: "socks5 hostname resolution URL", line: "socks5h://user:p%40ss@proxy.example:1080", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "p@ss"}},
+		{name: "comma host first", line: "proxy.example,1080,user,pass", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
+		{name: "pipe credentials first", line: "user|pass|proxy.example|1080", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
+		{name: "space separated", line: "proxy.example 1080 user pass", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseRelayUpstreamLine(test.line)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("got %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestParseRelayUpstreamsJSONFormats(t *testing.T) {
+	text := `{"Data":[{"IP":"203.0.113.10","PORT":"1080","USERNAME":"user-1","PASSWORD":"pass-1"},{"host":"proxy.example","server_port":1081,"user":"user-2","pass":"pass-2"}]}`
+	got, err := parseRelayUpstreams(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []RelayUpstream{
+		{Server: "203.0.113.10", Port: 1080, Username: "user-1", Password: "pass-1"},
+		{Server: "proxy.example", Port: 1081, Username: "user-2", Password: "pass-2"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestParseRelayUpstreamRejectsUnsupportedFormats(t *testing.T) {
+	for _, line := range []string{
+		"http://user:pass@proxy.example:8080",
+		"proxy.example:not-a-port:user:pass",
+		"proxy.example:1080:user",
+	} {
+		if _, err := parseRelayUpstreamLine(line); err == nil {
+			t.Fatalf("expected %q to be rejected", line)
 		}
 	}
 }

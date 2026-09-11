@@ -49,13 +49,25 @@ git apply 1s-ui-ipv4-ipv6-paired.patch
 
 1. 打开“入站管理 -> 一键中转 -> 双栈出口”。如果只需要按地址族固定分流，使用“IPv4/IPv6 配对”。
 2. 选择 VPS 的公网 IPv6 网卡，必要时填写已路由 IPv6 前缀。
-3. 将 IPWO 接口返回的文本粘贴到“上游列表”。支持：
+3. 将代理供应商返回的内容粘贴到“上游列表”。保留原有 IPWO 文本格式，同时支持常见 SOCKS5 格式：
 
 ```text
 203.0.113.10:1080
 203.0.113.11:1080:user:password
 socks5://user:password@203.0.113.12:1080
+user:password@203.0.113.13:1080
+203.0.113.14:1080@user:password
+203.0.113.15,1080,user,password
+user|password|203.0.113.16|1080
 ```
+
+也可以粘贴常见 JSON 数组或带 `data`/`proxies`/`list`/`items` 外层字段的对象，例如：
+
+```json
+[{"ip":"203.0.113.10","port":1080,"username":"user","password":"password"}]
+```
+
+字段名支持 `ip`/`host`/`server`/`address`、`port`/`server_port`、`username`/`user`/`login` 和 `password`/`pass`/`pwd`（不区分大小写）。这里只能接收 SOCKS 类代理；HTTP/HTTPS 代理需要先转换为 SOCKS5。
 
 4. 上游列表有多少行，就会按顺序生成多少个 IPv6 和入口端口。
 5. 创建成功后复制面板导出的 `VPS地址:端口:账号:密码`。

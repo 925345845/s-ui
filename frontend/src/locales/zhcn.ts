@@ -689,7 +689,7 @@
     noIPv6: "未检测到可用公网 IPv6",
     upstreamList: "上游列表",
     upstreamListHint: "每行 host:port、host:port:username:password，或 socks5://username:password{'@'}host:port",
-    pairedUpstreamHint: "粘贴 IPWO 接口返回内容；每行 host:port 或带账号密码格式，每一行对应一个 VPS IPv6",
+    pairedUpstreamHint: "支持常见 SOCKS 格式：host:port、host:port:user:pass、user:pass@host:port、socks5://...、逗号/竖线分隔或 JSON；每条对应一个 VPS IPv6",
     pairedIPv6Hint: "可选，每行一个并按顺序配对；不足的地址会从基准 IPv6 前缀随机生成",
     create: "创建中转",
     noPools: "暂无中转批次",

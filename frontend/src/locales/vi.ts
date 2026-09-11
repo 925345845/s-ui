@@ -640,7 +640,7 @@
     noIPv6: "Không tìm thấy IPv6 công khai khả dụng",
     upstreamList: "Danh sách upstream",
     upstreamListHint: "Mỗi dòng host:port, host:port:username:password hoặc socks5://username:password{'@'}host:port",
-    pairedUpstreamHint: "Dán nội dung API IPWO; mỗi dòng host:port hoặc mục có xác thực tương ứng với một IPv6 VPS.",
+    pairedUpstreamHint: "Hỗ trợ các định dạng SOCKS phổ biến: host:port, host:port:user:pass, user:pass@host:port, socks5://..., trường phân tách bằng dấu phẩy/dấu gạch đứng hoặc JSON. Mỗi mục ghép với một IPv6 VPS.",
     pairedIPv6Hint: "Tùy chọn, mỗi dòng một địa chỉ theo thứ tự ghép; địa chỉ thiếu sẽ được tạo từ tiền tố IPv6 cơ sở.",
     create: "Tạo chuyển tiếp",
     noPools: "Chưa có nhóm chuyển tiếp",

@@ -2685,6 +2685,24 @@ func validateUpstream(upstream RelayUpstream) error {
 }
 
 func parseRelayUpstreams(text string) ([]RelayUpstream, error) {
+	text = strings.TrimSpace(strings.TrimPrefix(text, "\ufeff"))
+	if text == "" {
+		return nil, common.NewError("no valid SOCKS5 entries found")
+	}
+	// A number of proxy APIs return JSON instead of one proxy per line. Try it
+	// first, but fall back to line parsing so bracketed IPv6 remains valid.
+	if strings.HasPrefix(text, "{") || strings.HasPrefix(text, "[") {
+		var raw interface{}
+		if err := json.Unmarshal([]byte(text), &raw); err == nil {
+			result, err := parseRelayUpstreamJSON(raw)
+			if err != nil {
+				return nil, err
+			}
+			if len(result) > 0 {
+				return result, nil
+			}
+		}
+	}
 	var result []RelayUpstream
 	for lineNo, raw := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
 		line := strings.TrimSpace(raw)
@@ -2704,18 +2722,47 @@ func parseRelayUpstreams(text string) ([]RelayUpstream, error) {
 }
 
 func parseRelayUpstreamLine(line string) (RelayUpstream, error) {
-	if strings.HasPrefix(strings.ToLower(line), "socks5://") || strings.HasPrefix(strings.ToLower(line), "socks://") {
+	line = strings.TrimSpace(strings.Trim(line, "\"'"))
+	if line == "" {
+		return RelayUpstream{}, common.NewError("empty SOCKS5 entry")
+	}
+	if strings.Contains(line, "://") {
 		parsed, err := url.Parse(line)
 		if err != nil || parsed.Hostname() == "" || parsed.Port() == "" {
-			return RelayUpstream{}, common.NewError("invalid SOCKS5 URL")
+			return RelayUpstream{}, common.NewError("invalid proxy URL")
 		}
-		port, _ := strconv.Atoi(parsed.Port())
+		if !isSupportedRelayProxyScheme(parsed.Scheme) {
+			return RelayUpstream{}, common.NewErrorf("unsupported proxy scheme %q; use SOCKS5", parsed.Scheme)
+		}
+		port, err := strconv.Atoi(parsed.Port())
+		if err != nil {
+			return RelayUpstream{}, common.NewError("invalid SOCKS5 port")
+		}
 		username, password := "", ""
 		if parsed.User != nil {
 			username = parsed.User.Username()
 			password, _ = parsed.User.Password()
 		}
-		return RelayUpstream{Server: parsed.Hostname(), Port: port, Username: username, Password: password}, validateUpstream(RelayUpstream{Server: parsed.Hostname(), Port: port, Username: username, Password: password})
+		upstream := RelayUpstream{Server: parsed.Hostname(), Port: port, Username: username, Password: password}
+		return upstream, validateUpstream(upstream)
+	}
+	// Common non-URL authenticated forms: user:pass@host:port and
+	// host:port@user:pass.
+	if at := strings.LastIndex(line, "@"); at > 0 {
+		left, right := line[:at], line[at+1:]
+		if upstream, ok := parseRelayEndpointWithCredentials(right, left); ok {
+			return upstream, validateUpstream(upstream)
+		}
+		if upstream, ok := parseRelayEndpointWithCredentials(left, right); ok {
+			return upstream, validateUpstream(upstream)
+		}
+	}
+	// Comma, pipe, semicolon and whitespace separated lists are common in
+	// provider dashboards. The numeric port identifies which side is host.
+	if fields := splitRelayFields(line); len(fields) == 4 {
+		if upstream, ok := relayFieldsToUpstream(fields); ok {
+			return upstream, validateUpstream(upstream)
+		}
 	}
 	if server, portText, err := net.SplitHostPort(line); err == nil {
 		port, err := strconv.Atoi(portText)
@@ -2726,8 +2773,15 @@ func parseRelayUpstreamLine(line string) (RelayUpstream, error) {
 		return upstream, validateUpstream(upstream)
 	}
 	parts := strings.Split(line, ":")
+	if len(parts) == 4 {
+		// Some providers return username:password:host:port.
+		if port, err := strconv.Atoi(parts[3]); err == nil {
+			upstream := RelayUpstream{Server: strings.Trim(parts[2], "[]"), Port: port, Username: parts[0], Password: parts[1]}
+			return upstream, validateUpstream(upstream)
+		}
+	}
 	if len(parts) < 4 {
-		return RelayUpstream{}, common.NewError("expected host:port or host:port:username:password")
+		return RelayUpstream{}, common.NewError("expected host:port, host:port:user:pass, user:pass@host:port, or a SOCKS5 URL")
 	}
 	password := parts[len(parts)-1]
 	username := parts[len(parts)-2]
@@ -2739,6 +2793,141 @@ func parseRelayUpstreamLine(line string) (RelayUpstream, error) {
 	server = strings.Trim(server, "[]")
 	upstream := RelayUpstream{Server: server, Port: port, Username: username, Password: password}
 	return upstream, validateUpstream(upstream)
+}
+
+func isSupportedRelayProxyScheme(scheme string) bool {
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case "socks", "socks5", "socks5h", "socks4", "socks4a":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseRelayEndpointWithCredentials(endpoint, credentials string) (RelayUpstream, bool) {
+	host, portText, err := net.SplitHostPort(strings.TrimSpace(endpoint))
+	if err != nil {
+		return RelayUpstream{}, false
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return RelayUpstream{}, false
+	}
+	parts := strings.SplitN(credentials, ":", 2)
+	if len(parts) != 2 || parts[0] == "" {
+		return RelayUpstream{}, false
+	}
+	return RelayUpstream{Server: strings.Trim(host, "[]"), Port: port, Username: parts[0], Password: parts[1]}, true
+}
+
+func splitRelayFields(line string) []string {
+	return strings.FieldsFunc(line, func(r rune) bool {
+		return r == ',' || r == '|' || r == ';' || r == '\t' || r == ' '
+	})
+}
+
+func relayFieldsToUpstream(fields []string) (RelayUpstream, bool) {
+	if len(fields) != 4 {
+		return RelayUpstream{}, false
+	}
+	if port, err := strconv.Atoi(fields[1]); err == nil {
+		return RelayUpstream{Server: strings.Trim(fields[0], "[]"), Port: port, Username: fields[2], Password: fields[3]}, true
+	}
+	if port, err := strconv.Atoi(fields[3]); err == nil {
+		return RelayUpstream{Server: strings.Trim(fields[2], "[]"), Port: port, Username: fields[0], Password: fields[1]}, true
+	}
+	return RelayUpstream{}, false
+}
+
+func parseRelayUpstreamJSON(raw interface{}) ([]RelayUpstream, error) {
+	var result []RelayUpstream
+	var walk func(interface{}) error
+	walk = func(value interface{}) error {
+		switch item := value.(type) {
+		case string:
+			upstream, err := parseRelayUpstreamLine(item)
+			if err != nil {
+				return err
+			}
+			result = append(result, upstream)
+		case []interface{}:
+			for _, child := range item {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		case map[string]interface{}:
+			fields := relayJSONFields(item)
+			if host, ok := relayJSONString(fields, "host", "server", "ip", "address"); ok {
+				port, ok := relayJSONPort(fields, "port", "server_port")
+				if !ok {
+					return common.NewErrorf("JSON proxy %q has no valid port", host)
+				}
+				user, _ := relayJSONString(fields, "username", "user", "login")
+				pass, _ := relayJSONString(fields, "password", "pass", "pwd")
+				result = append(result, RelayUpstream{Server: host, Port: port, Username: user, Password: pass})
+				return nil
+			}
+			for _, key := range []string{"data", "proxies", "proxy", "list", "result", "items"} {
+				if child, exists := fields[key]; exists {
+					if err := walk(child); err != nil {
+						return err
+					}
+					return nil
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(raw); err != nil {
+		return nil, fmt.Errorf("invalid proxy JSON: %w", err)
+	}
+	if len(result) == 0 {
+		return nil, common.NewError("proxy JSON contains no supported entries")
+	}
+	for index, upstream := range result {
+		if err := validateUpstream(upstream); err != nil {
+			return nil, fmt.Errorf("JSON proxy %d: %w", index+1, err)
+		}
+	}
+	return result, nil
+}
+
+func relayJSONFields(item map[string]interface{}) map[string]interface{} {
+	fields := make(map[string]interface{}, len(item))
+	for key, value := range item {
+		fields[strings.ToLower(strings.TrimSpace(key))] = value
+	}
+	return fields
+}
+
+func relayJSONString(item map[string]interface{}, keys ...string) (string, bool) {
+	for _, key := range keys {
+		if value, ok := item[key]; ok {
+			if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+				return strings.TrimSpace(text), true
+			}
+		}
+	}
+	return "", false
+}
+
+func relayJSONPort(item map[string]interface{}, keys ...string) (int, bool) {
+	for _, key := range keys {
+		if value, ok := item[key]; ok {
+			switch typed := value.(type) {
+			case float64:
+				return int(typed), typed == float64(int(typed))
+			case json.Number:
+				port, err := strconv.Atoi(typed.String())
+				return port, err == nil
+			case string:
+				port, err := strconv.Atoi(strings.TrimSpace(typed))
+				return port, err == nil
+			}
+		}
+	}
+	return 0, false
 }
 
 func mustJSON(value interface{}) json.RawMessage {

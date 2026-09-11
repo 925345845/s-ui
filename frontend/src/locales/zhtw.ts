@@ -640,7 +640,7 @@
     noIPv6: "未檢測到可用公網 IPv6",
     upstreamList: "上游列表",
     upstreamListHint: "每行 host:port、host:port:username:password，或 socks5://username:password{'@'}host:port",
-    pairedUpstreamHint: "貼上 IPWO 介面返回內容；每行 host:port 或帶帳號密碼格式，每行對應一個 VPS IPv6",
+    pairedUpstreamHint: "支援常見 SOCKS 格式：host:port、host:port:user:pass、user:pass@host:port、socks5://...、逗號/豎線分隔或 JSON；每條對應一個 VPS IPv6",
     pairedIPv6Hint: "可選，每行一個並依序配對；不足的地址會從基準 IPv6 前綴隨機生成",
     create: "創建中轉",
     noPools: "暫無中轉批次",

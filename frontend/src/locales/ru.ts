@@ -641,7 +641,7 @@
     noIPv6: "Подходящий публичный IPv6 не найден",
     upstreamList: "Список вышестоящих прокси",
     upstreamListHint: "Одна строка host:port, host:port:username:password или socks5://username:password{'@'}host:port",
-    pairedUpstreamHint: "Вставьте ответ API IPWO; каждая строка host:port или запись с авторизацией связывается с одним IPv6 VPS.",
+    pairedUpstreamHint: "Поддерживаются распространённые форматы SOCKS: host:port, host:port:user:pass, user:pass@host:port, socks5://..., поля через запятую/вертикальную черту или JSON. Каждая запись связывается с одним IPv6 VPS.",
     pairedIPv6Hint: "Необязательно, по одному адресу в порядке связывания; недостающие адреса создаются из базового префикса IPv6.",
     create: "Создать ретранслятор",
     noPools: "Пулов ретрансляции нет",

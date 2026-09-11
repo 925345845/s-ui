@@ -640,7 +640,7 @@
     noIPv6: "IPv6 عمومی قابل استفاده‌ای شناسایی نشد",
     upstreamList: "فهرست بالادستی",
     upstreamListHint: "هر خط host:port، host:port:username:password یا socks5://username:password{'@'}host:port",
-    pairedUpstreamHint: "پاسخ API آی‌پی‌دبلیو را جای‌گذاری کنید؛ هر خط با یک IPv6 از VPS جفت می‌شود.",
+    pairedUpstreamHint: "قالب‌های رایج SOCKS پشتیبانی می‌شوند: host:port، host:port:user:pass، user:pass@host:port، socks5://...، فیلدهای جداشده با ویرگول/خط عمودی یا JSON؛ هر مورد با یک IPv6 از VPS جفت می‌شود.",
     pairedIPv6Hint: "اختیاری؛ هر خط یک آدرس به ترتیب جفت‌سازی. آدرس‌های کمبود از پیشوند پایه IPv6 ساخته می‌شوند.",
     create: "ایجاد رله",
     noPools: "استخر رله‌ای وجود ندارد",
