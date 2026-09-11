@@ -9,7 +9,7 @@ on:
       tag:
         description: "发布标签"
         required: true
-        default: "v1.5.21"
+        default: "v1.5.22"
         type: string
 
 permissions:

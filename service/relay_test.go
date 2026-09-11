@@ -66,6 +66,8 @@ func TestParseRelayUpstreamCommonProviderFormats(t *testing.T) {
 		{name: "comma host first", line: "proxy.example,1080,user,pass", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
 		{name: "pipe credentials first", line: "user|pass|proxy.example|1080", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
 		{name: "space separated", line: "proxy.example 1080 user pass", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
+		{name: "numeric password remains host first", line: "proxy.example:1080:user:1234", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "1234"}},
+		{name: "colon credentials first", line: "user:pass:proxy.example:1080", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -98,6 +100,7 @@ func TestParseRelayUpstreamsJSONFormats(t *testing.T) {
 func TestParseRelayUpstreamRejectsUnsupportedFormats(t *testing.T) {
 	for _, line := range []string{
 		"http://user:pass@proxy.example:8080",
+		"socks4://user:pass@proxy.example:1080",
 		"proxy.example:not-a-port:user:pass",
 		"proxy.example:1080:user",
 	} {

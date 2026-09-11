@@ -2774,7 +2774,12 @@ func parseRelayUpstreamLine(line string) (RelayUpstream, error) {
 	}
 	parts := strings.Split(line, ":")
 	if len(parts) == 4 {
-		// Some providers return username:password:host:port.
+		// Prefer the long-standing host:port:user:pass form when both the port
+		// and password are numeric. Otherwise accept user:pass:host:port.
+		if port, err := strconv.Atoi(parts[1]); err == nil {
+			upstream := RelayUpstream{Server: strings.Trim(parts[0], "[]"), Port: port, Username: parts[2], Password: parts[3]}
+			return upstream, validateUpstream(upstream)
+		}
 		if port, err := strconv.Atoi(parts[3]); err == nil {
 			upstream := RelayUpstream{Server: strings.Trim(parts[2], "[]"), Port: port, Username: parts[0], Password: parts[1]}
 			return upstream, validateUpstream(upstream)
@@ -2797,7 +2802,7 @@ func parseRelayUpstreamLine(line string) (RelayUpstream, error) {
 
 func isSupportedRelayProxyScheme(scheme string) bool {
 	switch strings.ToLower(strings.TrimSpace(scheme)) {
-	case "socks", "socks5", "socks5h", "socks4", "socks4a":
+	case "socks", "socks5", "socks5h":
 		return true
 	default:
 		return false
