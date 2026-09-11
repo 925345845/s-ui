@@ -6,11 +6,11 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
-        tag:
-          description: "发布标签"
-          required: true
-          default: "v1.5.25"
-          type: string
+      tag:
+        description: "发布标签"
+        required: true
+        default: "v1.5.25"
+        type: string
 
 permissions:
   contents: write
