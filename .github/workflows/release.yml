@@ -70,11 +70,31 @@ jobs:
       - name: 检出仓库
         uses: actions/checkout@v6.0.2
 
+      - name: 清理旧的前端目录
+        run: |
+          set -e
+          rm -rf web/html
+          mkdir -p web/html
+
       - name: 下载前端构建产物
         uses: actions/download-artifact@v8
         with:
           name: frontend-dist
           path: web/html
+
+      - name: 校验前端构建产物
+        run: |
+          set -e
+          test -s web/html/index.html
+          ASSET_DIR="web/html/assets"
+          test -d "$ASSET_DIR"
+          # The paired relay editor is part of the published UI. Fail the
+          # build instead of embedding a stale or partial frontend bundle.
+          if ! grep -R -l --include='*.js' 'relay-upstream-native' "$ASSET_DIR" >/dev/null; then
+            echo "前端产物缺少上游列表组件（relay-upstream-native）" >&2
+            exit 1
+          fi
+          echo "前端产物校验通过：$(find "$ASSET_DIR" -maxdepth 1 -type f | wc -l) 个资源文件"
 
       - name: 设置 Go
         uses: actions/setup-go@v6
