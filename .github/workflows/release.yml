@@ -90,8 +90,8 @@ jobs:
           test -d "$ASSET_DIR"
           # The paired relay editor is part of the published UI. Fail the
           # build instead of embedding a stale or partial frontend bundle.
-          if ! grep -R -l --include='*.js' 'relay-upstream-native' "$ASSET_DIR" >/dev/null; then
-            echo "前端产物缺少上游列表组件（relay-upstream-native）" >&2
+          if ! grep -R -l --include='*.js' 'relay-upstream-field' "$ASSET_DIR" >/dev/null; then
+            echo "前端产物缺少上游列表组件（relay-upstream-field）" >&2
             exit 1
           fi
           echo "前端产物校验通过：$(find "$ASSET_DIR" -maxdepth 1 -type f | wc -l) 个资源文件"
