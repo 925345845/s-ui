@@ -23,7 +23,7 @@ archive="$tmp_dir/s-ui-linux-${package_arch}-paired.tar.gz"
 
 echo "正在下载 ${package_arch} 安装包..."
 curl -fL --retry 3 --connect-timeout 15 \
-  "$base_url/install-s-ui-paired.sh" \
+  "$base_url/install-s-ui-paired.sh?paired_version=${release_version}" \
   -o "$installer"
 release_archive="$tmp_dir/s-ui-linux-${package_arch}.tar.gz"
 if ! curl -fL --retry 3 --connect-timeout 15 \
