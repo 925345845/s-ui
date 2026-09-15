@@ -30,7 +30,7 @@ if [[ ! -f "$src/sui" ]]; then
   echo "安装包内缺少 s-ui/sui。" >&2
   exit 1
 fi
-if ! grep -a -q 'relay-upstream-native' "$src/sui"; then
+if ! grep -a -q -e 'relay-upstream-field' -e 'relay-upstream-native' "$src/sui"; then
   echo "安装包缺少最新的上游列表组件，请使用 v1.5.25 或更高版本。" >&2
   exit 1
 fi
