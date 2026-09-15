@@ -194,9 +194,7 @@
                 <v-textarea v-model="form.ipv6_text" :label="$t('relay.ipv6List')" :hint="$t('relay.pairedIPv6Hint')" persistent-hint rows="3" dir="ltr" hide-details="auto" />
               </v-col>
               <v-col cols="12" class="relay-upstream-editor-col">
-                <div class="relay-upstream-label">{{ $t('relay.upstreamList') }}</div>
-                <textarea v-model="form.upstream_text" class="relay-upstream-native" rows="9" dir="ltr" :aria-label="$t('relay.upstreamList')" />
-                <div class="relay-upstream-hint">{{ $t('relay.pairedUpstreamHint') }}</div>
+                <v-textarea v-model="form.upstream_text" class="relay-upstream-field" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
               </v-col>
               <v-col cols="12">
                 <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
@@ -243,9 +241,7 @@
                 <v-textarea v-model="form.ipv6_text" :label="$t('relay.ipv6List')" :hint="$t('relay.pairedIPv6Hint')" persistent-hint rows="3" dir="ltr" hide-details="auto" />
               </v-col>
               <v-col cols="12" class="relay-upstream-editor-col">
-                <div class="relay-upstream-label">{{ $t('relay.upstreamList') }}</div>
-                <textarea v-model="form.upstream_text" class="relay-upstream-native" rows="9" dir="ltr" :aria-label="$t('relay.upstreamList')" />
-                <div class="relay-upstream-hint">{{ $t('relay.pairedUpstreamHint') }}</div>
+                <v-textarea v-model="form.upstream_text" class="relay-upstream-field" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
               </v-col>
               <v-col cols="12">
                 <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
@@ -718,10 +714,8 @@ watch(() => props.connectionHost, (host) => {
 .relay-refresh-url { overflow-wrap: anywhere; white-space: normal; }
 .relay-pool-card { height: 100%; }
 .relay-upstream-editor-col { display: block !important; visibility: visible !important; }
-.relay-upstream-label { margin-bottom: 6px; font-size: 13px; opacity: .72; }
-.relay-upstream-native { display: block !important; visibility: visible !important; width: 100%; min-height: 180px; padding: 14px 16px; border: 1px solid rgba(var(--v-theme-on-surface), .22); border-radius: 10px; outline: none; background: rgba(var(--v-theme-surface), .72); color: rgb(var(--v-theme-on-surface)); font: inherit; line-height: 1.5; resize: vertical; box-sizing: border-box; }
-.relay-upstream-native:focus { border-color: rgb(var(--v-theme-primary)); box-shadow: 0 0 0 1px rgb(var(--v-theme-primary)); }
-.relay-upstream-hint { margin-top: 6px; font-size: 12px; line-height: 1.4; opacity: .68; }
+.relay-upstream-field { display: block !important; visibility: visible !important; width: 100%; }
+.relay-upstream-field :deep(textarea) { min-height: 180px; }
 
 @media (max-width: 959px) {
   .relay-quick-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
