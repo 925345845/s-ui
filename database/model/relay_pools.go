@@ -28,6 +28,7 @@ type RelayPool struct {
 }
 
 type RelayItem struct {
+	EgressCheck      string `json:"egress_check,omitempty"`
 	SourceRow        int    `json:"source_row,omitempty"`
 	InboundID        uint   `json:"inbound_id"`
 	InboundTag       string `json:"inbound_tag"`

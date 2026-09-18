@@ -14,12 +14,13 @@ import (
 )
 
 type relayCreationChecks struct {
-	add      func(context.Context, string, string, int) error
-	ready    func(context.Context, []model.RelayItem) ([]error, error)
-	ipv6     relayIPv6EgressProbe
-	ipv4     func(context.Context, RelayUpstream) error
-	settle   func(context.Context) error
-	progress func(string, int, int)
+	skipEgress bool
+	add        func(context.Context, string, string, int) error
+	ready      func(context.Context, []model.RelayItem) ([]error, error)
+	ipv6       relayIPv6EgressProbe
+	ipv4       func(context.Context, RelayUpstream) error
+	settle     func(context.Context) error
+	progress   func(string, int, int)
 }
 
 // Check all rows independently. A stage deadline skips unfinished rows, while
@@ -132,7 +133,7 @@ func prepareUsableRelayItems(ctx context.Context, planned []model.RelayItem, exi
 			update(len(items), len(items))
 			filter("dad", failures)
 		}
-		if len(items) > 0 {
+		if len(items) > 0 && !checks.skipEgress {
 			for _, item := range items {
 				if item.AddedByUs && checks.settle != nil {
 					progress("settling")
@@ -155,7 +156,7 @@ func prepareUsableRelayItems(ctx context.Context, planned []model.RelayItem, exi
 			filter("ipv6", failures)
 		}
 	}
-	if checks.ipv4 != nil && len(items) > 0 {
+	if checks.ipv4 != nil && !checks.skipEgress && len(items) > 0 {
 		failures, err := checkRelayRows(ctx, len(items), 8, 45*time.Second, func(ctx context.Context, i int) error {
 			return checks.ipv4(ctx, relayItemUpstream(items[i]))
 		}, progress("ipv4"))
@@ -170,6 +171,14 @@ func prepareUsableRelayItems(ctx context.Context, planned []model.RelayItem, exi
 	}
 	if len(items) == 0 {
 		return nil, report, fmt.Errorf("no usable relay rows (0/%d passed); no nodes created", len(planned))
+	}
+	if checks.ipv6 != nil {
+		for i := range items {
+			items[i].EgressCheck = "passed"
+			if checks.skipEgress {
+				items[i].EgressCheck = "not_checked"
+			}
+		}
 	}
 	return items, report, nil
 }

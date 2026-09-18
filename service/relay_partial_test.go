@@ -177,3 +177,38 @@ func TestRelayPartialCleanupFailureIsFatalAndRetriable(t *testing.T) {
 		t.Fatal("cleanup failure discarded ownership")
 	}
 }
+
+func TestRelayPartialUncheckedCreatesAll500WithoutPublicProbes(t *testing.T) {
+	planned, checks := relayPartialFixture(500)
+	checks.skipEgress = true
+	checks.ipv6 = func(context.Context, netip.Addr) error {
+		t.Error("unexpected IPv6 probe")
+		return errors.New("unreachable")
+	}
+	checks.ipv4 = func(context.Context, RelayUpstream) error {
+		t.Error("unexpected IPv4 probe")
+		return errors.New("unreachable")
+	}
+	checks.settle = func(context.Context) error { t.Error("unnecessary probe settling delay"); return nil }
+	kept, report, err := prepareUsableRelayItems(context.Background(), planned, nil, true, checks)
+	if err != nil || len(kept) != 500 || len(report.Skipped) != 0 {
+		t.Fatalf("kept=%d report=%+v err=%v", len(kept), report, err)
+	}
+	for i, item := range kept {
+		if item.SourceRow != i+1 || item.IPv6 != planned[i].IPv6 || relayItemUpstream(item) != relayItemUpstream(planned[i]) || !item.AddedByUs || item.EgressCheck != "not_checked" {
+			t.Fatalf("unchecked row changed: %+v", item)
+		}
+	}
+}
+
+func TestRelayPartialUncheckedStillRequiresLocalAddresses(t *testing.T) {
+	planned, checks := relayPartialFixture(2)
+	checks.skipEgress = true
+	checks.ready = func(_ context.Context, items []model.RelayItem) ([]error, error) {
+		return []error{nil, errors.New("dadfailed")}, nil
+	}
+	kept, report, err := prepareUsableRelayItems(context.Background(), planned, nil, true, checks)
+	if err != nil || len(kept) != 1 || report.Skipped[0].Stage != "dad" || kept[0].EgressCheck != "not_checked" {
+		t.Fatalf("local check lost: %+v %v", report, err)
+	}
+}

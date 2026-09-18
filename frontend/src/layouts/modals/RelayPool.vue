@@ -26,6 +26,8 @@
             </div>
           </div>
         </v-alert>
+        <v-switch v-if="['ipv6', 'paired', 'dualstack'].includes(tab)" v-model="form.verify_egress"
+          color="primary" :label="$t('relay.verifyEgress')" :hint="$t('relay.verifyEgressHint')" persistent-hint hide-details="auto" class="mb-3" />
         <v-window v-model="tab">
           <v-window-item value="ipv6">
             <section class="relay-quick-section">
@@ -280,6 +282,7 @@
                   </v-card-title>
                   <v-card-text>
                     <div class="relay-pool-meta" dir="ltr">{{ poolAddressSummary(pool) }} / {{ pool.count }} {{ $t('relay.items') }}</div>
+                    <div v-if="pool.items.some(item => item.egress_check === 'not_checked')" class="text-caption mb-2">{{ $t('relay.egressUnchecked') }}</div>
                     <v-textarea :model-value="previewExportText(pool)" rows="4" readonly dir="ltr" hide-details />
                     <div v-if="pool.items.length > exportPreviewLimit" class="relay-preview-note">
                       {{ $t('relay.previewLimited', { shown: exportPreviewLimit, total: pool.items.length }) }}
@@ -369,7 +372,7 @@ import { i18n } from '@/locales'
 import { copyText } from '@/utils/clipboard'
 
 interface IPv6Item { interface: string; address: string; prefix: number }
-interface RelayItem { listen_port: number; username: string; password: string; ipv6?: string; upstream_server?: string; protocol?: string; export?: string; refresh_token?: string }
+interface RelayItem { listen_port: number; username: string; password: string; ipv6?: string; upstream_server?: string; protocol?: string; export?: string; refresh_token?: string; egress_check?: string }
 interface RelayPool {
   id: number; name: string; source?: string; mode: string; protocol?: string; domain_strategy?: string
   listen_host: string; port_start: number; count: number; items: RelayItem[]; export_text: string
@@ -452,7 +455,7 @@ const isRemote = computed(() => Number.isInteger(props.agentId) && Number(props.
 const form = reactive({
   name: '', public_host: window.location.hostname, port_start: 30000, count: 10,
   username_prefix: 'relay', password_length: 12, interface: '', base_ipv6: '', prefix: 64,
-  ipv6_text: '', upstream_text: '', add_system_addresses: true, protocol: 'socks',
+  ipv6_text: '', upstream_text: '', add_system_addresses: true, verify_egress: false, protocol: 'socks',
   transport: 'http', tls_id: 0, domain_strategy: 'ipv6_only', shadowsocks_method: '2022-blake3-aes-256-gcm', apple_id_ipv4_only: true,
 })
 

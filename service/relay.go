@@ -124,6 +124,7 @@ type RelayUpstream struct {
 }
 
 type RelayCreateRequest struct {
+	VerifyEgress       bool            `json:"verify_egress"`
 	RequestID          string          `json:"request_id"`
 	Name               string          `json:"name"`
 	Source             string          `json:"source"`
@@ -993,7 +994,7 @@ func (s *ConfigService) createRelayContext(ctx context.Context, req RelayCreateR
 	checks := relayCreationChecks{progress: setRelayProgress}
 	if relayModeUsesIPv6(req.Mode) {
 		if runtime.GOOS != "linux" {
-			return nil, common.NewError("IPv6 relay creation requires Linux egress verification")
+			return nil, common.NewError("IPv6 relay creation requires Linux address configuration")
 		}
 		checks.add = addRelayAddressContext
 		checks.ready = checkRelayRowsReady
@@ -1008,6 +1009,7 @@ func (s *ConfigService) createRelayContext(ctx context.Context, req RelayCreateR
 	if checksOverride != nil {
 		checks = *checksOverride
 	}
+	checks.skipEgress = !req.VerifyEgress
 	items, report, err := prepareUsableRelayItems(ctx, planned, existingAddresses, req.AddSystemAddresses, checks)
 	if err != nil {
 		return &model.RelayPool{CreationReport: report}, err

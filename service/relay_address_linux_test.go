@@ -44,7 +44,7 @@ func TestRelayLinuxPartialCreation(t *testing.T) {
 		}
 	})
 	req := RelayCreateRequest{Mode: relayModePaired, Protocol: "socks", BaseIPv6: "2001:db8:abcd:1234::1", Prefix: 64, Interface: iface,
-		PortStart: 30000, PasswordLength: 12, AddSystemAddresses: true, IPv6Addresses: ipv6, AppleIDIPv4Only: true,
+		PortStart: 30000, PasswordLength: 12, AddSystemAddresses: true, IPv6Addresses: ipv6, AppleIDIPv4Only: true, VerifyEgress: true,
 		Upstreams: []RelayUpstream{{Server: "192.0.2.1", Port: 1080}, {Server: "192.0.2.2", Port: 1081}, {Server: "192.0.2.3", Port: 1082}, {Server: "192.0.2.4", Port: 1083}}}
 	checks := relayCreationChecks{add: addRelayAddressContext, ready: checkRelayRowsReady,
 		ipv6: func(_ context.Context, ip netip.Addr) error {
@@ -121,6 +121,33 @@ func TestRelayLinuxPartialCreation(t *testing.T) {
 	database.GetDB().Model(&model.RelayPool{}).Count(&pools)
 	if pools != 1 {
 		t.Fatalf("empty pool saved: %d", pools)
+	}
+	// With public checks disabled, even unreachable destinations must not stop
+	// any row from being saved/exported. Local address preparation still runs.
+	req.VerifyEgress = false
+	checks.ipv6 = func(context.Context, netip.Addr) error {
+		t.Error("unexpected IPv6 probe")
+		return errors.New("unreachable")
+	}
+	checks.ipv4 = func(context.Context, RelayUpstream) error {
+		t.Error("unexpected IPv4 probe")
+		return errors.New("unreachable")
+	}
+	unchecked, err := service.createRelayContext(context.Background(), req, "test", "192.0.2.100", &checks)
+	if err != nil || unchecked.Count != 4 || len(unchecked.CreationReport.Skipped) != 0 {
+		t.Fatalf("unchecked creation: %+v %v", unchecked, err)
+	}
+	var uncheckedSaved model.RelayPool
+	if err := database.GetDB().First(&uncheckedSaved, unchecked.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(uncheckedSaved.Items, &items); err != nil {
+		t.Fatal(err)
+	}
+	for i, item := range items {
+		if item.SourceRow != i+1 || item.IPv6 != ipv6[i] || relayItemUpstream(item) != req.Upstreams[i] || !item.AppleIDIPv4Only || item.EgressCheck != "not_checked" || item.Export == "" {
+			t.Fatalf("unchecked row lost pairing, export or status: %+v", item)
+		}
 	}
 }
 
