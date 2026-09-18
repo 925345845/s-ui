@@ -16,6 +16,16 @@
           <v-tab value="pools">{{ $t('relay.pools') }}</v-tab>
         </v-tabs>
 
+        <v-alert v-if="creationReport" :type="createdCount > 0 ? 'warning' : 'error'" variant="tonal" class="mb-3" role="status">
+          {{ $t('relay.partialResult', { requested: creationReport.requested, created: createdCount, skipped: creationReport.skipped.length }) }}
+          <div class="text-caption mt-1">{{ $t('relay.partialHint') }}</div>
+          <v-btn variant="text" size="small" prepend-icon="mdi-content-copy" @click="copy(skippedReportText)">{{ $t('relay.copySkipped') }}</v-btn>
+          <div style="max-height: 220px; overflow: auto; overflow-wrap: anywhere">
+            <div v-for="row in creationReport.skipped" :key="row.row" class="text-caption mt-1">
+              {{ $t('relay.skippedRow', { row: row.row }) }} · {{ row.ipv6 || '—' }} · {{ $t(`relay.creationStages.${row.stage}`) }}: {{ row.reason }}
+            </div>
+          </div>
+        </v-alert>
         <v-window v-model="tab">
           <v-window-item value="ipv6">
             <section class="relay-quick-section">
@@ -365,6 +375,8 @@ interface RelayPool {
   listen_host: string; port_start: number; count: number; items: RelayItem[]; export_text: string
 }
 interface RelayCapabilities { os: string; can_add_system_ipv6: boolean; unavailable_reason?: string }
+interface RelaySkippedItem { row: number; ipv6?: string; stage: string; reason: string }
+interface RelayCreationReport { requested: number; skipped: RelaySkippedItem[] }
 
 const props = defineProps<{
   visible: boolean
@@ -379,6 +391,10 @@ const emit = defineEmits<{
 const tab = ref('ipv6')
 const advancedPanel = ref<string>()
 const loading = ref(false)
+const creationReport = ref<RelayCreationReport | null>(null)
+const createdCount = ref(0)
+const skippedReportText = computed(() => (creationReport.value?.skipped ?? []).map((row) =>
+  `${i18n.global.t('relay.skippedRow', { row: row.row })}\t${row.ipv6 || ''}\t${i18n.global.t(`relay.creationStages.${row.stage}`)}\t${row.reason}`).join('\n'))
 const createElapsed = ref(0)
 const createProgress = reactive({ stage: 'preparing', completed: 0, total: 0 })
 const createStageLabel = computed(() => i18n.global.t(`relay.creationStages.${createProgress.stage}`))
@@ -554,6 +570,8 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick 
     return
   }
   loading.value = true
+  creationReport.value = null
+  createdCount.value = 0
   const requestID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
   startCreateProgress(requestID)
   try {
@@ -587,6 +605,10 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick 
     })
     let msg: any
     try { msg = await response.json() } catch { msg = { success: false, msg: i18n.global.t('relay.invalidResponse') } }
+    if (msg.obj?.creation_report?.skipped?.length) {
+      creationReport.value = msg.obj.creation_report
+      createdCount.value = Number(msg.obj?.id) > 0 ? Number(msg.obj?.count || 0) : 0
+    }
     if (msg.success) {
       const allocatedStart = Number(msg.obj?.port_start)
       const allocatedCount = Number(msg.obj?.count)

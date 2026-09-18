@@ -6,27 +6,29 @@ import "encoding/json"
 // Items intentionally remain JSON because a pool is created and removed as a
 // single unit and the item credentials are needed for browser export.
 type RelayPool struct {
-	Id                      uint            `json:"id" gorm:"primaryKey;autoIncrement"`
-	Name                    string          `json:"name"`
-	Source                  string          `json:"source,omitempty"`
-	Mode                    string          `json:"mode"`
-	Protocol                string          `json:"protocol"`
-	CoreType                string          `json:"core_type"`
-	TlsID                   uint            `json:"tls_id,omitempty"`
-	Transport               string          `json:"transport,omitempty"`
-	DomainStrategy          string          `json:"domain_strategy,omitempty"`
-	ListenHost              string          `json:"listen_host"`
-	PortStart               int             `json:"port_start"`
-	Count                   int             `json:"count"`
-	Items                   json.RawMessage `json:"items"`
-	CreatedAt               int64           `json:"created_at"`
-	RotationEnabled         bool            `json:"rotation_enabled" gorm:"index"`
-	RotationIntervalMinutes int             `json:"rotation_interval_minutes"`
-	LastRotatedAt           int64           `json:"last_rotated_at,omitempty"`
-	NextRotateAt            int64           `json:"next_rotate_at,omitempty" gorm:"index"`
+	CreationReport          *RelayCreationReport `json:"creation_report,omitempty" gorm:"-"`
+	Id                      uint                 `json:"id" gorm:"primaryKey;autoIncrement"`
+	Name                    string               `json:"name"`
+	Source                  string               `json:"source,omitempty"`
+	Mode                    string               `json:"mode"`
+	Protocol                string               `json:"protocol"`
+	CoreType                string               `json:"core_type"`
+	TlsID                   uint                 `json:"tls_id,omitempty"`
+	Transport               string               `json:"transport,omitempty"`
+	DomainStrategy          string               `json:"domain_strategy,omitempty"`
+	ListenHost              string               `json:"listen_host"`
+	PortStart               int                  `json:"port_start"`
+	Count                   int                  `json:"count"`
+	Items                   json.RawMessage      `json:"items"`
+	CreatedAt               int64                `json:"created_at"`
+	RotationEnabled         bool                 `json:"rotation_enabled" gorm:"index"`
+	RotationIntervalMinutes int                  `json:"rotation_interval_minutes"`
+	LastRotatedAt           int64                `json:"last_rotated_at,omitempty"`
+	NextRotateAt            int64                `json:"next_rotate_at,omitempty" gorm:"index"`
 }
 
 type RelayItem struct {
+	SourceRow        int    `json:"source_row,omitempty"`
 	InboundID        uint   `json:"inbound_id"`
 	InboundTag       string `json:"inbound_tag"`
 	OutboundTag      string `json:"outbound_tag"`
@@ -51,6 +53,19 @@ type RelayItem struct {
 	UpstreamPort     int    `json:"upstream_port,omitempty"`
 	UpstreamUsername string `json:"upstream_username,omitempty"`
 	UpstreamPassword string `json:"upstream_password,omitempty"`
+}
+
+// CreationReport is response-only: failed rows create no database resources.
+type RelayCreationReport struct {
+	Requested int                `json:"requested"`
+	Skipped   []RelaySkippedItem `json:"skipped"`
+}
+
+type RelaySkippedItem struct {
+	Row    int    `json:"row"`
+	IPv6   string `json:"ipv6,omitempty"`
+	Stage  string `json:"stage"`
+	Reason string `json:"reason"`
 }
 
 // RelayRefreshLink maps one stable, bearer-style refresh URL to one relay

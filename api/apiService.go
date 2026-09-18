@@ -997,11 +997,7 @@ func (a *ApiService) CreateRelay(c *gin.Context, loginUser string) {
 		return
 	}
 	pool, err := a.ConfigService.CreateRelayContext(c.Request.Context(), req, loginUser, getHostname(c))
-	if err != nil {
-		jsonMsg(c, "relay", err)
-		return
-	}
-	jsonObj(c, pool, nil)
+	jsonObj(c, pool, err)
 }
 
 func (a *ApiService) DeleteRelay(c *gin.Context, loginUser string) {

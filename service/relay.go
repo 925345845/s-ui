@@ -855,6 +855,10 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 }
 
 func (s *ConfigService) CreateRelayContext(ctx context.Context, req RelayCreateRequest, actor, publicHost string) (result *model.RelayPool, resultErr error) {
+	return s.createRelayContext(ctx, req, actor, publicHost, nil)
+}
+
+func (s *ConfigService) createRelayContext(ctx context.Context, req RelayCreateRequest, actor, publicHost string, checksOverride *relayCreationChecks) (result *model.RelayPool, resultErr error) {
 	if !relayMu.TryLock() {
 		return nil, common.NewError("relay operation already in progress; wait for it to finish before creating another batch")
 	}
@@ -964,15 +968,12 @@ func (s *ConfigService) CreateRelayContext(ctx context.Context, req RelayCreateR
 	if err != nil {
 		return nil, err
 	}
-	prepareContext, cancelPrepare := context.WithTimeout(ctx, 30*time.Second)
-	defer cancelPrepare()
-	setRelayProgress("addresses", 0, len(items))
-	added := make([]model.RelayItem, 0)
+	planned := items
 	cleanup := true
 	defer func() {
 		if cleanup {
-			setRelayProgress("rollback", 0, len(added))
-			for _, item := range added {
+			setRelayProgress("rollback", 0, len(planned))
+			for _, item := range planned {
 				if item.AddedByUs {
 					_ = deleteRelayAddress(item.Interface, item.IPv6, item.Prefix)
 				}
@@ -989,34 +990,38 @@ func (s *ConfigService) CreateRelayContext(ctx context.Context, req RelayCreateR
 			existingAddresses[address.Address] = true
 		}
 	}
-	added, err = bindRelayAddressPool(prepareContext, items, existingAddresses, req.AddSystemAddresses,
-		addRelayAddressContext, func(done, total int) { setRelayProgress("addresses", done, total) })
-	if err != nil {
-		return nil, err
-	}
-	setRelayProgress("dad", 0, len(items))
-	if err := waitRelayAddressesReadyContext(prepareContext, items); err != nil {
-		return nil, err
-	}
-	if len(added) > 0 {
-		setRelayProgress("settling", len(added), len(items))
-		if err := waitRelayPoolSettle(ctx, 2*time.Second); err != nil {
-			return nil, err
+	checks := relayCreationChecks{progress: setRelayProgress}
+	if relayModeUsesIPv6(req.Mode) {
+		if runtime.GOOS != "linux" {
+			return nil, common.NewError("IPv6 relay creation requires Linux egress verification")
 		}
+		checks.add = addRelayAddressContext
+		checks.ready = checkRelayRowsReady
+		checks.ipv6 = probeRelayIPv6Egress
+		checks.settle = func(ctx context.Context) error { return waitRelayPoolSettle(ctx, 2*time.Second) }
 	}
-	if relayModeUsesIPv6(req.Mode) && runtime.GOOS == "linux" {
-		setRelayProgress("ipv6", 0, len(items))
-		if err := validateRelayIPv6EgressProgress(ctx, items, probeRelayIPv6Egress, func(done, total int) { setRelayProgress("ipv6", done, total) }); err != nil {
-			return nil, err
-		}
-	}
-
 	if relayModePairsUpstream(req.Mode) {
-		setRelayProgress("ipv4", 0, len(req.Upstreams))
-		if err := validateRelayIPv4Upstreams(ctx, req.Upstreams, func(ctx context.Context, upstream RelayUpstream) error {
+		checks.ipv4 = func(ctx context.Context, upstream RelayUpstream) error {
 			return probeRelaySOCKS5(ctx, upstream, []string{"1.1.1.1:443", "8.8.8.8:443"})
-		}, func(done, total int) { setRelayProgress("ipv4", done, total) }); err != nil {
-			return nil, err
+		}
+	}
+	if checksOverride != nil {
+		checks = *checksOverride
+	}
+	items, report, err := prepareUsableRelayItems(ctx, planned, existingAddresses, req.AddSystemAddresses, checks)
+	if err != nil {
+		return &model.RelayPool{CreationReport: report}, err
+	}
+	if err := cleanupSkippedRelayAddresses(planned, items, deleteRelayAddress); err != nil {
+		return nil, err
+	}
+	// Rebuild both lists from retained rows, never zip filtered IPv6 with the
+	// original upstream list. The original source row remains on each item.
+	req.Count = len(items)
+	if relayModeUsesUpstream(req.Mode) {
+		req.Upstreams = make([]RelayUpstream, len(items))
+		for i, item := range items {
+			req.Upstreams[i] = relayItemUpstream(item)
 		}
 	}
 
@@ -1068,6 +1073,7 @@ func (s *ConfigService) CreateRelayContext(ctx context.Context, req RelayCreateR
 	}
 
 	pool := model.RelayPool{
+		CreationReport: report,
 		Name:           req.Name,
 		Source:         req.Source,
 		Mode:           req.Mode,
