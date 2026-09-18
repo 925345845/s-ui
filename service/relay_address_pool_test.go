@@ -126,3 +126,28 @@ func TestRelayPoolSettleHonorsCancellation(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestRelayDetectedBaseHonorsAllocationPrefix(t *testing.T) {
+	detected := []RelayIPv6{
+		{Interface: "eth1", Address: "2001:db8:ffff::1", Prefix: 64},
+		{Interface: "eth0", Address: "2001:db8:1234:5678::2", Prefix: 128},
+		{Interface: "eth0", Address: "2001:db8:1234:5678::1", Prefix: 64},
+	}
+	req := RelayCreateRequest{Interface: "eth0", Prefix: 64, Count: 100}
+	base, prefix, iface, err := resolveDetectedRelayBase(req, detected)
+	if err != nil || prefix != 64 || iface != "eth0" || base.String() != detected[1].Address {
+		t.Fatalf("base=%s prefix=%d iface=%s err=%v", base, prefix, iface, err)
+	}
+	req.BaseIPv6 = base.String()
+	want, wantPrefix, wantIface, err := resolveRelayBase(req)
+	if err != nil || base != want || prefix != wantPrefix || iface != wantIface {
+		t.Fatalf("auto and explicit selection differ: %v", err)
+	}
+	for _, invalidPrefix := range []int{-1, 127, 128, 129} {
+		req.BaseIPv6 = ""
+		req.Prefix = invalidPrefix
+		if _, _, _, err := resolveDetectedRelayBase(req, detected); err == nil {
+			t.Fatalf("accepted invalid/insufficient prefix %d for 100 rows", invalidPrefix)
+		}
+	}
+}

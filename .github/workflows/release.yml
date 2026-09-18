@@ -9,7 +9,7 @@ on:
       tag:
         description: "发布标签"
         required: true
-        default: "v1.5.20-ipv6fix.3"
+        default: "v1.5.20-ipv6fix.4"
         type: string
 
 permissions:
@@ -34,6 +34,8 @@ jobs:
         run: |
           go test -race ./internal/ipv6probe
           go test -race -ldflags=-checklinkname=0 ./service -run 'Test(.*Relay.*)' -count=1
+      - name: Verify real IPv6 address lifecycle in isolated network
+        run: bash .github/scripts/test-relay-netns.sh
 
   build-frontend:
     runs-on: ubuntu-latest

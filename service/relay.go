@@ -2054,10 +2054,21 @@ func resolveRelayBase(req RelayCreateRequest) (netip.Addr, int, string, error) {
 	if err != nil {
 		return netip.Addr{}, 0, "", err
 	}
+	return resolveDetectedRelayBase(req, detected)
+}
+
+func resolveDetectedRelayBase(req RelayCreateRequest, detected []RelayIPv6) (netip.Addr, int, string, error) {
 	for _, candidate := range detected {
 		if req.Interface == "" || req.Interface == candidate.Interface {
-			ip, _ := netip.ParseAddr(candidate.Address)
-			return ip, candidate.Prefix, candidate.Interface, nil
+			// A bound /128 describes one interface address, not the provider's
+			// allocation. Honor the requested pool prefix and use the same
+			// validation as an explicitly selected base.
+			req.BaseIPv6 = candidate.Address
+			req.Interface = candidate.Interface
+			if req.Prefix == 0 {
+				req.Prefix = candidate.Prefix
+			}
+			return resolveRelayBase(req)
 		}
 	}
 	return netip.Addr{}, 0, "", common.NewError("no public IPv6 address was detected")
@@ -2194,7 +2205,10 @@ func addRelayAddressContext(parent context.Context, iface, ip string, prefix int
 	}
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "ip", "-6", "addr", "add", ip+"/"+strconv.Itoa(prefix), "dev", iface)
+	// Prefix is the allocation used for generation and rotation. Bind each
+	// secondary address as a host so it does not add/change an on-link route
+	// for the provider's whole allocation.
+	cmd := exec.CommandContext(ctx, "ip", "-6", "addr", "add", ip+"/128", "dev", iface)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("ip address add failed: %v: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -2429,21 +2443,38 @@ func relayIPv6AddressState(output, address string) string {
 	return relayAddressMissing
 }
 
-func deleteRelayAddress(iface, ip string, prefix int) error {
+func deleteRelayAddress(iface, ip string, _ int) error {
 	if runtime.GOOS != "linux" || iface == "" || ip == "" {
 		return nil
 	}
 	if !relayHasRoot() {
 		return common.NewError("root permission is required to remove IPv6 addresses")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "ip", "-6", "addr", "del", ip+"/"+strconv.Itoa(prefix), "dev", iface)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		if strings.Contains(string(output), "Cannot assign requested address") || strings.Contains(string(output), "RTNETLINK answers: Cannot assign requested address") {
-			return nil
+	want, err := netip.ParseAddr(ip)
+	if err != nil || !want.Is6() || want.Is4In6() {
+		return common.NewError("invalid IPv6 address")
+	}
+	device, err := net.InterfaceByName(iface)
+	if err != nil {
+		return err
+	}
+	addresses, err := device.Addrs()
+	if err != nil {
+		return err
+	}
+	// Stored Prefix remains the allocation prefix. Read the actual binding
+	// to support both new /128 addresses and existing pools bound as /64.
+	for _, address := range addresses {
+		bound, err := netip.ParsePrefix(address.String())
+		if err != nil || bound.Addr() != want {
+			continue
 		}
-		return fmt.Errorf("ip address delete failed: %v: %s", err, strings.TrimSpace(string(output)))
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		output, err := exec.CommandContext(ctx, "ip", "-6", "addr", "del", bound.String(), "dev", iface).CombinedOutput()
+		cancel()
+		if err != nil && !strings.Contains(string(output), "Cannot assign requested address") {
+			return fmt.Errorf("ip address delete failed: %v: %s", err, strings.TrimSpace(string(output)))
+		}
 	}
 	return nil
 }
@@ -2453,7 +2484,7 @@ func findRelayInterface(ip netip.Addr, prefix int) string {
 	network := netip.PrefixFrom(ip, prefix)
 	for _, item := range detected {
 		candidate, _ := netip.ParseAddr(item.Address)
-		if item.Prefix == prefix && network.Contains(candidate) {
+		if network.Contains(candidate) {
 			return item.Interface
 		}
 	}
