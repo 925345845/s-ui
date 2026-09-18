@@ -113,6 +113,23 @@ jobs:
           cd ~/cronet-go
           GPG_TTY=/dev/null ./naiveproxy/src/build/linux/sysroot_scripts/generate_keyring.sh
 
+      - name: Normalize snapshot URLs and retry transient CDN errors
+        if: matrix.naive
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path.home() / "cronet-go/naiveproxy/src/build/linux/sysroot_scripts/sysroot_creator.py"
+          s = p.read_text()
+          # Preserve the pinned snapshot and signature/hash verification.
+          # Avoid a double slash and cached transient 503 responses on retries.
+          s = s.replace('f"{ARCHIVE_URL}/dists/{dist}"', 'f"{ARCHIVE_URL.rstrip(chr(47))}/dists/{dist}"')
+          old = 'requests.get(url, stream=True)'
+          new = 'requests.get(url, stream=True, timeout=120, params={"retry": attempt} if attempt else None)'
+          assert old in s
+          s = s.replace(old, new)
+          p.write_text(s)
+          PY
+
       - name: 构建 cronet 库并设置工具链环境
         if: matrix.naive
         run: |
