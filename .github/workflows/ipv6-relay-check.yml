@@ -7,9 +7,11 @@ on:
       - 'service/relay*'
       - 'frontend/**'
       - '.github/workflows/ipv6-relay-check.yml'
-  push:
-    branches: ['fix/ipv6-egress-retry']
   workflow_dispatch:
+
+concurrency:
+  group: ipv6-relay-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
