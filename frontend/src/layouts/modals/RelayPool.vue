@@ -195,6 +195,7 @@
               </v-col>
               <v-col cols="12">
                 <v-textarea v-model="form.upstream_text" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
+                <div class="text-body-2 mt-2" role="status">{{ $t('relay.pairedPlan', { count: pairedUpstreamCount }) }}</div>
               </v-col>
               <v-col cols="12">
                 <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
@@ -242,6 +243,7 @@
               </v-col>
               <v-col cols="12">
                 <v-textarea v-model="form.upstream_text" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
+                <div class="text-body-2 mt-2" role="status">{{ $t('relay.pairedPlan', { count: pairedUpstreamCount }) }}</div>
               </v-col>
               <v-col cols="12">
                 <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
@@ -435,7 +437,7 @@ const form = reactive({
   name: '', public_host: window.location.hostname, port_start: 30000, count: 10,
   username_prefix: 'relay', password_length: 12, interface: '', base_ipv6: '', prefix: 64,
   ipv6_text: '', upstream_text: '', add_system_addresses: true, protocol: 'socks',
-  transport: 'http', tls_id: 0, domain_strategy: 'ipv6_only', shadowsocks_method: '2022-blake3-aes-256-gcm', apple_id_ipv4_only: false,
+  transport: 'http', tls_id: 0, domain_strategy: 'ipv6_only', shadowsocks_method: '2022-blake3-aes-256-gcm', apple_id_ipv4_only: true,
 })
 
 const interfaceItems = computed(() => [...new Set(ipv6.value.map((item) => item.interface))].map((value) => ({ title: value, value })))

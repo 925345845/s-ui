@@ -964,14 +964,6 @@ func (s *ConfigService) CreateRelayContext(ctx context.Context, req RelayCreateR
 	if err != nil {
 		return nil, err
 	}
-	if relayModePairsUpstream(req.Mode) {
-		setRelayProgress("ipv4", 0, len(req.Upstreams))
-		if err := validateRelayIPv4Upstreams(ctx, req.Upstreams, func(ctx context.Context, upstream RelayUpstream) error {
-			return probeRelaySOCKS5(ctx, upstream, []string{"1.1.1.1:443", "8.8.8.8:443"})
-		}, func(done, total int) { setRelayProgress("ipv4", done, total) }); err != nil {
-			return nil, err
-		}
-	}
 	prepareContext, cancelPrepare := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelPrepare()
 	setRelayProgress("addresses", 0, len(items))
@@ -997,34 +989,33 @@ func (s *ConfigService) CreateRelayContext(ctx context.Context, req RelayCreateR
 			existingAddresses[address.Address] = true
 		}
 	}
-	for i := range items {
-		if err := prepareContext.Err(); err != nil {
-			return nil, fmt.Errorf("IPv6 address preparation: %w", err)
-		}
-		setRelayProgress("addresses", i+1, len(items))
-		if items[i].IPv6 == "" {
-			continue
-		}
-		already := existingAddresses[items[i].IPv6]
-		if !already && !req.AddSystemAddresses {
-			return nil, common.NewErrorf("IPv6 %s is not currently assigned; enable system address creation", items[i].IPv6)
-		}
-		if !already {
-			if err := addRelayAddressContext(prepareContext, items[i].Interface, items[i].IPv6, items[i].Prefix); err != nil {
-				return nil, err
-			}
-			items[i].AddedByUs = true
-			added = append(added, items[i])
-			existingAddresses[items[i].IPv6] = true
-		}
+	added, err = bindRelayAddressPool(prepareContext, items, existingAddresses, req.AddSystemAddresses,
+		addRelayAddressContext, func(done, total int) { setRelayProgress("addresses", done, total) })
+	if err != nil {
+		return nil, err
 	}
 	setRelayProgress("dad", 0, len(items))
 	if err := waitRelayAddressesReadyContext(prepareContext, items); err != nil {
 		return nil, err
 	}
+	if len(added) > 0 {
+		setRelayProgress("settling", len(added), len(items))
+		if err := waitRelayPoolSettle(ctx, 2*time.Second); err != nil {
+			return nil, err
+		}
+	}
 	if relayModeUsesIPv6(req.Mode) && runtime.GOOS == "linux" {
 		setRelayProgress("ipv6", 0, len(items))
 		if err := validateRelayIPv6EgressProgress(ctx, items, probeRelayIPv6Egress, func(done, total int) { setRelayProgress("ipv6", done, total) }); err != nil {
+			return nil, err
+		}
+	}
+
+	if relayModePairsUpstream(req.Mode) {
+		setRelayProgress("ipv4", 0, len(req.Upstreams))
+		if err := validateRelayIPv4Upstreams(ctx, req.Upstreams, func(ctx context.Context, upstream RelayUpstream) error {
+			return probeRelaySOCKS5(ctx, upstream, []string{"1.1.1.1:443", "8.8.8.8:443"})
+		}, func(done, total int) { setRelayProgress("ipv4", done, total) }); err != nil {
 			return nil, err
 		}
 	}
@@ -1948,6 +1939,12 @@ func randomUUID() string {
 }
 
 func (s *ConfigService) prepareRelayItems(req RelayCreateRequest) ([]model.RelayItem, error) {
+	if relayModeUsesUpstream(req.Mode) {
+		req.Count = len(req.Upstreams)
+	}
+	if req.Count < 1 || req.Count > maxRelayItems {
+		return nil, common.NewError("relay count must be between 1 and 500")
+	}
 	items := make([]model.RelayItem, req.Count)
 	usedUsernames := make(map[string]bool)
 	if req.Mode == relayModeUpstream {
@@ -1985,12 +1982,27 @@ func (s *ConfigService) prepareRelayItems(req RelayCreateRequest) ([]model.Relay
 	if len(addresses) > req.Count {
 		addresses = addresses[:req.Count]
 	}
+	occupied := make(map[string]bool)
+	if len(addresses) < req.Count {
+		detected, err := discoverRelayIPv6()
+		if err != nil {
+			return nil, err
+		}
+		for _, address := range detected {
+			occupied[address.Address] = true
+		}
+	}
+	attempts := 0
 	for len(addresses) < req.Count {
+		attempts++
+		if attempts > req.Count*128 {
+			return nil, common.NewError("not enough unused IPv6 addresses in selected prefix")
+		}
 		ip, err := randomRelayIPv6(base, prefix)
 		if err != nil {
 			return nil, err
 		}
-		if usedAddresses[ip.String()] || ip == base || !ip.IsGlobalUnicast() {
+		if usedAddresses[ip.String()] || occupied[ip.String()] || ip == base || !ip.IsGlobalUnicast() {
 			continue
 		}
 		usedAddresses[ip.String()] = true
