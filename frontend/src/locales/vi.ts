@@ -676,7 +676,7 @@
     created: "Đã tạo nhóm chuyển tiếp",
     createdRange: "Đã tạo nhóm chuyển tiếp trên các cổng {start}-{end}; dải khả dụng tiếp theo sẽ được chọn tự động",
     createFailed: "Tạo nhóm chuyển tiếp thất bại",
-    ipv6EgressUnavailable: "IPv6 {address} đã được thêm cục bộ nhưng không thể truy cập Internet IPv6. Nhà cung cấp có thể chỉ cho phép IPv6 được cấp; hãy yêu cầu một tiền tố IPv6 được định tuyến hoặc ủy quyền. Việc tạo nút đã được hoàn tác.",
+    ipv6EgressUnavailable: "Kiểm tra TCP Internet của IPv6 {address} vẫn thất bại sau khi thử lại. Đã hoàn tác việc tạo. Lỗi theo địa chỉ đích:",
     deleteConfirm: "Xóa nhóm này và toàn bộ đầu vào của nó?",
     deleted: "Đã xóa nhóm chuyển tiếp",
     deleteFailed: "Xóa nhóm chuyển tiếp thất bại",

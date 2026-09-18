@@ -19,6 +19,7 @@ import (
 	"github.com/Hhz0823/1s-ui/core"
 	"github.com/Hhz0823/1s-ui/database"
 	"github.com/Hhz0823/1s-ui/database/model"
+	"github.com/Hhz0823/1s-ui/internal/ipv6probe"
 	"github.com/Hhz0823/1s-ui/logger"
 	"github.com/Hhz0823/1s-ui/util"
 	"github.com/Hhz0823/1s-ui/util/common"
@@ -84,11 +85,6 @@ func relayModeUsesIPv6(mode string) bool {
 
 func relayModePairsUpstream(mode string) bool {
 	return mode == relayModePaired || mode == relayModeDualStack
-}
-
-var relayIPv6EgressTargets = []string{
-	"[2606:4700:4700::1111]:443",
-	"[2001:4860:4860::8888]:443",
 }
 
 var relayProtocols = map[string]bool{
@@ -2295,7 +2291,7 @@ func validateRelayIPv6Egress(ctx context.Context, items []model.RelayItem, probe
 		return nil
 	}
 	return common.NewErrorf(
-		"%s|%s|IPv6 address is configured locally but cannot reach the IPv6 Internet; the VPS provider may only permit its assigned IPv6. Request a routed or authorized prefix. No relay was created: %v",
+		"%s|%s|IPv6 TCP egress checks failed after retries. Check the target errors, routing, firewall and upstream address authorization. No relay was created: %v",
 		relayIPv6EgressErrorCode,
 		failedAddress,
 		failedError,
@@ -2303,28 +2299,7 @@ func validateRelayIPv6Egress(ctx context.Context, items []model.RelayItem, probe
 }
 
 func probeRelayIPv6Egress(ctx context.Context, address netip.Addr) error {
-	if !address.Is6() {
-		return common.NewError("IPv6 egress probe requires an IPv6 address")
-	}
-	var lastError error
-	for _, target := range relayIPv6EgressTargets {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		attemptContext, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
-		dialer := net.Dialer{
-			Timeout:   2500 * time.Millisecond,
-			LocalAddr: &net.TCPAddr{IP: net.IP(address.AsSlice())},
-		}
-		connection, err := dialer.DialContext(attemptContext, "tcp6", target)
-		cancel()
-		if err == nil {
-			_ = connection.Close()
-			return nil
-		}
-		lastError = err
-	}
-	return lastError
+	return ipv6probe.Probe(ctx, address)
 }
 
 func relayIPv6AddressState(output, address string) string {

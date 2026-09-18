@@ -1,13 +1,17 @@
 # IPv4/IPv6 配对中转交付文件
 
-这些文件是基于本仓库源码构建的 IPv4/IPv6 配对和双栈回退中转版本。
+本补丁版本为 **v1.5.20-ipv6fix.1**，直接基于 **v1.5.20**（`f4a0d051473abe38404e51d14df41ac37dfed150`）构建，不包含 v1.5.21 及以后版本的功能、依赖升级或数据库变更。
+
+仅优化 IPv6 出口检测：每个目标等待 5 秒，两个目标均失败时分别间隔 1 秒、2 秒再试，共最多三轮；任一目标成功即通过，持续失败仍回滚，并显示具体目标和错误。每个地址最多约 33 秒。保留 v1.5.20 的 DAD 检查和并发上限。
+
+请使用本页在线命令，或本补丁 Release 的附件安装；仓库内历史打包文件不作为本次补丁的安装包。
 
 ## 直接安装
 
 以 root 身份执行一行在线安装命令：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/925345845/s-ui/main/paired-release/install-s-ui-paired-online.sh | S_UI_PAIRED_VERSION=v1.5.20 bash
+curl -fsSL https://raw.githubusercontent.com/925345845/s-ui/v1.5.20-ipv6fix.1/paired-release/install-s-ui-paired-online.sh | bash
 ```
 
 脚本会自动识别 amd64/arm64、下载对应安装包并调用本地安装脚本。

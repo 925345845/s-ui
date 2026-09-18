@@ -725,7 +725,7 @@
     created: "中转批次已创建",
     createdRange: "中转批次已创建，使用端口 {start}-{end}；下次将自动选择后续可用端口",
     createFailed: "中转批次创建失败",
-    ipv6EgressUnavailable: "IPv6 {address} 已添加到网卡，但无法访问 IPv6 公网。云服务商可能只允许已分配的单个 IPv6；请申请已路由或已授权的 IPv6 前缀。本次节点创建已回滚。",
+    ipv6EgressUnavailable: "IPv6 {address} 的公网 TCP 检测在重试后仍失败，本次创建已回滚。具体目标和错误如下：",
     deleteConfirm: "确定删除此批次及其所有入站吗？",
     deleted: "中转批次已删除",
     deleteFailed: "中转批次删除失败",

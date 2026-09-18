@@ -723,7 +723,7 @@
     created: "Relay pool created",
     createdRange: "Relay pool created on ports {start}-{end}; the next available range will be selected automatically",
     createFailed: "Relay pool creation failed",
-    ipv6EgressUnavailable: "IPv6 {address} was added locally but cannot reach the IPv6 Internet. The provider may only allow its assigned IPv6; request a routed or authorized IPv6 prefix. Relay creation was rolled back.",
+    ipv6EgressUnavailable: "IPv6 {address} failed Internet TCP checks after retries. Creation was rolled back. Target errors:",
     deleteConfirm: "Delete this pool and all of its inbounds?",
     deleted: "Relay pool deleted",
     deleteFailed: "Relay pool deletion failed",
