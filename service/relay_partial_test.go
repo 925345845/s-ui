@@ -2,16 +2,110 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Hhz0823/1s-ui/database/model"
 )
+
+func TestRelayMatchingUsableIPv6DoesNotDiscardItsIPv4(t *testing.T) {
+	planned, checks := relayPartialFixture(6)
+	checks.matchUsable = true
+	checks.ipv6 = func(_ context.Context, ip netip.Addr) error {
+		if ip.String() == planned[1].IPv6 || ip.String() == planned[4].IPv6 {
+			return nil
+		}
+		return errors.New("unreachable")
+	}
+	checks.ipv4 = func(_ context.Context, u RelayUpstream) error {
+		if u.Username == "user-2" {
+			return errors.New("user-2 password-2 rejected")
+		}
+		return nil
+	}
+	kept, report, err := prepareUsableRelayItems(context.Background(), planned, nil, true, checks)
+	if err != nil || len(kept) != 2 {
+		t.Fatalf("kept=%+v report=%+v err=%v", kept, report, err)
+	}
+	for i, row := range []int{1, 3} {
+		candidate := []int{2, 5}[i]
+		if kept[i].SourceRow != row || kept[i].IPv6SourceRow != candidate || kept[i].IPv6 != planned[candidate-1].IPv6 || relayItemUpstream(kept[i]) != relayItemUpstream(planned[row-1]) {
+			t.Fatalf("bad match: %+v", kept[i])
+		}
+	}
+	if !reflect.DeepEqual(report.UnmatchedIPv4, []int{2, 4, 5, 6}) {
+		t.Fatalf("missing unmatched rows: %+v", report)
+	}
+	for _, failure := range report.Skipped {
+		if strings.Contains(failure.Reason, "password-2") || strings.Contains(failure.Reason, "user-2") {
+			t.Fatal("secret leaked")
+		}
+	}
+	var removed []string
+	if err := cleanupSkippedRelayAddresses(planned, kept, func(_, ip string, _ int) error { removed = append(removed, ip); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(removed, []string{planned[0].IPv6, planned[2].IPv6, planned[3].IPv6, planned[5].IPv6}) {
+		t.Fatalf("bad cleanup: %v", removed)
+	}
+}
+
+func TestRelayMatchingAllIPv4FailDoesNotSaveIPv6OnlyPairs(t *testing.T) {
+	planned, checks := relayPartialFixture(4)
+	checks.matchUsable = true
+	checks.ipv4 = func(context.Context, RelayUpstream) error { return errors.New("unreachable") }
+	kept, report, err := prepareUsableRelayItems(context.Background(), planned, nil, true, checks)
+	if err == nil || len(kept) != 0 || len(report.UnmatchedIPv4) != 4 {
+		t.Fatalf("invalid success: %+v %v", report, err)
+	}
+}
+
+func TestRelayMatchingLastCandidateStillPairsFirstIPv4(t *testing.T) {
+	planned, checks := relayPartialFixture(500)
+	checks.matchUsable = true
+	var calls atomic.Int32
+	checks.ipv6 = func(_ context.Context, ip netip.Addr) error {
+		calls.Add(1)
+		if ip.String() == planned[499].IPv6 {
+			return nil
+		}
+		return errors.New("unreachable")
+	}
+	kept, report, err := prepareUsableRelayItems(context.Background(), planned, nil, true, checks)
+	if err != nil || calls.Load() != 500 || len(kept) != 1 || kept[0].SourceRow != 1 || kept[0].IPv6SourceRow != 500 || len(report.UnmatchedIPv4) != 499 {
+		t.Fatalf("kept=%+v probes=%d err=%v", kept, calls.Load(), err)
+	}
+}
+
+func TestRelayChecksDefaultEnabledAndBudgetCoversEveryWave(t *testing.T) {
+	for _, raw := range []string{`{}`, `{"verify_egress":true}`, `{"verify_egress":false}`} {
+		var req RelayCreateRequest
+		if err := json.Unmarshal([]byte(raw), &req); err != nil {
+			t.Fatal(err)
+		}
+		skip := req.VerifyEgress != nil && !*req.VerifyEgress
+		if skip != strings.Contains(raw, "false") {
+			t.Fatalf("unexpected default for %s", raw)
+		}
+	}
+	for _, count := range []int{1, 16, 17, 100, 500} {
+		v6 := relayCheckBudget(count, 16, 36*time.Second)
+		v4 := relayCheckBudget(count, 8, 12*time.Second)
+		if v6 < time.Duration((count+15)/16)*36*time.Second || v4 < time.Duration((count+7)/8)*12*time.Second {
+			t.Fatal("budget truncates queued rows")
+		}
+		if v6+v4+2*time.Minute >= 45*time.Minute {
+			t.Fatal("remote deadline too short")
+		}
+	}
+}
 
 func relayPartialFixture(count int) ([]model.RelayItem, relayCreationChecks) {
 	items := make([]model.RelayItem, count)

@@ -44,7 +44,7 @@ func TestRelayLinuxPartialCreation(t *testing.T) {
 		}
 	})
 	req := RelayCreateRequest{Mode: relayModePaired, Protocol: "socks", BaseIPv6: "2001:db8:abcd:1234::1", Prefix: 64, Interface: iface,
-		PortStart: 30000, PasswordLength: 12, AddSystemAddresses: true, IPv6Addresses: ipv6, AppleIDIPv4Only: true, VerifyEgress: true,
+		PortStart: 30000, PasswordLength: 12, AddSystemAddresses: true, IPv6Addresses: ipv6, AppleIDIPv4Only: true,
 		Upstreams: []RelayUpstream{{Server: "192.0.2.1", Port: 1080}, {Server: "192.0.2.2", Port: 1081}, {Server: "192.0.2.3", Port: 1082}, {Server: "192.0.2.4", Port: 1083}}}
 	checks := relayCreationChecks{add: addRelayAddressContext, ready: checkRelayRowsReady,
 		ipv6: func(_ context.Context, ip netip.Addr) error {
@@ -62,7 +62,7 @@ func TestRelayLinuxPartialCreation(t *testing.T) {
 	}
 	service := &ConfigService{}
 	pool, err := service.createRelayContext(context.Background(), req, "test", "192.0.2.100", &checks)
-	if err != nil || pool == nil || pool.Count != 2 || pool.Id == 0 || len(pool.CreationReport.Skipped) != 2 {
+	if err != nil || pool == nil || pool.Count != 3 || pool.Id == 0 || len(pool.CreationReport.Skipped) != 2 {
 		t.Fatalf("pool=%+v err=%v", pool, err)
 	}
 	var saved model.RelayPool
@@ -73,12 +73,12 @@ func TestRelayLinuxPartialCreation(t *testing.T) {
 	if err := json.Unmarshal(saved.Items, &items); err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 2 || items[0].SourceRow != 1 || items[1].SourceRow != 4 {
+	if len(items) != 3 || items[0].SourceRow != 1 || items[1].SourceRow != 2 || items[2].SourceRow != 4 {
 		t.Fatalf("saved wrong rows: %+v", items)
 	}
 	for _, item := range items {
 		u := req.Upstreams[item.SourceRow-1]
-		if item.IPv6 != ipv6[item.SourceRow-1] || relayItemUpstream(item) != u || !item.AppleIDIPv4Only {
+		if item.IPv6 != ipv6[item.IPv6SourceRow-1] || relayItemUpstream(item) != u || !item.AppleIDIPv4Only {
 			t.Fatalf("pair changed: %+v", item)
 		}
 		var outbound model.Outbound
@@ -97,18 +97,15 @@ func TestRelayLinuxPartialCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, ip := range ipv6 {
+	for _, ip := range ipv6 {
 		want := relayAddressReady
-		if i == 2 {
-			want = relayAddressMissing
-		}
 		if got := relayIPv6AddressState(string(state), ip); got != want {
 			t.Fatalf("ip=%s got=%s want=%s", ip, got, want)
 		}
 	}
 	var inboundCount int64
 	database.GetDB().Model(&model.Inbound{}).Count(&inboundCount)
-	if inboundCount != 2 {
+	if inboundCount != 3 {
 		t.Fatalf("failed rows created resources: %d", inboundCount)
 	}
 	// All failures must not save an empty batch or any extra inbound.
@@ -124,7 +121,8 @@ func TestRelayLinuxPartialCreation(t *testing.T) {
 	}
 	// With public checks disabled, even unreachable destinations must not stop
 	// any row from being saved/exported. Local address preparation still runs.
-	req.VerifyEgress = false
+	disabled := false
+	req.VerifyEgress = &disabled
 	checks.ipv6 = func(context.Context, netip.Addr) error {
 		t.Error("unexpected IPv6 probe")
 		return errors.New("unreachable")

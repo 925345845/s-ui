@@ -17,11 +17,14 @@
         </v-tabs>
 
         <v-alert v-if="creationReport" :type="createdCount > 0 ? 'warning' : 'error'" variant="tonal" class="mb-3" role="status">
-          {{ $t('relay.partialResult', { requested: creationReport.requested, created: createdCount, skipped: creationReport.skipped.length }) }}
+          {{ $t('relay.partialResult', { requested: creationReport.requested, created: createdCount, skipped: creationReport.requested - createdCount }) }}
+          <div v-if="creationReport.unmatched_ipv4?.length" class="text-caption mt-1">
+            {{ $t('relay.unmatchedIPv4') }}: {{ creationReport.unmatched_ipv4.join(', ') }}
+          </div>
           <div class="text-caption mt-1">{{ $t('relay.partialHint') }}</div>
           <v-btn variant="text" size="small" prepend-icon="mdi-content-copy" @click="copy(skippedReportText)">{{ $t('relay.copySkipped') }}</v-btn>
           <div style="max-height: 220px; overflow: auto; overflow-wrap: anywhere">
-            <div v-for="row in creationReport.skipped" :key="row.row" class="text-caption mt-1">
+            <div v-for="row in creationReport.skipped" :key="`${row.stage}-${row.row}`" class="text-caption mt-1">
               {{ $t('relay.skippedRow', { row: row.row }) }} · {{ row.ipv6 || '—' }} · {{ $t(`relay.creationStages.${row.stage}`) }}: {{ row.reason }}
             </div>
           </div>
@@ -292,6 +295,7 @@
                       <v-list density="compact" class="relay-refresh-list">
                         <v-list-item v-for="(item, itemIndex) in pool.items.slice(0, exportPreviewLimit)" :key="item.listen_port">
                           <v-list-item-title dir="ltr">#{{ itemIndex + 1 }} · {{ item.ipv6 }}</v-list-item-title>
+                          <div v-if="item.source_row" class="text-caption">{{ $t('relay.matchedRows', { ipv4: item.source_row, ipv6: item.ipv6_source_row || item.source_row }) }}</div>
                           <v-list-item-subtitle class="relay-refresh-url" dir="ltr">{{ itemRefreshURL(item) }}</v-list-item-subtitle>
                           <template #append>
                             <v-btn
@@ -372,14 +376,14 @@ import { i18n } from '@/locales'
 import { copyText } from '@/utils/clipboard'
 
 interface IPv6Item { interface: string; address: string; prefix: number }
-interface RelayItem { listen_port: number; username: string; password: string; ipv6?: string; upstream_server?: string; protocol?: string; export?: string; refresh_token?: string; egress_check?: string }
+interface RelayItem { listen_port: number; username: string; password: string; ipv6?: string; upstream_server?: string; protocol?: string; export?: string; refresh_token?: string; egress_check?: string; source_row?: number; ipv6_source_row?: number }
 interface RelayPool {
   id: number; name: string; source?: string; mode: string; protocol?: string; domain_strategy?: string
   listen_host: string; port_start: number; count: number; items: RelayItem[]; export_text: string
 }
 interface RelayCapabilities { os: string; can_add_system_ipv6: boolean; unavailable_reason?: string }
 interface RelaySkippedItem { row: number; ipv6?: string; stage: string; reason: string }
-interface RelayCreationReport { requested: number; skipped: RelaySkippedItem[] }
+interface RelayCreationReport { requested: number; skipped: RelaySkippedItem[]; unmatched_ipv4?: number[] }
 
 const props = defineProps<{
   visible: boolean
@@ -396,8 +400,12 @@ const advancedPanel = ref<string>()
 const loading = ref(false)
 const creationReport = ref<RelayCreationReport | null>(null)
 const createdCount = ref(0)
-const skippedReportText = computed(() => (creationReport.value?.skipped ?? []).map((row) =>
-  `${i18n.global.t('relay.skippedRow', { row: row.row })}\t${row.ipv6 || ''}\t${i18n.global.t(`relay.creationStages.${row.stage}`)}\t${row.reason}`).join('\n'))
+const skippedReportText = computed(() => {
+  const lines = (creationReport.value?.skipped ?? []).map((row) =>
+    `${i18n.global.t('relay.skippedRow', { row: row.row })}\t${row.ipv6 || ''}\t${i18n.global.t(`relay.creationStages.${row.stage}`)}\t${row.reason}`)
+  if (creationReport.value?.unmatched_ipv4?.length) lines.push(`${i18n.global.t('relay.unmatchedIPv4')}: ${creationReport.value.unmatched_ipv4.join(', ')}`)
+  return lines.join('\n')
+})
 const createElapsed = ref(0)
 const createProgress = reactive({ stage: 'preparing', completed: 0, total: 0 })
 const createStageLabel = computed(() => i18n.global.t(`relay.creationStages.${createProgress.stage}`))
@@ -455,7 +463,7 @@ const isRemote = computed(() => Number.isInteger(props.agentId) && Number(props.
 const form = reactive({
   name: '', public_host: window.location.hostname, port_start: 30000, count: 10,
   username_prefix: 'relay', password_length: 12, interface: '', base_ipv6: '', prefix: 64,
-  ipv6_text: '', upstream_text: '', add_system_addresses: true, verify_egress: false, protocol: 'socks',
+  ipv6_text: '', upstream_text: '', add_system_addresses: true, verify_egress: true, protocol: 'socks',
   transport: 'http', tls_id: 0, domain_strategy: 'ipv6_only', shadowsocks_method: '2022-blake3-aes-256-gcm', apple_id_ipv4_only: true,
 })
 
@@ -608,7 +616,7 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick 
     })
     let msg: any
     try { msg = await response.json() } catch { msg = { success: false, msg: i18n.global.t('relay.invalidResponse') } }
-    if (msg.obj?.creation_report?.skipped?.length) {
+    if (msg.obj?.creation_report?.skipped?.length || msg.obj?.creation_report?.unmatched_ipv4?.length) {
       creationReport.value = msg.obj.creation_report
       createdCount.value = Number(msg.obj?.id) > 0 ? Number(msg.obj?.count || 0) : 0
     }

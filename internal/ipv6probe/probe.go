@@ -25,6 +25,13 @@ func Probe(ctx context.Context, address netip.Addr) error {
 		[]time.Duration{0, time.Second, 2 * time.Second}, dial)
 }
 
+// Creation gets longer connection attempts and settling intervals (32 seconds
+// maximum per address). Rotation retains its existing shorter probe policy.
+func ProbeForCreation(ctx context.Context, address netip.Addr) error {
+	return probe(ctx, address, targets, 8*time.Second,
+		[]time.Duration{0, 3 * time.Second, 5 * time.Second}, dial)
+}
+
 func dial(ctx context.Context, address netip.Addr, target string) error {
 	dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.IP(address.AsSlice())}}
 	connection, err := dialer.DialContext(ctx, "tcp6", target)

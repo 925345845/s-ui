@@ -159,7 +159,7 @@ func (s *Server) startControlSocket() error {
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      10 * time.Minute,
+		WriteTimeout:      45 * time.Minute,
 		IdleTimeout:       30 * time.Second,
 	}
 	go func() {

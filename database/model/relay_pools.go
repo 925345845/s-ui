@@ -28,6 +28,7 @@ type RelayPool struct {
 }
 
 type RelayItem struct {
+	IPv6SourceRow    int    `json:"ipv6_source_row,omitempty"`
 	EgressCheck      string `json:"egress_check,omitempty"`
 	SourceRow        int    `json:"source_row,omitempty"`
 	InboundID        uint   `json:"inbound_id"`
@@ -58,8 +59,9 @@ type RelayItem struct {
 
 // CreationReport is response-only: failed rows create no database resources.
 type RelayCreationReport struct {
-	Requested int                `json:"requested"`
-	Skipped   []RelaySkippedItem `json:"skipped"`
+	UnmatchedIPv4 []int              `json:"unmatched_ipv4,omitempty"`
+	Requested     int                `json:"requested"`
+	Skipped       []RelaySkippedItem `json:"skipped"`
 }
 
 type RelaySkippedItem struct {

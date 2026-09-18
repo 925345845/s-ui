@@ -510,7 +510,9 @@ func validAgentRPCMethod(method string) bool {
 
 func agentRPCTimeout(method string) time.Duration {
 	switch method {
-	case agent.RPCMethodInboundQuickAdd, agent.RPCMethodRelayCreate, agent.RPCMethodRelayDelete, agent.RPCMethodRelayRotate:
+	case agent.RPCMethodRelayCreate:
+		return 45 * time.Minute
+	case agent.RPCMethodInboundQuickAdd, agent.RPCMethodRelayDelete, agent.RPCMethodRelayRotate:
 		return 10 * time.Minute
 	default:
 		return agentCommandTimeout

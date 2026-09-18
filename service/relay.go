@@ -124,7 +124,7 @@ type RelayUpstream struct {
 }
 
 type RelayCreateRequest struct {
-	VerifyEgress       bool            `json:"verify_egress"`
+	VerifyEgress       *bool           `json:"verify_egress,omitempty"`
 	RequestID          string          `json:"request_id"`
 	Name               string          `json:"name"`
 	Source             string          `json:"source"`
@@ -998,7 +998,7 @@ func (s *ConfigService) createRelayContext(ctx context.Context, req RelayCreateR
 		}
 		checks.add = addRelayAddressContext
 		checks.ready = checkRelayRowsReady
-		checks.ipv6 = probeRelayIPv6Egress
+		checks.ipv6 = ipv6probe.ProbeForCreation
 		checks.settle = func(ctx context.Context) error { return waitRelayPoolSettle(ctx, 2*time.Second) }
 	}
 	if relayModePairsUpstream(req.Mode) {
@@ -1009,7 +1009,8 @@ func (s *ConfigService) createRelayContext(ctx context.Context, req RelayCreateR
 	if checksOverride != nil {
 		checks = *checksOverride
 	}
-	checks.skipEgress = !req.VerifyEgress
+	checks.skipEgress = req.VerifyEgress != nil && !*req.VerifyEgress
+	checks.matchUsable = relayModePairsUpstream(req.Mode) && !checks.skipEgress
 	items, report, err := prepareUsableRelayItems(ctx, planned, existingAddresses, req.AddSystemAddresses, checks)
 	if err != nil {
 		return &model.RelayPool{CreationReport: report}, err
