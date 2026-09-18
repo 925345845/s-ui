@@ -109,6 +109,7 @@ var relayShadowsocksMethods = map[string]bool{
 }
 
 var relayMu sync.Mutex
+var errRelayBusy = common.NewError("relay operation already in progress; wait for it to finish before creating another batch")
 
 type RelayIPv6 struct {
 	Interface string `json:"interface"`
@@ -124,6 +125,7 @@ type RelayUpstream struct {
 }
 
 type RelayCreateRequest struct {
+	fillSourceRows     []int
 	VerifyEgress       *bool           `json:"verify_egress,omitempty"`
 	RequestID          string          `json:"request_id"`
 	Name               string          `json:"name"`
@@ -861,7 +863,7 @@ func (s *ConfigService) CreateRelayContext(ctx context.Context, req RelayCreateR
 
 func (s *ConfigService) createRelayContext(ctx context.Context, req RelayCreateRequest, actor, publicHost string, checksOverride *relayCreationChecks) (result *model.RelayPool, resultErr error) {
 	if !relayMu.TryLock() {
-		return nil, common.NewError("relay operation already in progress; wait for it to finish before creating another batch")
+		return nil, errRelayBusy
 	}
 	defer relayMu.Unlock()
 	if len(req.RequestID) > 64 {
@@ -1013,6 +1015,12 @@ func (s *ConfigService) createRelayContext(ctx context.Context, req RelayCreateR
 	checks.matchUsable = relayModePairsUpstream(req.Mode) && !checks.skipEgress
 	items, report, err := prepareUsableRelayItems(ctx, planned, existingAddresses, req.AddSystemAddresses, checks)
 	if err != nil {
+		// Replenishment may retry indefinitely. Never start another round if
+		// failed candidates could not be removed from the interface.
+		if cleanupErr := cleanupSkippedRelayAddresses(planned, nil, deleteRelayAddress); cleanupErr != nil {
+			return nil, cleanupErr
+		}
+		cleanup = false
 		return &model.RelayPool{CreationReport: report}, err
 	}
 	if err := cleanupSkippedRelayAddresses(planned, items, deleteRelayAddress); err != nil {
@@ -1204,6 +1212,13 @@ func (s *ConfigService) createRelayContext(ctx context.Context, req RelayCreateR
 			items[i].Export = relayClientLink(req, inbound, clientConfig, publicHost)
 		}
 	}
+	if len(req.fillSourceRows) > 0 {
+		for i := range items {
+			if row := items[i].SourceRow; row > 0 && row <= len(req.fillSourceRows) {
+				items[i].SourceRow = req.fillSourceRows[row-1]
+			}
+		}
+	}
 	pool.Items = mustJSON(items)
 	if err := tx.Create(&pool).Error; err != nil {
 		return nil, err
@@ -1240,6 +1255,9 @@ func (s *ConfigService) createRelayContext(ctx context.Context, req RelayCreateR
 		return nil, err
 	}
 	setRelayProgress("committing", len(items), len(items))
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit().Error; err != nil {
 		return nil, err
 	}

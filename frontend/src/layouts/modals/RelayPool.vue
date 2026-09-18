@@ -16,21 +16,15 @@
           <v-tab value="pools">{{ $t('relay.pools') }}</v-tab>
         </v-tabs>
 
-        <v-alert v-if="creationReport" :type="createdCount > 0 ? 'warning' : 'error'" variant="tonal" class="mb-3" role="status">
-          {{ $t('relay.partialResult', { requested: creationReport.requested, created: createdCount, skipped: creationReport.requested - createdCount }) }}
-          <div v-if="creationReport.unmatched_ipv4?.length" class="text-caption mt-1">
-            {{ $t('relay.unmatchedIPv4') }}: {{ creationReport.unmatched_ipv4.join(', ') }}
-          </div>
-          <div class="text-caption mt-1">{{ $t('relay.partialHint') }}</div>
-          <v-btn variant="text" size="small" prepend-icon="mdi-content-copy" @click="copy(skippedReportText)">{{ $t('relay.copySkipped') }}</v-btn>
-          <div style="max-height: 220px; overflow: auto; overflow-wrap: anywhere">
-            <div v-for="row in creationReport.skipped" :key="`${row.stage}-${row.row}`" class="text-caption mt-1">
-              {{ $t('relay.skippedRow', { row: row.row }) }} · {{ row.ipv6 || '—' }} · {{ $t(`relay.creationStages.${row.stage}`) }}: {{ row.reason }}
-            </div>
-          </div>
+        <v-alert v-if="fillStatus" :type="fillStatus.error ? 'error' : 'info'" variant="tonal" class="mb-3" role="status">
+          {{ $t('relay.fillProgress', { matched: fillStatus.matched, total: fillStatus.requested }) }}
+          <div class="text-caption mt-1">{{ $t(fillStatus.error ? 'relay.fillError' : fillStatus.active ? 'relay.fillRunning' : fillStatus.matched === fillStatus.requested ? 'relay.fillDone' : 'relay.fillStopped') }}</div>
+          <v-progress-linear class="mt-2" :model-value="100 * fillStatus.matched / Math.max(1, fillStatus.requested)" />
+          <v-btn v-if="fillStatus.active" variant="text" :loading="fillStatus.stopping" @click="stopFill">{{ $t('relay.fillStop') }}</v-btn>
         </v-alert>
+        <v-alert v-if="['paired', 'dualstack'].includes(tab) && form.verify_egress" type="info" variant="tonal" density="compact" class="mb-3">{{ $t('relay.fillHint') }}</v-alert>
         <v-switch v-if="['ipv6', 'paired', 'dualstack'].includes(tab)" v-model="form.verify_egress"
-          color="primary" :label="$t('relay.verifyEgress')" :hint="$t('relay.verifyEgressHint')" persistent-hint hide-details="auto" class="mb-3" />
+          :disabled="loading" color="primary" :label="$t('relay.verifyEgress')" :hint="$t('relay.verifyEgressHint')" persistent-hint hide-details="auto" class="mb-3" />
         <v-window v-model="tab">
           <v-window-item value="ipv6">
             <section class="relay-quick-section">
@@ -213,7 +207,7 @@
                 <div class="text-body-2 mt-2" role="status">{{ $t('relay.pairedPlan', { count: pairedUpstreamCount }) }}</div>
               </v-col>
               <v-col cols="12">
-                <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
+                <v-switch v-if="!form.verify_egress" v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
               </v-col>
               <v-col cols="12">
                 <v-switch v-model="form.apple_id_ipv4_only" color="primary" :label="$t('relay.appleIDIPv4Only')" :hint="$t('relay.appleIDIPv4OnlyHint')" persistent-hint hide-details="auto" />
@@ -261,7 +255,7 @@
                 <div class="text-body-2 mt-2" role="status">{{ $t('relay.pairedPlan', { count: pairedUpstreamCount }) }}</div>
               </v-col>
               <v-col cols="12">
-                <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
+                <v-switch v-if="!form.verify_egress" v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
               </v-col>
               <v-col cols="12">
                 <v-switch v-model="form.apple_id_ipv4_only" color="primary" :label="$t('relay.appleIDIPv4Only')" :hint="$t('relay.appleIDIPv4OnlyHint')" persistent-hint hide-details="auto" />
@@ -295,7 +289,6 @@
                       <v-list density="compact" class="relay-refresh-list">
                         <v-list-item v-for="(item, itemIndex) in pool.items.slice(0, exportPreviewLimit)" :key="item.listen_port">
                           <v-list-item-title dir="ltr">#{{ itemIndex + 1 }} · {{ item.ipv6 }}</v-list-item-title>
-                          <div v-if="item.source_row" class="text-caption">{{ $t('relay.matchedRows', { ipv4: item.source_row, ipv6: item.ipv6_source_row || item.source_row }) }}</div>
                           <v-list-item-subtitle class="relay-refresh-url" dir="ltr">{{ itemRefreshURL(item) }}</v-list-item-subtitle>
                           <template #append>
                             <v-btn
@@ -353,7 +346,7 @@
       </v-card-text>
       <v-divider />
       <v-card-actions class="flex-wrap">
-        <div v-if="loading" class="w-100 pa-2" role="status" aria-live="polite">
+        <div v-if="loading && !fillStatus?.active" class="w-100 pa-2" role="status" aria-live="polite">
           {{ $t('relay.creatingStatus', { stage: createStageLabel, elapsed: createElapsed }) }}
           <span v-if="createProgress.total > 0"> · {{ createProgress.completed }}/{{ createProgress.total }}</span>
           <v-progress-linear v-if="createProgress.total > 0" class="mt-2" color="primary"
@@ -382,8 +375,7 @@ interface RelayPool {
   listen_host: string; port_start: number; count: number; items: RelayItem[]; export_text: string
 }
 interface RelayCapabilities { os: string; can_add_system_ipv6: boolean; unavailable_reason?: string }
-interface RelaySkippedItem { row: number; ipv6?: string; stage: string; reason: string }
-interface RelayCreationReport { requested: number; skipped: RelaySkippedItem[]; unmatched_ipv4?: number[] }
+interface RelayFillStatus { request_id: string; requested: number; matched: number; rounds: number; active: boolean; stopping: boolean; stage: string; started_at: number; pool_ids: number[]; error?: string }
 
 const props = defineProps<{
   visible: boolean
@@ -398,14 +390,63 @@ const emit = defineEmits<{
 const tab = ref('ipv6')
 const advancedPanel = ref<string>()
 const loading = ref(false)
-const creationReport = ref<RelayCreationReport | null>(null)
-const createdCount = ref(0)
-const skippedReportText = computed(() => {
-  const lines = (creationReport.value?.skipped ?? []).map((row) =>
-    `${i18n.global.t('relay.skippedRow', { row: row.row })}\t${row.ipv6 || ''}\t${i18n.global.t(`relay.creationStages.${row.stage}`)}\t${row.reason}`)
-  if (creationReport.value?.unmatched_ipv4?.length) lines.push(`${i18n.global.t('relay.unmatchedIPv4')}: ${creationReport.value.unmatched_ipv4.join(', ')}`)
-  return lines.join('\n')
-})
+const fillStatus = ref<RelayFillStatus | null>(null)
+let fillTimer: ReturnType<typeof setInterval> | undefined
+const fillPolling = new Set<string>()
+const fillEndpoint = () => isRemote.value ? `api/agents/${props.agentId}/relay/fill` : 'api/relay/fill'
+const stopFillPolling = () => {
+  if (fillTimer) clearInterval(fillTimer)
+  fillTimer = undefined
+}
+onBeforeUnmount(stopFillPolling)
+const pollFill = async (requestID = '') => {
+  const endpoint = fillEndpoint()
+  if (fillPolling.has(endpoint)) return
+  fillPolling.add(endpoint)
+  const snapshotID = fillStatus.value?.request_id
+  try {
+    const response = await fetch(`${endpoint}/status?request_id=${encodeURIComponent(requestID)}`, {
+      credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' }, signal: AbortSignal.timeout(15000),
+    })
+    const msg = await response.json()
+    if (!response.ok || !msg.success || endpoint !== fillEndpoint() || snapshotID !== fillStatus.value?.request_id) return
+    const previous = fillStatus.value
+    if (!msg.obj) {
+      if (previous?.active) {
+        fillStatus.value = { ...previous, active: false, error: 'interrupted' }
+        loading.value = false
+        stopFillPolling()
+        await loadData()
+      }
+      return
+    }
+    fillStatus.value = msg.obj
+    loading.value = msg.obj.active
+    if (msg.obj.active && !fillTimer) fillTimer = setInterval(() => pollFill(msg.obj.request_id), 2000)
+    if (!msg.obj.active) stopFillPolling()
+    if (previous?.matched !== msg.obj.matched || (previous?.active && !msg.obj.active)) {
+      await loadData()
+      if (!msg.obj.active) {
+        if (isRemote.value) emit('changed')
+        else await Data().loadData()
+      }
+    }
+  } catch { /* A lost poll never cancels the server-side task. */ }
+  finally { fillPolling.delete(endpoint) }
+}
+const stopFill = async () => {
+  if (!fillStatus.value?.active) return
+  try {
+    const response = await fetch(`${fillEndpoint()}/stop`, {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({ request_id: fillStatus.value.request_id }),
+    })
+    const msg = await response.json()
+    if (!msg.success) throw new Error(msg.msg || i18n.global.t('failed'))
+    fillStatus.value = msg.obj
+  } catch (error: any) { push.error({ message: error?.message || i18n.global.t('failed') }) }
+}
 const createElapsed = ref(0)
 const createProgress = reactive({ stage: 'preparing', completed: 0, total: 0 })
 const createStageLabel = computed(() => i18n.global.t(`relay.creationStages.${createProgress.stage}`))
@@ -581,10 +622,11 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick 
     return
   }
   loading.value = true
-  creationReport.value = null
-  createdCount.value = 0
+  fillStatus.value = null
+  const autoFill = ['paired', 'dualstack'].includes(mode) && form.verify_egress
+  let backgroundStarted = false
   const requestID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-  startCreateProgress(requestID)
+  if (!autoFill) startCreateProgress(requestID)
   try {
     const payload: any = { ...form, mode, request_id: requestID }
     payload.source = quick ? 'help660vip/auto-add-ipv6' : ''
@@ -608,7 +650,7 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick 
     payload.upstreams = []
     payload.upstream_text = form.upstream_text
     delete payload.ipv6_text
-    const endpoint = isRemote.value ? `api/agents/${props.agentId}/relay/create` : 'api/relay/create'
+    const endpoint = autoFill ? `${fillEndpoint()}/start` : isRemote.value ? `api/agents/${props.agentId}/relay/create` : 'api/relay/create'
     const response = await fetch(endpoint, {
       method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
@@ -616,9 +658,18 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick 
     })
     let msg: any
     try { msg = await response.json() } catch { msg = { success: false, msg: i18n.global.t('relay.invalidResponse') } }
-    if (msg.obj?.creation_report?.skipped?.length || msg.obj?.creation_report?.unmatched_ipv4?.length) {
-      creationReport.value = msg.obj.creation_report
-      createdCount.value = Number(msg.obj?.id) > 0 ? Number(msg.obj?.count || 0) : 0
+    if (autoFill) {
+      if (!msg.success) throw new Error(msg.msg || i18n.global.t('relay.createFailed'))
+      backgroundStarted = true
+      fillStatus.value = msg.obj
+      loading.value = msg.obj.active
+      tab.value = 'pools'
+      form.name = ''
+      form.ipv6_text = ''
+      form.upstream_text = ''
+      if (msg.obj.active) fillTimer = setInterval(() => pollFill(requestID), 2000)
+      await loadData()
+      return
     }
     if (msg.success) {
       const allocatedStart = Number(msg.obj?.port_start)
@@ -648,10 +699,14 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick 
       })
     }
   } catch (error: any) {
-    push.error({ message: error?.message || i18n.global.t('relay.createFailed') })
+    if (autoFill) {
+      await pollFill(requestID)
+      backgroundStarted = fillStatus.value?.request_id === requestID
+    }
+    if (!backgroundStarted) push.error({ message: error?.message || i18n.global.t('relay.createFailed') })
   } finally {
     stopCreateProgress()
-    loading.value = false
+    if (!backgroundStarted) loading.value = false
   }
 }
 
@@ -750,6 +805,13 @@ watch(() => props.visible, (visible) => {
   if (!visible) return
   if (isRemote.value && props.connectionHost) form.public_host = props.connectionHost
   loadData()
+  pollFill()
+})
+watch(() => props.agentId, () => {
+  stopFillPolling()
+  fillStatus.value = null
+  loading.value = false
+  if (props.visible) pollFill()
 })
 watch(() => props.connectionHost, (host) => {
   if (isRemote.value && host) form.public_host = host

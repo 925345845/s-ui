@@ -40,6 +40,9 @@ func (a *APIv2Handler) initRouter(g *gin.RouterGroup) {
 	g.POST("/relay/:id/rotation", func(c *gin.Context) { a.ApiService.SetRelayPoolRotation(c, a.findUsername(c)) })
 	g.GET("/relay/create/status", func(c *gin.Context) { a.ApiService.GetRelayCreateStatus(c, a.findUsername(c)) })
 	g.POST("/relay/create", func(c *gin.Context) { a.ApiService.CreateRelay(c, a.findUsername(c)) })
+	g.POST("/relay/fill/start", func(c *gin.Context) { a.ApiService.StartRelayFill(c, a.findUsername(c)) })
+	g.GET("/relay/fill/status", func(c *gin.Context) { a.ApiService.GetRelayFill(c, a.findUsername(c)) })
+	g.POST("/relay/fill/stop", func(c *gin.Context) { a.ApiService.StopRelayFill(c, a.findUsername(c)) })
 	g.GET("/relay/:id/bitbrowser.xlsx", a.ApiService.ExportRelayBitBrowser)
 	g.GET("/:getAction", a.getHandler)
 }

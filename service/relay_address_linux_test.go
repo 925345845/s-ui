@@ -6,16 +6,139 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/Hhz0823/1s-ui/database"
 	"github.com/Hhz0823/1s-ui/database/model"
 )
+
+func TestRelayLinuxFillLifecycle(t *testing.T) {
+	if os.Getenv("SUI_RELAY_NETNS_TEST") != "1" {
+		t.Skip("requires the isolated relay network namespace")
+	}
+	for _, stop := range []bool{false, true} {
+		t.Run(fmt.Sprint("stop=", stop), func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("SUI_DB_FOLDER", dir)
+			if err := database.InitDB(filepath.Join(dir, "fill.db")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := (&SettingService{}).GetAllSetting(); err != nil {
+				t.Fatal(err)
+			}
+			ctx, j, req := fillTestJob(t, 3)
+			req.Mode, req.Protocol = relayModePaired, "socks"
+			req.BaseIPv6, req.Prefix, req.Interface = "2001:db8:abcd:1234::1", 64, "relaytest0"
+			req.AddSystemAddresses = true
+			var mu sync.Mutex
+			var added []string
+			t.Cleanup(func() {
+				for _, ip := range added {
+					_ = deleteRelayAddress(req.Interface, ip, 64)
+				}
+			})
+			checks := relayCreationChecks{
+				add: func(ctx context.Context, iface, ip string, prefix int) error {
+					mu.Lock()
+					added = append(added, ip)
+					mu.Unlock()
+					return addRelayAddressContext(ctx, iface, ip, prefix)
+				},
+				ready: checkRelayRowsReady,
+				ipv4:  func(context.Context, RelayUpstream) error { return nil },
+			}
+			rounds := 0
+			var firstRoundIPs []string
+			runRelayFill(ctx, j, req, func(ctx context.Context, round RelayCreateRequest) (*model.RelayPool, error) {
+				rounds++
+				if rounds > 3 {
+					t.Fatal("unexpected retry")
+				}
+				if rounds == 1 {
+					checks.ipv6 = func(context.Context, netip.Addr) error { return errors.New("first candidates unavailable") }
+				} else if rounds == 2 {
+					checks.ipv6 = func(context.Context, netip.Addr) error { return nil }
+					checks.ipv4 = func(_ context.Context, u RelayUpstream) error {
+						if u.Server != req.Upstreams[1].Server {
+							return errors.New("not ready yet")
+						}
+						return nil
+					}
+				} else {
+					checks.ipv4 = func(context.Context, RelayUpstream) error { return nil }
+					checks.ipv6 = func(ctx context.Context, _ netip.Addr) error {
+						if stop {
+							j.cancel()
+							return ctx.Err()
+						}
+						return nil
+					}
+				}
+				pool, err := (&ConfigService{}).createRelayContext(ctx, round, "test", "192.0.2.100", &checks)
+				if rounds == 1 {
+					firstRoundIPs = append([]string{}, added...)
+				}
+				return pool, err
+			}, func(context.Context) error { return nil })
+			wantCount, wantStage := 3, "done"
+			if stop {
+				wantCount, wantStage = 1, "stopped"
+			}
+			if s := j.snapshot(); s.Matched != wantCount || s.Stage != wantStage {
+				t.Fatalf("status=%+v", s)
+			}
+			var pools []model.RelayPool
+			if err := database.GetDB().Find(&pools).Error; err != nil {
+				t.Fatal(err)
+			}
+			saved := map[string]bool{}
+			rows := map[int]bool{}
+			for _, pool := range pools {
+				var items []model.RelayItem
+				if err := json.Unmarshal(pool.Items, &items); err != nil {
+					t.Fatal(err)
+				}
+				for _, item := range items {
+					if item.SourceRow < 1 || item.SourceRow > 3 || rows[item.SourceRow] {
+						t.Fatalf("invalid original row: %+v", item)
+					}
+					if relayItemUpstream(item) != req.Upstreams[item.SourceRow-1] || !item.AppleIDIPv4Only {
+						t.Fatalf("pair changed: %+v", item)
+					}
+					rows[item.SourceRow], saved[item.IPv6] = true, true
+				}
+			}
+			if len(rows) != wantCount || !rows[2] {
+				t.Fatalf("saved rows=%v", rows)
+			}
+			state, err := exec.Command("ip", "-6", "-o", "addr", "show", "dev", req.Interface).CombinedOutput()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, ip := range added {
+				present := relayIPv6AddressState(string(state), ip) == relayAddressReady
+				if present != saved[ip] {
+					t.Fatalf("failed/cancelled address retained or saved address removed: %s", ip)
+				}
+			}
+			for _, ip := range firstRoundIPs {
+				if saved[ip] {
+					t.Fatal("failed candidate reused")
+				}
+			}
+			if relayIPv6AddressState(string(state), req.BaseIPv6) != relayAddressReady {
+				t.Fatal("existing base removed")
+			}
+		})
+	}
+}
 
 func TestRelayLinuxPartialCreation(t *testing.T) {
 	if os.Getenv("SUI_RELAY_NETNS_TEST") != "1" {

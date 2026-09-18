@@ -13,6 +13,38 @@ type RemoteRelayCreateRequest struct {
 	PublicHost string             `json:"public_host"`
 }
 
+type RemoteRelayFillControl struct {
+	Actor     string `json:"actor"`
+	RequestID string `json:"request_id"`
+}
+
+func (s *LocalControlService) StartRemoteRelayFill(request RemoteRelayCreateRequest) (*RelayFillStatus, error) {
+	actor, err := normalizeRemoteActor(request.Actor)
+	if err != nil {
+		return nil, err
+	}
+	publicHost, err := normalizeAgentPublicHost(request.PublicHost)
+	if err != nil {
+		return nil, err
+	}
+	if publicHost == "" {
+		return nil, common.NewError("managed server public host is required")
+	}
+	request.Request.PublicHost = publicHost
+	return s.ConfigService.StartRelayFill(request.Request, "agent:"+actor, publicHost)
+}
+
+func (s *LocalControlService) RemoteRelayFillControl(request RemoteRelayFillControl, stop bool) (*RelayFillStatus, error) {
+	actor, err := normalizeRemoteActor(request.Actor)
+	if err != nil {
+		return nil, err
+	}
+	if stop {
+		return StopRelayFill("agent:"+actor, request.RequestID)
+	}
+	return GetRelayFillStatus("agent:"+actor, request.RequestID), nil
+}
+
 type RemoteRelayDeleteRequest struct {
 	ID    uint   `json:"id"`
 	Actor string `json:"actor"`

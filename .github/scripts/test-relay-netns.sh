@@ -16,4 +16,4 @@ sudo ip -n "$test_namespace" link add relaytest0 type dummy
 sudo ip -n "$test_namespace" link set relaytest0 up
 sudo ip -n "$test_namespace" -6 addr add 2001:db8:abcd:1234::1/64 dev relaytest0 nodad
 sudo ip netns exec "$test_namespace" env SUI_RELAY_NETNS_TEST=1 \
-  "$test_binary" -test.v -test.run '^TestRelayLinux(AddressLifecycle|PartialCreation)$' -test.timeout=60s
+  "$test_binary" -test.v -test.run '^TestRelayLinux(AddressLifecycle|PartialCreation|FillLifecycle)$' -test.timeout=120s

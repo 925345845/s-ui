@@ -104,6 +104,18 @@ func (s *Server) startControlSocket() error {
 			if callErr == nil {
 				result, callErr = local.CreateRemoteRelay(payload)
 			}
+		case agent.RPCMethodRelayFillStart:
+			var payload service.RemoteRelayCreateRequest
+			callErr = decodeLocalRPCPayload(request.Payload, &payload)
+			if callErr == nil {
+				result, callErr = local.StartRemoteRelayFill(payload)
+			}
+		case agent.RPCMethodRelayFillStatus, agent.RPCMethodRelayFillStop:
+			var payload service.RemoteRelayFillControl
+			callErr = decodeLocalRPCPayload(request.Payload, &payload)
+			if callErr == nil {
+				result, callErr = local.RemoteRelayFillControl(payload, request.Method == agent.RPCMethodRelayFillStop)
+			}
 		case agent.RPCMethodRelayDelete:
 			var payload service.RemoteRelayDeleteRequest
 			callErr = decodeLocalRPCPayload(request.Payload, &payload)
