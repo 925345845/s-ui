@@ -31,6 +31,7 @@ func (a *APIHandler) initRouter(g *gin.RouterGroup) {
 	g.POST("/relay/:id/delete", func(c *gin.Context) { a.ApiService.DeleteRelay(c, GetLoginUser(c)) })
 	g.POST("/relay/:id/rotate", func(c *gin.Context) { a.ApiService.RotateRelayPool(c, GetLoginUser(c)) })
 	g.POST("/relay/:id/rotation", func(c *gin.Context) { a.ApiService.SetRelayPoolRotation(c, GetLoginUser(c)) })
+	g.GET("/relay/create/status", func(c *gin.Context) { a.ApiService.GetRelayCreateStatus(c, GetLoginUser(c)) })
 	g.POST("/relay/create", func(c *gin.Context) { a.ApiService.CreateRelay(c, GetLoginUser(c)) })
 	g.GET("/relay/:id/bitbrowser.xlsx", a.ApiService.ExportRelayBitBrowser)
 	g.GET("/agents", a.ApiService.GetAgents)

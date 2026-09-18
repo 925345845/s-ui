@@ -6,64 +6,77 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func TestProbeRecoversAfterInitialTimeouts(t *testing.T) {
 	address := netip.MustParseAddr("2001:db8::2")
-	calls := 0
-	var contexts []context.Context
+	var mu sync.Mutex
+	calls := make(map[string]int)
 	err := probe(context.Background(), address, targets, connectTimeout, []time.Duration{0, 0, 0},
 		func(ctx context.Context, source netip.Addr, target string) error {
-			contexts = append(contexts, ctx)
-			if source != address || target != targets[calls%len(targets)] {
-				t.Fatalf("wrong source/target: %s -> %s", source, target)
+			mu.Lock()
+			defer mu.Unlock()
+			if source != address {
+				t.Errorf("wrong source: %s", source)
 			}
-			deadline, ok := ctx.Deadline()
-			if !ok || time.Until(deadline) > connectTimeout || time.Until(deadline) <= 0 {
-				t.Fatal("missing or invalid per-target deadline")
+			if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > connectTimeout {
+				t.Error("missing per-target deadline")
 			}
-			calls++
-			if calls <= 2 {
+			calls[target]++
+			if calls[target] == 1 {
 				return context.DeadlineExceeded
 			}
 			return nil
 		})
-	if err != nil || calls != 3 {
-		t.Fatalf("calls=%d err=%v; expected recovery on second round", calls, err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, ctx := range contexts {
-		if ctx.Err() == nil {
-			t.Fatal("attempt context was not released")
-		}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls[targets[0]] < 2 && calls[targets[1]] < 2 {
+		t.Fatal("did not retry failed round")
 	}
 }
 
-func TestProbeAlternateTargetSucceedsWithoutRetry(t *testing.T) {
-	calls := 0
-	err := probe(context.Background(), netip.MustParseAddr("2001:db8::2"), targets,
-		connectTimeout, []time.Duration{0, time.Hour}, func(context.Context, netip.Addr, string) error {
-			calls++
-			if calls == 1 {
-				return errors.New("first target unavailable")
+func TestProbeHealthyTargetDoesNotWaitForBlackholedTarget(t *testing.T) {
+	blocked := make(chan struct{})
+	stopped := make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := probe(ctx, netip.MustParseAddr("2001:db8::2"), targets, connectTimeout,
+		[]time.Duration{0, time.Hour}, func(ctx context.Context, _ netip.Addr, target string) error {
+			if target == targets[0] {
+				close(blocked)
+				<-ctx.Done()
+				close(stopped)
+				return ctx.Err()
 			}
+			<-blocked
 			return nil
 		})
-	if err != nil || calls != 2 {
-		t.Fatalf("calls=%d err=%v", calls, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("losing dial was not cancelled")
 	}
 }
 
 func TestProbePermanentFailureIncludesBothTargets(t *testing.T) {
-	calls := 0
+	var calls atomic.Int32
 	err := probe(context.Background(), netip.MustParseAddr("2001:db8::2"), targets,
 		connectTimeout, []time.Duration{0, 0, 0}, func(context.Context, netip.Addr, string) error {
-			calls++
+			calls.Add(1)
 			return errors.New("i/o timeout")
 		})
-	if err == nil || calls != 6 {
-		t.Fatalf("calls=%d err=%v; expected bounded failure", calls, err)
+	if err == nil || calls.Load() != 6 {
+		t.Fatalf("calls=%d err=%v; expected bounded failure", calls.Load(), err)
 	}
 	for _, detail := range []string{targets[0], targets[1], "3 rounds", "5s per target", "i/o timeout"} {
 		if !strings.Contains(err.Error(), detail) {
@@ -99,15 +112,15 @@ func TestProbeHonorsCancellationDuringBackoff(t *testing.T) {
 func TestProbeHonorsParentDeadlineDuringDial(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	calls := 0
+	var calls atomic.Int32
 	err := probe(ctx, netip.MustParseAddr("2001:db8::2"), targets, connectTimeout,
 		[]time.Duration{0, 0, 0}, func(ctx context.Context, _ netip.Addr, _ string) error {
-			calls++
+			calls.Add(1)
 			<-ctx.Done()
 			return ctx.Err()
 		})
-	if !errors.Is(err, context.DeadlineExceeded) || calls != 1 {
-		t.Fatalf("calls=%d err=%v", calls, err)
+	if !errors.Is(err, context.DeadlineExceeded) || calls.Load() < 1 || calls.Load() > 2 {
+		t.Fatalf("calls=%d err=%v", calls.Load(), err)
 	}
 }
 

@@ -996,7 +996,7 @@ func (a *ApiService) CreateRelay(c *gin.Context, loginUser string) {
 		jsonMsg(c, "relay", err)
 		return
 	}
-	pool, err := a.ConfigService.CreateRelay(req, loginUser, getHostname(c))
+	pool, err := a.ConfigService.CreateRelayContext(c.Request.Context(), req, loginUser, getHostname(c))
 	if err != nil {
 		jsonMsg(c, "relay", err)
 		return
@@ -1232,4 +1232,8 @@ func tryLoadKernelModule(module string) {
 	if err := exec.Command("modprobe", module).Run(); err != nil {
 		logger.Debug("modprobe ", module, " skipped: ", err)
 	}
+}
+
+func (a *ApiService) GetRelayCreateStatus(c *gin.Context, loginUser string) {
+	jsonObj(c, service.GetRelayCreateProgress(loginUser, c.Query("request_id")), nil)
 }

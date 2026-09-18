@@ -9,7 +9,7 @@ on:
       tag:
         description: "发布标签"
         required: true
-        default: "v1.5.20-ipv6fix.1"
+        default: "v1.5.20-ipv6fix.2"
         type: string
 
 permissions:
@@ -33,7 +33,7 @@ jobs:
       - name: Verify IPv6 retry and relay regressions
         run: |
           go test -race ./internal/ipv6probe
-          go test -ldflags=-checklinkname=0 ./service -run 'Test(ValidateRelayIPv6Egress|RelayIPv6AddressState|CreateRelay|RelayRotation|RotateRelay|RestoreRelay)' -count=1
+          go test -race -ldflags=-checklinkname=0 ./service -run 'Test(.*Relay.*)' -count=1
 
   build-frontend:
     runs-on: ubuntu-latest

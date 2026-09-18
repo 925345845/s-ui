@@ -44,7 +44,7 @@ const (
 	relayAddressDADFailed         = "dadfailed"
 	relayAddressMissing           = "missing"
 	relayIPv6EgressErrorCode      = "relay_ipv6_egress_unreachable"
-	relayIPv6ProbeWorkers         = 8
+	relayIPv6ProbeWorkers         = 16
 	relayDualStackIPv6Timeout     = "3s"
 	relayIPv6DisplayLimit         = 128
 	relayRotationMinMinutes       = 5
@@ -124,6 +124,7 @@ type RelayUpstream struct {
 }
 
 type RelayCreateRequest struct {
+	RequestID          string          `json:"request_id"`
 	Name               string          `json:"name"`
 	Source             string          `json:"source"`
 	Mode               string          `json:"mode"`
@@ -850,8 +851,25 @@ func repairRelayIPv6ConnectionHost(tx *gorm.DB, pool model.RelayPool, items []mo
 }
 
 func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost string) (*model.RelayPool, error) {
-	relayMu.Lock()
+	return s.CreateRelayContext(context.Background(), req, actor, publicHost)
+}
+
+func (s *ConfigService) CreateRelayContext(ctx context.Context, req RelayCreateRequest, actor, publicHost string) (result *model.RelayPool, resultErr error) {
+	if !relayMu.TryLock() {
+		return nil, common.NewError("relay operation already in progress; wait for it to finish before creating another batch")
+	}
 	defer relayMu.Unlock()
+	if len(req.RequestID) > 64 {
+		return nil, common.NewError("invalid relay request ID")
+	}
+	beginRelayProgress(actor, req.RequestID)
+	defer func() {
+		var poolID uint
+		if result != nil {
+			poolID = result.Id
+		}
+		finishRelayProgress(poolID, resultErr)
+	}()
 
 	if err := applyRelaySourcePreset(&req); err != nil {
 		return nil, err
@@ -946,10 +964,22 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	if err != nil {
 		return nil, err
 	}
+	if relayModePairsUpstream(req.Mode) {
+		setRelayProgress("ipv4", 0, len(req.Upstreams))
+		if err := validateRelayIPv4Upstreams(ctx, req.Upstreams, func(ctx context.Context, upstream RelayUpstream) error {
+			return probeRelaySOCKS5(ctx, upstream, []string{"1.1.1.1:443", "8.8.8.8:443"})
+		}, func(done, total int) { setRelayProgress("ipv4", done, total) }); err != nil {
+			return nil, err
+		}
+	}
+	prepareContext, cancelPrepare := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelPrepare()
+	setRelayProgress("addresses", 0, len(items))
 	added := make([]model.RelayItem, 0)
 	cleanup := true
 	defer func() {
 		if cleanup {
+			setRelayProgress("rollback", 0, len(added))
 			for _, item := range added {
 				if item.AddedByUs {
 					_ = deleteRelayAddress(item.Interface, item.IPv6, item.Prefix)
@@ -968,6 +998,10 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		}
 	}
 	for i := range items {
+		if err := prepareContext.Err(); err != nil {
+			return nil, fmt.Errorf("IPv6 address preparation: %w", err)
+		}
+		setRelayProgress("addresses", i+1, len(items))
 		if items[i].IPv6 == "" {
 			continue
 		}
@@ -976,7 +1010,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 			return nil, common.NewErrorf("IPv6 %s is not currently assigned; enable system address creation", items[i].IPv6)
 		}
 		if !already {
-			if err := addRelayAddress(items[i].Interface, items[i].IPv6, items[i].Prefix); err != nil {
+			if err := addRelayAddressContext(prepareContext, items[i].Interface, items[i].IPv6, items[i].Prefix); err != nil {
 				return nil, err
 			}
 			items[i].AddedByUs = true
@@ -984,27 +1018,43 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 			existingAddresses[items[i].IPv6] = true
 		}
 	}
-	if err := waitRelayAddressesReady(items); err != nil {
+	setRelayProgress("dad", 0, len(items))
+	if err := waitRelayAddressesReadyContext(prepareContext, items); err != nil {
 		return nil, err
 	}
 	if relayModeUsesIPv6(req.Mode) && runtime.GOOS == "linux" {
-		if err := validateRelayIPv6Egress(context.Background(), items, probeRelayIPv6Egress); err != nil {
+		setRelayProgress("ipv6", 0, len(items))
+		if err := validateRelayIPv6EgressProgress(ctx, items, probeRelayIPv6Egress, func(done, total int) { setRelayProgress("ipv6", done, total) }); err != nil {
 			return nil, err
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	setRelayProgress("saving", 0, len(items))
 	db := database.GetDB()
+	// Snapshot before opening the write transaction to avoid a second
+	// connection while the transaction holds database locks.
+	var oldConfig []byte
+	if corePtr != nil && corePtr.IsRunning() {
+		old, err := s.GetConfig("")
+		if err != nil {
+			return nil, err
+		}
+		oldConfig = *old
+	}
 	tx := db.Begin()
 	if tx.Error != nil {
 		return nil, tx.Error
 	}
 	committed := false
-	var oldConfig []byte
 	var newConfig []byte
+	coreChanged := false
 	defer func() {
 		if !committed {
 			_ = tx.Rollback().Error
-			if len(oldConfig) > 0 && corePtr != nil {
+			if coreChanged && len(oldConfig) > 0 && corePtr != nil {
 				if restoreErr := s.restoreSingBoxConfig(oldConfig); restoreErr != nil {
 					logger.Error("restore core after relay create failed: ", restoreErr)
 				}
@@ -1048,6 +1098,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		}
 	}
 	for i := range items {
+		setRelayProgress("saving", i, len(items))
 		listenAddress := "::"
 		if relayModeUsesIPv6(req.Mode) {
 			listenAddress = relayInboundListenAddress(req.Mode, publicHost)
@@ -1169,15 +1220,13 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	}
 
 	if corePtr != nil && corePtr.IsRunning() {
-		oldConfigPtr, err := s.GetConfig("")
-		if err != nil {
-			return nil, err
-		}
-		oldConfig = *oldConfigPtr
+		setRelayProgress("config", 0, len(items))
 		newConfigPtr, err := s.GetConfigWithDB("", tx)
 		if err != nil {
 			return nil, err
 		}
+		setRelayProgress("starting", 0, len(items))
+		coreChanged = true
 		if err = corePtr.Stop(); err != nil {
 			return nil, err
 		}
@@ -1190,6 +1239,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	if err := tx.Create(&model.Changes{DateTime: time.Now().Unix(), Actor: actor, Key: "relay", Action: "create", Obj: changeData}).Error; err != nil {
 		return nil, err
 	}
+	setRelayProgress("committing", len(items), len(items))
 	if err := tx.Commit().Error; err != nil {
 		return nil, err
 	}
@@ -1197,6 +1247,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	cleanup = false
 	LastUpdate.Store(time.Now().UnixMilli())
 	if corePtr != nil && !corePtr.IsRunning() {
+		setRelayProgress("starting", 0, len(items))
 		if err := s.StartCore(); err != nil {
 			return &pool, common.NewErrorf("relay saved, but core update failed: %v", err)
 		}
@@ -2110,6 +2161,10 @@ func randomRelayIPv6(base netip.Addr, prefix int) (netip.Addr, error) {
 }
 
 func addRelayAddress(iface, ip string, prefix int) error {
+	return addRelayAddressContext(context.Background(), iface, ip, prefix)
+}
+
+func addRelayAddressContext(parent context.Context, iface, ip string, prefix int) error {
 	if runtime.GOOS != "linux" {
 		return common.NewError("adding IPv6 addresses is supported on Linux only")
 	}
@@ -2125,7 +2180,7 @@ func addRelayAddress(iface, ip string, prefix int) error {
 	if _, err := exec.LookPath("ip"); err != nil {
 		return common.NewError("iproute2 is required: ", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "ip", "-6", "addr", "add", ip+"/"+strconv.Itoa(prefix), "dev", iface)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -2166,6 +2221,10 @@ func waitRelayAddressReady(iface, ip string) error {
 }
 
 func waitRelayAddressesReady(items []model.RelayItem) error {
+	return waitRelayAddressesReadyContext(context.Background(), items)
+}
+
+func waitRelayAddressesReadyContext(parent context.Context, items []model.RelayItem) error {
 	if runtime.GOOS != "linux" {
 		return nil
 	}
@@ -2191,8 +2250,11 @@ func waitRelayAddressesReady(items []model.RelayItem) error {
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
+		if err := parent.Err(); err != nil {
+			return err
+		}
 		for iface, addresses := range pending {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 			output, err := exec.CommandContext(ctx, "ip", "-6", "-o", "addr", "show", "dev", iface).CombinedOutput()
 			cancel()
 			if err != nil {
@@ -2227,6 +2289,12 @@ func waitRelayAddressesReady(items []model.RelayItem) error {
 type relayIPv6EgressProbe func(context.Context, netip.Addr) error
 
 func validateRelayIPv6Egress(ctx context.Context, items []model.RelayItem, probe relayIPv6EgressProbe) error {
+	return validateRelayIPv6EgressProgress(ctx, items, probe, nil)
+}
+
+func validateRelayIPv6EgressProgress(ctx context.Context, items []model.RelayItem, probe relayIPv6EgressProbe, progress func(int, int)) error {
+	ctx, cancelBatch := context.WithTimeout(ctx, 45*time.Second)
+	defer cancelBatch()
 	addresses := make([]netip.Addr, 0, len(items))
 	seen := make(map[netip.Addr]bool, len(items))
 	for _, item := range items {
@@ -2259,6 +2327,8 @@ func validateRelayIPv6Egress(ctx context.Context, items []model.RelayItem, probe
 		workerCount = len(addresses)
 	}
 	var workers sync.WaitGroup
+	var progressMu sync.Mutex
+	completed := 0
 	var firstFailure sync.Once
 	var failedAddress netip.Addr
 	var failedError error
@@ -2274,6 +2344,9 @@ func validateRelayIPv6Egress(ctx context.Context, items []model.RelayItem, probe
 					if !ok {
 						return
 					}
+					if probeContext.Err() != nil {
+						return
+					}
 					if err := probe(probeContext, address); err != nil {
 						firstFailure.Do(func() {
 							failedAddress = address
@@ -2282,11 +2355,20 @@ func validateRelayIPv6Egress(ctx context.Context, items []model.RelayItem, probe
 						})
 						return
 					}
+					progressMu.Lock()
+					completed++
+					if progress != nil {
+						progress(completed, len(addresses))
+					}
+					progressMu.Unlock()
 				}
 			}
 		}()
 	}
 	workers.Wait()
+	if ctx.Err() != nil {
+		return fmt.Errorf("IPv6 batch check stopped (%d/%d passed): %w", completed, len(addresses), ctx.Err())
+	}
 	if failedError == nil {
 		return nil
 	}

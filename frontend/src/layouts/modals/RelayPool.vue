@@ -333,7 +333,14 @@
         </v-window>
       </v-card-text>
       <v-divider />
-      <v-card-actions>
+      <v-card-actions class="flex-wrap">
+        <div v-if="loading" class="w-100 pa-2" role="status" aria-live="polite">
+          {{ $t('relay.creatingStatus', { stage: createStageLabel, elapsed: createElapsed }) }}
+          <span v-if="createProgress.total > 0"> · {{ createProgress.completed }}/{{ createProgress.total }}</span>
+          <v-progress-linear v-if="createProgress.total > 0" class="mt-2" color="primary"
+            :model-value="100 * createProgress.completed / createProgress.total" />
+          <div class="text-caption mt-1">{{ $t('relay.creatingHint') }}</div>
+        </div>
         <v-spacer />
         <v-btn variant="text" @click="close">{{ $t('actions.close') }}</v-btn>
       </v-card-actions>
@@ -342,7 +349,7 @@
 </template>
 
 <script lang="ts" setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { push } from 'notivue'
 import HttpUtils from '@/plugins/httputil'
 import Data from '@/store/modules/data'
@@ -370,6 +377,47 @@ const emit = defineEmits<{
 const tab = ref('ipv6')
 const advancedPanel = ref<string>()
 const loading = ref(false)
+const createElapsed = ref(0)
+const createProgress = reactive({ stage: 'preparing', completed: 0, total: 0 })
+const createStageLabel = computed(() => i18n.global.t(`relay.creationStages.${createProgress.stage}`))
+let createTimer: ReturnType<typeof setInterval> | undefined
+let activeCreateID = ''
+let progressRequest: AbortController | undefined
+const stopCreateProgress = () => {
+  if (createTimer) clearInterval(createTimer)
+  createTimer = undefined
+  activeCreateID = ''
+  progressRequest?.abort()
+  progressRequest = undefined
+}
+onBeforeUnmount(stopCreateProgress)
+const startCreateProgress = (requestID: string) => {
+  stopCreateProgress()
+  activeCreateID = requestID
+  createElapsed.value = 0
+  Object.assign(createProgress, { stage: 'preparing', completed: 0, total: 0 })
+  const started = Date.now()
+  createTimer = setInterval(async () => {
+    createElapsed.value = Math.floor((Date.now() - started) / 1000)
+    if (isRemote.value || progressRequest || activeCreateID !== requestID) return
+    const controller = new AbortController()
+    progressRequest = controller
+    const timeout = setTimeout(() => controller.abort(), 3000)
+    try {
+      const response = await fetch(`api/relay/create/status?request_id=${encodeURIComponent(requestID)}`, {
+        credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' }, signal: controller.signal,
+      })
+      const msg = await response.json()
+      if (activeCreateID === requestID && msg.success && msg.obj?.request_id === requestID) {
+        Object.assign(createProgress, msg.obj)
+      }
+    } catch { /* Keep elapsed time visible if a status poll fails. */ }
+    finally {
+      clearTimeout(timeout)
+      if (progressRequest === controller) progressRequest = undefined
+    }
+  }, 1000)
+}
 const refreshing = ref(false)
 const deleting = ref(0)
 const downloading = ref(0)
@@ -387,7 +435,7 @@ const form = reactive({
   name: '', public_host: window.location.hostname, port_start: 30000, count: 10,
   username_prefix: 'relay', password_length: 12, interface: '', base_ipv6: '', prefix: 64,
   ipv6_text: '', upstream_text: '', add_system_addresses: true, protocol: 'socks',
-  transport: 'http', tls_id: 0, domain_strategy: 'ipv6_only', shadowsocks_method: '2022-blake3-aes-256-gcm', apple_id_ipv4_only: true,
+  transport: 'http', tls_id: 0, domain_strategy: 'ipv6_only', shadowsocks_method: '2022-blake3-aes-256-gcm', apple_id_ipv4_only: false,
 })
 
 const interfaceItems = computed(() => [...new Set(ipv6.value.map((item) => item.interface))].map((value) => ({ title: value, value })))
@@ -498,13 +546,16 @@ const poolAddressSummary = (pool: RelayPool) => {
 }
 
 const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick = false) => {
+  if (loading.value) return
   if (mode === 'ipv6' && !relayCountValid.value) {
     push.error({ message: i18n.global.t('relay.countRange') })
     return
   }
   loading.value = true
+  const requestID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  startCreateProgress(requestID)
   try {
-    const payload: any = { ...form, mode }
+    const payload: any = { ...form, mode, request_id: requestID }
     payload.source = quick ? 'help660vip/auto-add-ipv6' : ''
     if (quick) {
       payload.protocol = 'socks'
@@ -544,6 +595,8 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick 
       } else {
         push.success({ message: i18n.global.t('relay.created') })
       }
+      stopCreateProgress()
+      loading.value = false
       tab.value = 'pools'
       form.name = ''
       form.ipv6_text = ''
@@ -562,6 +615,7 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick 
   } catch (error: any) {
     push.error({ message: error?.message || i18n.global.t('relay.createFailed') })
   } finally {
+    stopCreateProgress()
     loading.value = false
   }
 }

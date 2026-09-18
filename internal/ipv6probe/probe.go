@@ -17,7 +17,7 @@ var targets = []string{
 	"[2001:4860:4860::8888]:443",
 }
 
-// Probe waits at most 33 seconds (excluding scheduling overhead). A newly
+// Probe waits at most 18 seconds (excluding scheduling overhead). A newly
 // assigned address can finish local DAD before the upstream network learns it.
 // Retry failed rounds without bypassing the source-bound reachability check.
 func Probe(ctx context.Context, address netip.Addr) error {
@@ -54,21 +54,13 @@ func probe(ctx context.Context, address netip.Addr, endpoints []string, timeout 
 			case <-timer.C:
 			}
 		}
-		failures = failures[:0]
-		for _, target := range endpoints {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			attemptContext, cancel := context.WithTimeout(ctx, timeout)
-			err := connect(attemptContext, address, target)
-			cancel()
-			if err == nil {
-				return nil
-			}
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			failures = append(failures, fmt.Sprintf("%s: %v", target, err))
+		var err error
+		failures, err = probeRound(ctx, address, endpoints, timeout, connect)
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 		if round == len(delays)-1 {
 			return fmt.Errorf("IPv6 %s failed TCP egress checks after %d rounds (%s per target): %s",
@@ -76,4 +68,33 @@ func probe(ctx context.Context, address netip.Addr, endpoints []string, timeout 
 		}
 	}
 	return fmt.Errorf("IPv6 egress probe has no attempts configured")
+}
+
+// Both targets race under the same deadline. A blackholed first target must
+// not delay a healthy second target or occupy a batch worker for five seconds.
+func probeRound(ctx context.Context, address netip.Addr, endpoints []string, timeout time.Duration,
+	connect func(context.Context, netip.Addr, string) error) ([]string, error) {
+	roundContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	type result struct {
+		index int
+		err   error
+	}
+	results := make(chan result, len(endpoints))
+	for index, target := range endpoints {
+		go func() { results <- result{index, connect(roundContext, address, target)} }()
+	}
+	failures := make([]string, len(endpoints))
+	for range endpoints {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case r := <-results:
+			if r.err == nil {
+				return nil, nil
+			}
+			failures[r.index] = fmt.Sprintf("%s: %v", endpoints[r.index], r.err)
+		}
+	}
+	return failures, fmt.Errorf("all targets failed")
 }

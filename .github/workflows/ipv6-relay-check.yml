@@ -31,7 +31,7 @@ jobs:
       - name: Source-bound IPv6 retry tests
         run: go test -race -v ./internal/ipv6probe
       - name: Relay regression tests
-        run: go test -ldflags=-checklinkname=0 ./service -run 'Test(ValidateRelayIPv6Egress|RelayIPv6AddressState|CreateRelay|RelayRotation|RotateRelay|RestoreRelay)' -count=1
+        run: go test -race -ldflags=-checklinkname=0 ./service -run 'Test(.*Relay.*)' -count=1
       - uses: actions/setup-node@v6
         with:
           node-version: '25'
