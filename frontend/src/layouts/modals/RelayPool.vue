@@ -569,10 +569,10 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick 
       if (isRemote.value) emit('changed')
       else await Data().loadData()
     } else {
-      const egressMatch = String(msg.msg || '').match(/relay_ipv6_egress_unreachable\|([^|]+)\|/)
+      const egressMatch = String(msg.msg || '').match(/relay_ipv6_egress_unreachable\|([^|]+)\|([\s\S]*)$/)
       push.error({
         message: egressMatch
-          ? i18n.global.t('relay.ipv6EgressUnavailable', { address: egressMatch[1] })
+          ? `${i18n.global.t('relay.ipv6EgressUnavailable', { address: egressMatch[1] })}\n${egressMatch[2]}`
           : msg.msg || i18n.global.t('relay.createFailed'),
       })
     }

@@ -1,0 +1,40 @@
+name: IPv6 relay checks
+
+on:
+  pull_request:
+    paths:
+      - 'internal/ipv6probe/**'
+      - 'service/relay*'
+      - 'frontend/**'
+      - '.github/workflows/ipv6-relay-check.yml'
+  push:
+    branches: ['fix/ipv6-egress-retry']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Source-bound IPv6 retry tests
+        run: go test -race -v ./internal/ipv6probe
+      - name: Relay regression tests
+        run: go test -ldflags=-checklinkname=0 ./service -run 'Test(ValidateRelayIPv6Egress|RelayIPv6AddressState|CreateRelay|RelayRotation|RotateRelay|RestoreRelay)' -count=1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '25'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund && npm run build
+      - name: Build Linux panel
+        run: go build -ldflags=-checklinkname=0 -o /tmp/sui main.go

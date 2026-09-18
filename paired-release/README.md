@@ -46,3 +46,7 @@ sudo ./install-s-ui-paired.sh
 - `1s-ui-paired-complete-source.zip`: 已集成配对功能的完整源码。
 - `1s-ui-paired-replacement-files.zip`: 仅包含修改过的源码文件。
 - `SHA256SUMS.txt`: SHA256 校验值。
+
+## IPv6 出口检测
+
+新增地址通过 DAD 后，每个公网 TCP 检测目标最多等待 5 秒；两个目标均失败时，间隔 1 秒、2 秒再重试，共最多三轮。任一目标成功即通过，持续失败仍回滚本次创建，并显示两个目标的具体错误。每个地址最多约 33 秒；批量任务最多并发检测 8 个地址。检测失败不等同于服务商只允许单个 IPv6。

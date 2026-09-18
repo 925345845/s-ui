@@ -676,7 +676,7 @@
     created: "中轉批次已創建",
     createdRange: "中轉批次已創建，使用端口 {start}-{end}；下次將自動選擇後續可用端口",
     createFailed: "中轉批次創建失敗",
-    ipv6EgressUnavailable: "IPv6 {address} 已加入網卡，但無法連線 IPv6 公網。雲端服務商可能只允許已分配的單一 IPv6；請申請已路由或已授權的 IPv6 前綴。本次節點建立已回滾。",
+    ipv6EgressUnavailable: "IPv6 {address} 的公網 TCP 檢測在重試後仍失敗，本次建立已回滾。具體目標和錯誤如下：",
     deleteConfirm: "要刪除此批次及其所有入站嗎？",
     deleted: "中轉批次已刪除",
     deleteFailed: "中轉批次刪除失敗",
