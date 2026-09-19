@@ -126,6 +126,7 @@ type RelayUpstream struct {
 
 type RelayCreateRequest struct {
 	fillSourceRows     []int
+	fillPoolID         uint
 	VerifyEgress       *bool           `json:"verify_egress,omitempty"`
 	RequestID          string          `json:"request_id"`
 	Name               string          `json:"name"`
@@ -1220,17 +1221,13 @@ func (s *ConfigService) createRelayContext(ctx context.Context, req RelayCreateR
 		}
 	}
 	pool.Items = mustJSON(items)
-	if err := tx.Create(&pool).Error; err != nil {
+	if err := saveRelayFillRound(tx, &pool, items, req.fillPoolID); err != nil {
 		return nil, err
 	}
 	if err := ensureRelayRefreshLinksTx(tx, pool.Id, items); err != nil {
 		return nil, err
 	}
 	if err := updateRelayRouteRules(tx, items, req.DomainStrategy == relayDomainStrategyIPv6Only, false); err != nil {
-		return nil, err
-	}
-	pool.Items = mustJSON(items)
-	if err := tx.Model(&model.RelayPool{}).Where("id = ?", pool.Id).Update("items", pool.Items).Error; err != nil {
 		return nil, err
 	}
 

@@ -55,6 +55,8 @@ func TestRelayLinuxFillLifecycle(t *testing.T) {
 				ipv4:  func(context.Context, RelayUpstream) error { return nil },
 			}
 			rounds := 0
+			var firstSaved model.RelayItem
+			var poolID uint
 			var firstRoundIPs []string
 			runRelayFill(ctx, j, req, func(ctx context.Context, round RelayCreateRequest) (*model.RelayPool, error) {
 				rounds++
@@ -82,6 +84,14 @@ func TestRelayLinuxFillLifecycle(t *testing.T) {
 					}
 				}
 				pool, err := (&ConfigService{}).createRelayContext(ctx, round, "test", "192.0.2.100", &checks)
+				if rounds == 2 && pool != nil && pool.Id != 0 {
+					poolID = pool.Id
+					var items []model.RelayItem
+					if err := json.Unmarshal(pool.Items, &items); err != nil {
+						t.Fatal(err)
+					}
+					firstSaved = items[0]
+				}
 				if rounds == 1 {
 					firstRoundIPs = append([]string{}, added...)
 				}
@@ -98,6 +108,24 @@ func TestRelayLinuxFillLifecycle(t *testing.T) {
 			if err := database.GetDB().Find(&pools).Error; err != nil {
 				t.Fatal(err)
 			}
+			if len(pools) != 1 || pools[0].Id != poolID || pools[0].Name != req.Name || pools[0].Count != wantCount {
+				t.Fatalf("rounds must append to one pool: %+v", pools)
+			}
+			if len(j.snapshot().PoolIDs) != 1 {
+				t.Fatal("status contains more than one pool")
+			}
+			var links []model.RelayRefreshLink
+			if err := database.GetDB().Where("pool_id = ?", poolID).Find(&links).Error; err != nil {
+				t.Fatal(err)
+			}
+			if len(links) != wantCount {
+				t.Fatalf("refresh links=%d want=%d", len(links), wantCount)
+			}
+			for _, link := range links {
+				if link.InboundTag == firstSaved.InboundTag && link.Token != firstSaved.RefreshToken {
+					t.Fatal("existing rotation URL changed")
+				}
+			}
 			saved := map[string]bool{}
 			rows := map[int]bool{}
 			for _, pool := range pools {
@@ -106,6 +134,9 @@ func TestRelayLinuxFillLifecycle(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, item := range items {
+					if item.SourceRow == 2 && (item.InboundID != firstSaved.InboundID || item.Export != firstSaved.Export || item.Password != firstSaved.Password || item.IPv6 != firstSaved.IPv6) {
+						t.Fatal("append changed an existing node")
+					}
 					if item.SourceRow < 1 || item.SourceRow > 3 || rows[item.SourceRow] {
 						t.Fatalf("invalid original row: %+v", item)
 					}

@@ -64,10 +64,13 @@ func TestRelayFillRetriesUntilAllMatched(t *testing.T) {
 		if round.Upstreams[0] != req.Upstreams[0] || round.Upstreams[1] != req.Upstreams[2] {
 			t.Fatal("upstream shifted")
 		}
-		return fillTestPool(round, 2, 1, 3), nil
+		if round.fillPoolID != 1 || round.Name != req.Name {
+			t.Fatal("round did not target original pool")
+		}
+		return fillTestPool(round, 1, 1, 3), nil
 	}, func(context.Context) error { pauses++; return nil })
 	status := j.snapshot()
-	if status.Active || status.Stage != "done" || status.Matched != 3 || calls != 22 || pauses != 21 || !reflect.DeepEqual(status.PoolIDs, []uint{1, 2}) {
+	if status.Active || status.Stage != "done" || status.Matched != 3 || calls != 22 || pauses != 21 || !reflect.DeepEqual(status.PoolIDs, []uint{1}) {
 		t.Fatalf("unexpected completion: %+v calls=%d pauses=%d", status, calls, pauses)
 	}
 }
@@ -100,7 +103,10 @@ func TestRelayFillFairRotationAndBusy(t *testing.T) {
 			if !reflect.DeepEqual(round.fillSourceRows, []int{15, 16}) {
 				t.Fatalf("remaining rows: %v", round.fillSourceRows)
 			}
-			return fillTestPool(round, 2, round.fillSourceRows...), nil
+			if round.fillPoolID != 1 {
+				t.Fatal("destination changed")
+			}
+			return fillTestPool(round, 1, round.fillSourceRows...), nil
 		default:
 			t.Fatal("unexpected round")
 			return nil, nil

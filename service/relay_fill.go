@@ -4,16 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Hhz0823/1s-ui/database/model"
 	"github.com/Hhz0823/1s-ui/util/common"
+	"gorm.io/gorm"
 )
 
-// The runner commits small pools as it goes. No browser connection is held,
+// The runner appends successful rounds to one pool. No browser connection is held,
 // and stopping a job only rolls back the round that has not committed yet.
 type RelayFillStatus struct {
 	RequestID string `json:"request_id"`
@@ -206,7 +206,6 @@ func runRelayFill(ctx context.Context, j *relayFillJob, req RelayCreateRequest,
 		j.mu.Lock()
 		j.status.Rounds++
 		j.status.Stage = "preparing"
-		round.Name = fmt.Sprintf("%s-%03d", req.Name, len(j.status.PoolIDs)+1)
 		j.mu.Unlock()
 		pool, err := create(ctx, round)
 		if errors.Is(err, errRelayBusy) {
@@ -218,6 +217,12 @@ func runRelayFill(ctx context.Context, j *relayFillJob, req RelayCreateRequest,
 		}
 		matched := make(map[int]bool)
 		if pool != nil && pool.Id != 0 {
+			if req.fillPoolID != 0 && pool.Id != req.fillPoolID {
+				j.mu.Lock()
+				j.status.Error = "invalid_result"
+				j.mu.Unlock()
+				return
+			}
 			var items []model.RelayItem
 			if json.Unmarshal(pool.Items, &items) != nil || len(items) != pool.Count || pool.Count == 0 {
 				j.mu.Lock()
@@ -243,8 +248,9 @@ func runRelayFill(ctx context.Context, j *relayFillJob, req RelayCreateRequest,
 			}
 			j.mu.Lock()
 			j.status.Matched += len(matched)
-			j.status.PoolIDs = append(j.status.PoolIDs, pool.Id)
+			j.status.PoolIDs = []uint{pool.Id}
 			j.mu.Unlock()
+			req.fillPoolID = pool.Id
 			req.PortStart = pool.PortStart + pool.Count
 			if err != nil {
 				j.mu.Lock()
@@ -277,4 +283,45 @@ func runRelayFill(ctx context.Context, j *relayFillJob, req RelayCreateRequest,
 			}
 		}
 	}
+}
+
+// Persist all successful rounds in one pool in the same transaction as their
+// inbounds, routes and refresh links. The returned pool describes this round
+// only, so the runner counts new matches and advances ports exactly once.
+// The destination ID is internal and cannot be supplied by an API caller.
+func saveRelayFillRound(tx *gorm.DB, round *model.RelayPool, items []model.RelayItem, poolID uint) error {
+	if poolID == 0 {
+		return tx.Create(round).Error
+	}
+	var saved model.RelayPool
+	if err := tx.First(&saved, poolID).Error; err != nil {
+		return err
+	}
+	if saved.Name != round.Name || saved.Mode != round.Mode || saved.Protocol != round.Protocol ||
+		saved.CoreType != round.CoreType || saved.ListenHost != round.ListenHost ||
+		saved.DomainStrategy != round.DomainStrategy || saved.TlsID != round.TlsID || saved.Transport != round.Transport {
+		return common.NewError("relay fill destination no longer matches this task")
+	}
+	var previous []model.RelayItem
+	if err := json.Unmarshal(saved.Items, &previous); err != nil {
+		return err
+	}
+	if len(previous) != saved.Count || saved.Count+len(items) > maxRelayItems {
+		return common.NewError("invalid relay fill destination count")
+	}
+	rows := make(map[int]bool, len(previous)+len(items))
+	for _, item := range append(append([]model.RelayItem{}, previous...), items...) {
+		if item.SourceRow < 1 || rows[item.SourceRow] {
+			return common.NewError("duplicate or invalid relay fill row")
+		}
+		rows[item.SourceRow] = true
+	}
+	merged := append(previous, items...)
+	if err := tx.Model(&saved).Updates(map[string]interface{}{
+		"items": mustJSON(merged), "count": len(merged),
+	}).Error; err != nil {
+		return err
+	}
+	round.Id = saved.Id
+	return nil
 }
