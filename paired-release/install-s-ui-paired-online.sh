@@ -12,7 +12,7 @@ esac
 
 release_branch="${S_UI_PAIRED_BRANCH:-socks5-upstream-flexible}"
 base_url="${S_UI_PAIRED_BASE_URL:-https://raw.githubusercontent.com/925345845/s-ui/${release_branch}/paired-release}"
-release_version="${S_UI_PAIRED_VERSION:-v1.5.27-socks5}"
+release_version="${S_UI_PAIRED_VERSION:-v1.5.28-socks5}"
 archive_base_url="${S_UI_PAIRED_ARCHIVE_BASE_URL:-https://github.com/925345845/s-ui/releases/download/${release_version}}"
 tmp_dir="$(mktemp -d /tmp/1s-ui-paired-online.XXXXXX)"
 cleanup() {

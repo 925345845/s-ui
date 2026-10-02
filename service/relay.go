@@ -549,6 +549,55 @@ func (s *ConfigService) RestoreRelayIPv6() error {
 	return nil
 }
 
+// EnsureRelayIPv6Addresses re-adds IPv6 addresses owned by relay items after
+// a network restart or provider reboot. It is intentionally non-destructive:
+// transient network or DAD failures are retried by the cron job and never
+// remove the persisted relay address from the database.
+func (s *ConfigService) EnsureRelayIPv6Addresses() error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	relayMu.Lock()
+	defer relayMu.Unlock()
+
+	pools, err := s.GetRelayPools()
+	if err != nil {
+		return err
+	}
+	detected, err := discoverRelayIPv6()
+	if err != nil {
+		return err
+	}
+	existing := make(map[string]bool, len(detected))
+	for _, address := range detected {
+		existing[address.Address] = true
+	}
+	restored := make([]model.RelayItem, 0)
+	for _, pool := range pools {
+		var items []model.RelayItem
+		if err := json.Unmarshal(pool.Items, &items); err != nil {
+			return fmt.Errorf("relay pool %q: invalid items: %w", pool.Name, err)
+		}
+		for _, item := range items {
+			if !item.AddedByUs || item.IPv6 == "" || item.Interface == "" {
+				continue
+			}
+			if !existing[item.IPv6] {
+				if err := addRelayAddress(item.Interface, item.IPv6, item.Prefix); err != nil {
+					logger.Warningf("ensure relay IPv6 %s: %v", item.IPv6, err)
+					continue
+				}
+				existing[item.IPv6] = true
+			}
+			restored = append(restored, item)
+		}
+	}
+	if err := waitRelayAddressesReady(restored); err != nil {
+		logger.Warning("relay IPv6 addresses are pending readiness; will retry automatically: ", err)
+	}
+	return nil
+}
+
 // repairRelayIPv6OutboundStrategies upgrades relay pools created before the
 // address-family selector existed. It runs before sing-box starts, so the
 // repaired options are included in the first runtime configuration.
