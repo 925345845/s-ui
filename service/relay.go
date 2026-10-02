@@ -34,7 +34,6 @@ const (
 	relayModePaired               = "paired"
 	relayModeDualStack            = "dualstack"
 	relaySourceAutoAddIPv6        = "help660vip/auto-add-ipv6"
-	relayDomainStrategyIPv4Only   = "ipv4_only"
 	relayDomainStrategyIPv6Only   = "ipv6_only"
 	relayDomainStrategyPreferIPv6 = "prefer_ipv6"
 	relayPairedDNSResolverTag     = "relay-paired-local-dns"
@@ -49,30 +48,9 @@ const (
 	relayRotationMinMinutes       = 5
 	relayRotationMaxMinutes       = 7 * 24 * 60
 	relayRotationDefaultMinutes   = 60
-	// A relay pool may contain up to 500 upstreams. Keep this bounded because
-	// each item creates an inbound, outbound and route entry in sing-box.
-	maxRelayItems    = 500
-	relayCoreSingBox = model.CoreTypeSingBox
+	maxRelayItems                 = 100
+	relayCoreSingBox              = model.CoreTypeSingBox
 )
-
-// Apple ID authentication uses a small, stable set of hosts. Keep these on
-// the paired IPv4 SOCKS5 path so the login flow does not mix addresses with
-// the VPS IPv6 used by the rest of the browser session.
-var relayAppleIDDomains = []string{
-	"appleid.apple.com",
-	"idmsa.apple.com",
-	"gsa.apple.com",
-}
-
-// Vinted's DataDome challenge is served from a small set of hosts that may be
-// IPv4-only. Keep this exception narrow: Vinted itself and all other ordinary
-// traffic remain on the per-item IPv6 direct outbound.
-var relayVintedCaptchaDomains = []string{
-	"geo.captcha-delivery.com",
-	"captcha-delivery.com",
-	"js.datadome.co",
-	"api-js.datadome.co",
-}
 
 func relayModeUsesUpstream(mode string) bool {
 	return mode == relayModeUpstream || mode == relayModePaired || mode == relayModeDualStack
@@ -149,7 +127,6 @@ type RelayCreateRequest struct {
 	Transport          string          `json:"transport"`
 	DomainStrategy     string          `json:"domain_strategy"`
 	ShadowsocksMethod  string          `json:"shadowsocks_method"`
-	AppleIDIPv4Only    bool            `json:"apple_id_ipv4_only"`
 }
 
 type RelayData struct {
@@ -514,9 +491,6 @@ func buildRelayCapabilities(goos string, hasRoot, hasIPCommand bool) RelayCapabi
 }
 
 func (s *ConfigService) RestoreRelayIPv6() error {
-	relayMu.Lock()
-	defer relayMu.Unlock()
-
 	if err := database.GetDB().Model(&model.RelayPool{}).
 		Where("rotation_enabled = ? OR next_rotate_at <> 0", true).
 		Updates(map[string]interface{}{"rotation_enabled": false, "next_rotate_at": 0}).Error; err != nil {
@@ -564,59 +538,13 @@ func (s *ConfigService) RestoreRelayIPv6() error {
 		}
 	}
 	if err := waitRelayAddressesReady(restored); err != nil {
-		// Do not remove an address here.  A temporary DAD/routing failure after
-		// a VPS restart must not erase the address from the persisted relay pool.
-		// The periodic health job will retry once the interface is ready.
-		logger.Warning("relay IPv6 readiness check is not complete; keeping persisted addresses for retry: ", err)
-	}
-	return nil
-}
-
-// EnsureRelayIPv6Addresses re-adds IPv6 addresses owned by relay items when a
-// network restart or provider reboot removed them from the interface. It is
-// intentionally non-destructive: transient network/DAD failures must not
-// delete the addresses from the database.
-func (s *ConfigService) EnsureRelayIPv6Addresses() error {
-	if runtime.GOOS != "linux" {
-		return nil
-	}
-	relayMu.Lock()
-	defer relayMu.Unlock()
-
-	pools, err := s.GetRelayPools()
-	if err != nil {
-		return err
-	}
-	detected, err := discoverRelayIPv6()
-	if err != nil {
-		return err
-	}
-	existing := make(map[string]bool, len(detected))
-	for _, address := range detected {
-		existing[address.Address] = true
-	}
-	restored := make([]model.RelayItem, 0)
-	for _, pool := range pools {
-		var items []model.RelayItem
-		if err := json.Unmarshal(pool.Items, &items); err != nil {
-			return fmt.Errorf("relay pool %q: invalid items: %w", pool.Name, err)
-		}
-		for _, item := range items {
-			if !item.AddedByUs || item.IPv6 == "" || item.Interface == "" {
-				continue
+		logger.Warning("batch relay IPv6 readiness check failed, checking addresses individually: ", err)
+		for _, item := range restored {
+			if err := waitRelayAddressReady(item.Interface, item.IPv6); err != nil {
+				logger.Warningf("restore relay IPv6 %s readiness: %v", item.IPv6, err)
+				_ = deleteRelayAddress(item.Interface, item.IPv6, item.Prefix)
 			}
-			if !existing[item.IPv6] {
-				if err := addRelayAddress(item.Interface, item.IPv6, item.Prefix); err != nil {
-					logger.Warningf("ensure relay IPv6 %s: %v", item.IPv6, err)
-					continue
-				}
-				existing[item.IPv6] = true
-			}
-			restored = append(restored, item)
 		}
-	}
-	if err := waitRelayAddressesReady(restored); err != nil {
-		logger.Warning("relay IPv6 addresses are pending readiness; will retry automatically: ", err)
 	}
 	return nil
 }
@@ -628,12 +556,6 @@ func (s *ConfigService) repairRelayIPv6OutboundStrategies() error {
 	db := database.GetDB()
 	var pools []model.RelayPool
 	if err := db.Where("mode = ?", relayModeIPv6).Find(&pools).Error; err != nil {
-		return err
-	}
-	// Paired and dual-stack pools created before the Apple ID route was added
-	// need their generated IPv4 rules backfilled on the next startup.
-	var pairedPools []model.RelayPool
-	if err := db.Where("mode IN ?", []string{relayModePaired, relayModeDualStack}).Find(&pairedPools).Error; err != nil {
 		return err
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
@@ -694,98 +616,6 @@ func (s *ConfigService) repairRelayIPv6OutboundStrategies() error {
 			if err := repairRelayIPv6ConnectionHost(tx, pool, items); err != nil {
 				return err
 			}
-		}
-		for _, pool := range pairedPools {
-			var items []model.RelayItem
-			if err := json.Unmarshal(pool.Items, &items); err != nil {
-				return fmt.Errorf("relay pool %q: invalid items: %w", pool.Name, err)
-			}
-			// Rebuild every paired IPv4 SOCKS5 outbound from the upstream
-			// credentials persisted on its own RelayItem.  This repairs pools
-			// created by older versions where the runtime configuration could
-			// retain one shared upstream even though the items were different.
-			usedIPv4Tags := make(map[string]bool, len(items))
-			itemsChanged := false
-			for index := range items {
-				item := &items[index]
-				if item.IPv4OutboundTag == "" || item.UpstreamServer == "" || item.UpstreamPort < 1 {
-					continue
-				}
-				var ipv4Outbound model.Outbound
-				if err := tx.Where("tag = ?", item.IPv4OutboundTag).First(&ipv4Outbound).Error; err != nil {
-					if database.IsNotFound(err) {
-						logger.Warningf("relay pool %q item %d IPv4 outbound %q was not found", pool.Name, index+1, item.IPv4OutboundTag)
-						continue
-					}
-					return err
-				}
-				if ipv4Outbound.Type != "socks" {
-					return fmt.Errorf("relay pool %q item %d IPv4 outbound %q is %s, expected socks", pool.Name, index+1, item.IPv4OutboundTag, ipv4Outbound.Type)
-				}
-			desired := mustJSON(map[string]interface{}{
-					"server": item.UpstreamServer, "server_port": item.UpstreamPort,
-					"version": "5", "username": item.UpstreamUsername, "password": item.UpstreamPassword,
-					"domain_strategy": relayDomainStrategyIPv4Only,
-				})
-				// A buggy/very old pool may have several items pointing at one
-				// IPv4 outbound tag. Never overwrite that shared outbound: clone
-				// it for this item and persist the new tag in the pool mapping.
-				if usedIPv4Tags[item.IPv4OutboundTag] {
-					clone := model.Outbound{Type: "socks", Tag: fmt.Sprintf("relay-ipv4-%s", common.Random(7)), Options: desired}
-					if err := tx.Create(&clone).Error; err != nil {
-						return err
-					}
-					item.IPv4OutboundTag = clone.Tag
-					ipv4Outbound = clone
-					itemsChanged = true
-				}
-				usedIPv4Tags[item.IPv4OutboundTag] = true
-				if string(ipv4Outbound.Options) != string(desired) {
-					if err := tx.Model(&model.Outbound{}).Where("id = ?", ipv4Outbound.Id).Update("options", desired).Error; err != nil {
-						return err
-					}
-				}
-			}
-			if itemsChanged {
-				if err := tx.Model(&model.RelayPool{}).Where("id = ?", pool.Id).Update("items", mustJSON(items)).Error; err != nil {
-					return err
-				}
-			}
-			// Older paired/dual-stack pools may have been created before the
-			// Apple-ID-only switch was introduced.  Keep their generated IPv6
-			// direct outbounds IPv6-only whenever the item is marked for the
-			// Apple-ID IPv4 exception; otherwise a pure IPv4 hostname could be
-			// resolved and sent through the VPS's native IPv4 route.
-			for _, item := range items {
-				if !item.AppleIDIPv4Only || item.IPv6 == "" || item.OutboundTag == "" {
-					continue
-				}
-				var outbound model.Outbound
-				if err := tx.Where("tag = ?", item.OutboundTag).First(&outbound).Error; err != nil {
-					if database.IsNotFound(err) {
-						continue
-					}
-					return err
-				}
-				if outbound.Type != "direct" {
-					continue
-				}
-				var options map[string]interface{}
-				if len(outbound.Options) > 0 {
-					if err := json.Unmarshal(outbound.Options, &options); err != nil {
-						return err
-					}
-				}
-				if options == nil {
-					options = map[string]interface{}{}
-				}
-				options["inet6_bind_address"] = item.IPv6
-				options["domain_strategy"] = relayDomainStrategyIPv6Only
-				if err := tx.Model(&model.Outbound{}).Where("id = ?", outbound.Id).Update("options", mustJSON(options)).Error; err != nil {
-					return err
-				}
-			}
-			dualStackItems = append(dualStackItems, items...)
 		}
 		if len(dualStackItems) > 0 {
 			if err := updateRelayRouteRules(tx, dualStackItems, false, false); err != nil {
@@ -1001,20 +831,6 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	if err != nil {
 		return nil, err
 	}
-	// Pairing must be based on the prepared item, not on a second lookup into
-	// the request slice.  This keeps the IPv6/upstream relationship stable
-	// even when a remote agent or an older frontend sends an empty/rewritten
-	// `upstreams` array together with `upstream_text`.
-	if relayModePairsUpstream(req.Mode) {
-		if len(items) != len(req.Upstreams) {
-			return nil, common.NewErrorf("relay pairing requires exactly one upstream for each IPv6 item (got %d items, %d upstreams)", len(items), len(req.Upstreams))
-		}
-		for i := range items {
-			if items[i].UpstreamServer == "" || items[i].UpstreamPort < 1 {
-				return nil, common.NewErrorf("relay pairing item %d has no upstream SOCKS5 endpoint", i+1)
-			}
-		}
-	}
 	added := make([]model.RelayItem, 0)
 	cleanup := true
 	defer func() {
@@ -1036,29 +852,39 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 			existingAddresses[address.Address] = true
 		}
 	}
-	for i := range items {
-		if items[i].IPv6 == "" {
-			continue
+	if relayModePairsUpstream(req.Mode) && runtime.GOOS == "linux" {
+		// A paired pool must contain one usable IPv6 for every IPv4 SOCKS5
+		// upstream. Failed candidates are removed and replaced one at a time;
+		// one provider-rejected address must not cancel the whole batch.
+		items, err = s.ensurePairedRelayIPv6(items, req.AddSystemAddresses, existingAddresses, &added)
+		if err != nil {
+			return nil, err
 		}
-		already := existingAddresses[items[i].IPv6]
-		if !already && !req.AddSystemAddresses {
-			return nil, common.NewErrorf("IPv6 %s is not currently assigned; enable system address creation", items[i].IPv6)
+	} else {
+		for i := range items {
+			if items[i].IPv6 == "" {
+				continue
+			}
+			already := existingAddresses[items[i].IPv6]
+			if !already && !req.AddSystemAddresses {
+				return nil, common.NewErrorf("IPv6 %s is not currently assigned; enable system address creation", items[i].IPv6)
+			}
+			if !already {
+				if err := addRelayAddress(items[i].Interface, items[i].IPv6, items[i].Prefix); err != nil {
+					return nil, err
+				}
+				items[i].AddedByUs = true
+				added = append(added, items[i])
+				existingAddresses[items[i].IPv6] = true
+			}
 		}
-		if !already {
-			if err := addRelayAddress(items[i].Interface, items[i].IPv6, items[i].Prefix); err != nil {
+		if err := waitRelayAddressesReady(items); err != nil {
+			return nil, err
+		}
+		if relayModeUsesIPv6(req.Mode) && runtime.GOOS == "linux" {
+			if err := validateRelayIPv6Egress(context.Background(), items, probeRelayIPv6Egress); err != nil {
 				return nil, err
 			}
-			items[i].AddedByUs = true
-			added = append(added, items[i])
-			existingAddresses[items[i].IPv6] = true
-		}
-	}
-	if err := waitRelayAddressesReady(items); err != nil {
-		return nil, err
-	}
-	if relayModeUsesIPv6(req.Mode) && runtime.GOOS == "linux" {
-		if err := validateRelayIPv6Egress(context.Background(), items, probeRelayIPv6Egress); err != nil {
-			return nil, err
 		}
 	}
 
@@ -1145,11 +971,16 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 			Tag:  fmt.Sprintf("relay-out-%s", common.Random(7)),
 		}
 		if req.Mode == relayModeUpstream {
+			upstream := req.Upstreams[i]
 			outbound.Type = "socks"
 			outbound.Options, err = json.Marshal(map[string]interface{}{
-				"server": items[i].UpstreamServer, "server_port": items[i].UpstreamPort,
-				"version": "5", "username": items[i].UpstreamUsername, "password": items[i].UpstreamPassword,
+				"server": upstream.Server, "server_port": upstream.Port,
+				"version": "5", "username": upstream.Username, "password": upstream.Password,
 			})
+			items[i].UpstreamServer = upstream.Server
+			items[i].UpstreamPort = upstream.Port
+			items[i].UpstreamUsername = upstream.Username
+			items[i].UpstreamPassword = upstream.Password
 		} else {
 			outbound.Options, err = json.Marshal(relayDirectOutboundOptions(req, items[i]))
 		}
@@ -1161,14 +992,13 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		}
 		items[i].OutboundTag = outbound.Tag
 		if relayModePairsUpstream(req.Mode) {
-			items[i].AppleIDIPv4Only = req.AppleIDIPv4Only
+			upstream := req.Upstreams[i]
 			ipv4Outbound := model.Outbound{
 				Type: "socks",
 				Tag:  fmt.Sprintf("relay-ipv4-%s", common.Random(7)),
 				Options: mustJSON(map[string]interface{}{
-					"server": items[i].UpstreamServer, "server_port": items[i].UpstreamPort,
-					"version": "5", "username": items[i].UpstreamUsername, "password": items[i].UpstreamPassword,
-					"domain_strategy": relayDomainStrategyIPv4Only,
+					"server": upstream.Server, "server_port": upstream.Port,
+					"version": "5", "username": upstream.Username, "password": upstream.Password,
 				}),
 			}
 			if err := tx.Create(&ipv4Outbound).Error; err != nil {
@@ -1300,7 +1130,7 @@ func normalizeRelayDomainStrategy(mode, value string) (string, error) {
 
 func relayDirectOutboundOptions(req RelayCreateRequest, item model.RelayItem) map[string]interface{} {
 	strategy := req.DomainStrategy
-	if req.Mode == relayModeDualStack || req.AppleIDIPv4Only {
+	if req.Mode == relayModeDualStack {
 		strategy = relayDomainStrategyIPv6Only
 	}
 	if strategy == "" {
@@ -1756,9 +1586,6 @@ func updateRelayRotatedOutbounds(tx *gorm.DB, mode string, items []model.RelayIt
 			options = make(map[string]interface{})
 		}
 		options["inet6_bind_address"] = items[index].IPv6
-		if items[index].AppleIDIPv4Only {
-			options["domain_strategy"] = relayDomainStrategyIPv6Only
-		}
 		if err := tx.Model(&model.Outbound{}).Where("id = ?", outbound.Id).Update("options", mustJSON(options)).Error; err != nil {
 			return err
 		}
@@ -1949,6 +1776,109 @@ func relayListenPort(inbound model.Inbound) int {
 	}
 	_ = json.Unmarshal(inbound.Options, &options)
 	return options.ListenPort
+}
+
+// ensurePairedRelayIPv6 guarantees that every paired upstream gets an IPv6
+// address that passed the local readiness check and the public IPv6 probe.
+// Providers commonly allow only a subset of a routed prefix, so candidates
+// are tested independently and failed addresses are replaced instead of
+// aborting the complete IPv4/IPv6 batch.
+func (s *ConfigService) ensurePairedRelayIPv6(items []model.RelayItem, addSystemAddresses bool, existing map[string]bool, added *[]model.RelayItem) ([]model.RelayItem, error) {
+	occupied := make(map[string]bool, len(existing)+len(items))
+	for address := range existing {
+		occupied[address] = true
+	}
+	const attemptsPerItem = 32
+	acceptedByPool := make(map[string]bool, len(items))
+	for index := range items {
+		initial := items[index].IPv6
+		initialAddr, initialErr := netip.ParseAddr(initial)
+		if initialErr != nil || !initialAddr.Is6() {
+			return nil, common.NewErrorf("invalid generated IPv6 address %q", initial)
+		}
+		var lastErr error
+		rejected := make(map[string]bool, attemptsPerItem)
+		for attempt := 0; attempt < attemptsPerItem; attempt++ {
+			candidate := initialAddr
+			if attempt > 0 {
+				candidate, lastErr = randomRelayIPv6(initialAddr, items[index].Prefix)
+				if lastErr != nil {
+					continue
+				}
+			}
+			candidateText := candidate.String()
+			if rejected[candidateText] {
+				continue
+			}
+			if acceptedByPool[candidateText] {
+				continue
+			}
+			reservedByLaterItem := false
+			for later := index + 1; later < len(items); later++ {
+				if items[later].IPv6 == candidateText {
+					reservedByLaterItem = true
+					break
+				}
+			}
+			if reservedByLaterItem {
+				continue
+			}
+			if occupied[candidateText] && candidateText != initial {
+				continue
+			}
+			items[index].IPv6 = candidateText
+			items[index].AddedByUs = false
+			alreadyAssigned := existing[candidateText]
+			if !alreadyAssigned {
+				if !addSystemAddresses {
+					return nil, common.NewErrorf("IPv6 %s is not currently assigned; enable system address creation", candidateText)
+				}
+				if err := addRelayAddress(items[index].Interface, candidateText, items[index].Prefix); err != nil {
+					lastErr = err
+					rejected[candidateText] = true
+					continue
+				}
+				items[index].AddedByUs = true
+			}
+
+			if err := waitRelayAddressesReady([]model.RelayItem{items[index]}); err != nil {
+				lastErr = err
+				if items[index].AddedByUs {
+					if deleteErr := deleteRelayAddress(items[index].Interface, candidateText, items[index].Prefix); deleteErr != nil {
+						logger.Warningf("remove failed paired IPv6 %s: %v", candidateText, deleteErr)
+						*added = append(*added, items[index])
+					}
+				}
+				items[index].AddedByUs = false
+				rejected[candidateText] = true
+				continue
+			}
+			if err := probeRelayIPv6Egress(context.Background(), candidate); err != nil {
+				lastErr = err
+				if items[index].AddedByUs {
+					if deleteErr := deleteRelayAddress(items[index].Interface, candidateText, items[index].Prefix); deleteErr != nil {
+						logger.Warningf("remove failed paired IPv6 %s: %v", candidateText, deleteErr)
+						*added = append(*added, items[index])
+					}
+				}
+				items[index].AddedByUs = false
+				rejected[candidateText] = true
+				continue
+			}
+			occupied[candidateText] = true
+			acceptedByPool[candidateText] = true
+			if items[index].AddedByUs {
+				*added = append(*added, items[index])
+				existing[candidateText] = true
+			}
+			lastErr = nil
+			break
+		}
+		if lastErr != nil {
+			return nil, common.NewErrorf("unable to find a usable IPv6 for paired upstream %d after %d attempts: %v", index+1, attemptsPerItem, lastErr)
+		}
+	}
+	return items, nil
 }
 
 func randomUUID() string {
@@ -2554,34 +2484,6 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 			if _, ok := targets[item.InboundTag]; !ok {
 				continue
 			}
-			if item.AppleIDIPv4Only && item.IPv4OutboundTag != "" && (item.IPv6OutboundTag != "" || item.OutboundTag != "") {
-				newRules = append(newRules, map[string]interface{}{
-					"inbound": []string{item.InboundTag}, "domain_suffix": relayAppleIDDomains,
-					"action": "route", "outbound": item.IPv4OutboundTag,
-				})
-				newRules = append(newRules, map[string]interface{}{
-					"inbound": []string{item.InboundTag}, "domain_suffix": relayVintedCaptchaDomains,
-					"action": "route", "outbound": item.IPv4OutboundTag,
-				})
-			}
-			if item.AppleIDIPv4Only && item.IPv4OutboundTag != "" {
-				ipv6Outbound := item.IPv6OutboundTag
-				if ipv6Outbound == "" {
-					ipv6Outbound = item.OutboundTag
-				}
-				newRules = append(newRules,
-					map[string]interface{}{
-						"inbound": []string{item.InboundTag}, "action": "resolve", "strategy": relayDomainStrategyIPv6Only, "server": relayPairedDNSResolverTag,
-					},
-					map[string]interface{}{
-						"inbound": []string{item.InboundTag}, "ip_version": 4, "ip_cidr": []string{"0.0.0.0/0"}, "action": "reject",
-					},
-					map[string]interface{}{
-						"inbound": []string{item.InboundTag}, "action": "route", "outbound": ipv6Outbound,
-					},
-				)
-				continue
-			}
 			if item.IPv6OutboundTag != "" && item.IPv4OutboundTag != "" {
 				newRules = append(newRules,
 					map[string]interface{}{
@@ -2744,23 +2646,13 @@ func validateUpstream(upstream RelayUpstream) error {
 }
 
 func parseRelayUpstreams(text string) ([]RelayUpstream, error) {
-	text = strings.TrimSpace(strings.TrimPrefix(text, "\ufeff"))
-	if text == "" {
-		return nil, common.NewError("no valid SOCKS5 entries found")
-	}
-	// A number of proxy APIs return JSON instead of one proxy per line. Try it
-	// first, but fall back to line parsing so bracketed IPv6 remains valid.
-	if strings.HasPrefix(text, "{") || strings.HasPrefix(text, "[") {
-		var raw interface{}
-		if err := json.Unmarshal([]byte(text), &raw); err == nil {
-			result, err := parseRelayUpstreamJSON(raw)
-			if err != nil {
-				return nil, err
-			}
-			if len(result) > 0 {
-				return result, nil
-			}
+	trimmed := strings.TrimSpace(text)
+	if (strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) && json.Valid([]byte(trimmed)) {
+		result, err := parseRelayUpstreamJSON(text)
+		if err == nil {
+			return result, nil
 		}
+		return nil, err
 	}
 	var result []RelayUpstream
 	for lineNo, raw := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
@@ -2781,217 +2673,282 @@ func parseRelayUpstreams(text string) ([]RelayUpstream, error) {
 }
 
 func parseRelayUpstreamLine(line string) (RelayUpstream, error) {
-	line = strings.TrimSpace(strings.Trim(line, "\"'"))
+	line = strings.Trim(strings.TrimSpace(line), "\"'")
 	if line == "" {
 		return RelayUpstream{}, common.NewError("empty SOCKS5 entry")
 	}
-	if strings.Contains(line, "://") {
-		parsed, err := url.Parse(line)
-		if err != nil || parsed.Hostname() == "" || parsed.Port() == "" {
-			return RelayUpstream{}, common.NewError("invalid proxy URL")
-		}
-		if !isSupportedRelayProxyScheme(parsed.Scheme) {
-			return RelayUpstream{}, common.NewErrorf("unsupported proxy scheme %q; use SOCKS5", parsed.Scheme)
-		}
-		port, err := strconv.Atoi(parsed.Port())
-		if err != nil {
-			return RelayUpstream{}, common.NewError("invalid SOCKS5 port")
-		}
-		username, password := "", ""
-		if parsed.User != nil {
-			username = parsed.User.Username()
-			password, _ = parsed.User.Password()
-		}
-		upstream := RelayUpstream{Server: parsed.Hostname(), Port: port, Username: username, Password: password}
-		return upstream, validateUpstream(upstream)
+	lower := strings.ToLower(line)
+	if strings.Contains(lower, "://") {
+		return parseRelayUpstreamURL(line)
 	}
-	// Common non-URL authenticated forms: user:pass@host:port and
-	// host:port@user:pass.
+	if strings.ContainsAny(line, ",|\t ") && !strings.Contains(line, "@") {
+		if upstream, err := parseRelayDelimited(line); err == nil {
+			return upstream, nil
+		}
+	}
 	if at := strings.LastIndex(line, "@"); at > 0 {
-		left, right := line[:at], line[at+1:]
-		if upstream, ok := parseRelayEndpointWithCredentials(right, left); ok {
+		left, right := strings.TrimSpace(line[:at]), strings.TrimSpace(line[at+1:])
+		if server, port, err := parseRelayHostPort(left); err == nil {
+			username, password := splitRelayCredentials(right)
+			username, password = decodeRelayCredentials(username, password)
+			upstream := RelayUpstream{Server: server, Port: port, Username: username, Password: password}
 			return upstream, validateUpstream(upstream)
 		}
-		if upstream, ok := parseRelayEndpointWithCredentials(left, right); ok {
+		username, password := splitRelayCredentials(left)
+		if server, port, err := parseRelayHostPort(right); err == nil && username != "" {
+			username, password = decodeRelayCredentials(username, password)
+			upstream := RelayUpstream{Server: server, Port: port, Username: username, Password: password}
 			return upstream, validateUpstream(upstream)
 		}
 	}
-	// Comma, pipe, semicolon and whitespace separated lists are common in
-	// provider dashboards. The numeric port identifies which side is host.
-	if fields := splitRelayFields(line); len(fields) == 4 {
-		if upstream, ok := relayFieldsToUpstream(fields); ok {
-			return upstream, validateUpstream(upstream)
-		}
-	}
-	if server, portText, err := net.SplitHostPort(line); err == nil {
-		port, err := strconv.Atoi(portText)
-		if err != nil {
-			return RelayUpstream{}, common.NewError("invalid SOCKS5 port")
-		}
-		upstream := RelayUpstream{Server: strings.Trim(server, "[]"), Port: port}
+	if server, port, err := parseRelayHostPort(line); err == nil {
+		upstream := RelayUpstream{Server: server, Port: port}
 		return upstream, validateUpstream(upstream)
 	}
-	parts := strings.Split(line, ":")
-	if len(parts) == 4 {
-		// Prefer the long-standing host:port:user:pass form when both the port
-		// and password are numeric. Otherwise accept user:pass:host:port.
-		if port, err := strconv.Atoi(parts[1]); err == nil {
-			upstream := RelayUpstream{Server: strings.Trim(parts[0], "[]"), Port: port, Username: parts[2], Password: parts[3]}
-			return upstream, validateUpstream(upstream)
-		}
-		if port, err := strconv.Atoi(parts[3]); err == nil {
-			upstream := RelayUpstream{Server: strings.Trim(parts[2], "[]"), Port: port, Username: parts[0], Password: parts[1]}
-			return upstream, validateUpstream(upstream)
+	if parts := strings.Split(line, ":"); len(parts) >= 4 {
+		// IPWO's host:port:user:password format. Joining the remaining fields
+		// preserves passwords containing additional colons.
+		for portIndex := 1; portIndex < len(parts)-2; portIndex++ {
+			port, err := strconv.Atoi(parts[portIndex])
+			if err != nil {
+				continue
+			}
+			server := strings.Join(parts[:portIndex], ":")
+			server = strings.Trim(server, "[]")
+			username := parts[portIndex+1]
+			password := strings.Join(parts[portIndex+2:], ":")
+			upstream := RelayUpstream{Server: server, Port: port, Username: username, Password: password}
+			if err := validateUpstream(upstream); err == nil {
+				return upstream, nil
+			}
 		}
 	}
-	if len(parts) < 4 {
-		return RelayUpstream{}, common.NewError("expected host:port, host:port:user:pass, user:pass@host:port, or a SOCKS5 URL")
+	return RelayUpstream{}, common.NewError("expected a SOCKS5 URL, host:port, authenticated host:port, or delimited fields")
+}
+
+func parseRelayUpstreamURL(line string) (RelayUpstream, error) {
+	parsed, err := url.Parse(line)
+	if err != nil {
+		return RelayUpstream{}, common.NewError("invalid SOCKS5 URL")
 	}
-	password := parts[len(parts)-1]
-	username := parts[len(parts)-2]
-	port, err := strconv.Atoi(parts[len(parts)-3])
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "socks5" && scheme != "socks5h" && scheme != "socks" {
+		return RelayUpstream{}, common.NewError("only SOCKS5 URLs are supported")
+	}
+	if parsed.Hostname() == "" || parsed.Port() == "" {
+		return RelayUpstream{}, common.NewError("SOCKS5 URL must include host and port")
+	}
+	port, err := strconv.Atoi(parsed.Port())
 	if err != nil {
 		return RelayUpstream{}, common.NewError("invalid SOCKS5 port")
 	}
-	server := strings.Join(parts[:len(parts)-3], ":")
-	server = strings.Trim(server, "[]")
+	username, password := "", ""
+	if parsed.User != nil {
+		username = parsed.User.Username()
+		password, _ = parsed.User.Password()
+	}
+	upstream := RelayUpstream{Server: parsed.Hostname(), Port: port, Username: username, Password: password}
+	return upstream, validateUpstream(upstream)
+}
+
+func parseRelayHostPort(value string) (string, int, error) {
+	value = strings.TrimSpace(value)
+	if server, portText, err := net.SplitHostPort(value); err == nil {
+		port, portErr := strconv.Atoi(portText)
+		return strings.Trim(server, "[]"), port, portErr
+	}
+	if strings.HasPrefix(value, "[") {
+		return "", 0, common.NewError("invalid bracketed SOCKS5 host")
+	}
+	colon := strings.LastIndex(value, ":")
+	if colon <= 0 || colon == len(value)-1 || strings.Contains(value[:colon], ":") {
+		return "", 0, common.NewError("host and port are required")
+	}
+	port, err := strconv.Atoi(value[colon+1:])
+	return value[:colon], port, err
+}
+
+func splitRelayCredentials(value string) (string, string) {
+	value = strings.TrimSpace(value)
+	if colon := strings.IndexByte(value, ':'); colon >= 0 {
+		return value[:colon], value[colon+1:]
+	}
+	return value, ""
+}
+
+func decodeRelayCredentials(username, password string) (string, string) {
+	if decoded, err := url.PathUnescape(username); err == nil {
+		username = decoded
+	}
+	if decoded, err := url.PathUnescape(password); err == nil {
+		password = decoded
+	}
+	return username, password
+}
+
+func parseRelayDelimited(line string) (RelayUpstream, error) {
+	delimiter := " "
+	for _, candidate := range []string{",", "|", "\t"} {
+		if strings.Contains(line, candidate) {
+			delimiter = candidate
+			break
+		}
+	}
+	fields := strings.FieldsFunc(line, func(r rune) bool {
+		return r == ',' || r == '|' || r == '\t' || (delimiter == " " && r == ' ')
+	})
+	if len(fields) < 2 || len(fields) > 4 {
+		return RelayUpstream{}, common.NewError("invalid delimited SOCKS5 entry")
+	}
+	for i := range fields {
+		fields[i] = strings.Trim(strings.TrimSpace(fields[i]), "\"'")
+	}
+	if len(fields) == 3 {
+		if server, port, err := parseRelayHostPort(fields[0]); err == nil {
+			upstream := RelayUpstream{Server: server, Port: port, Username: fields[1], Password: fields[2]}
+			return upstream, validateUpstream(upstream)
+		}
+		if server, port, err := parseRelayHostPort(fields[2]); err == nil {
+			upstream := RelayUpstream{Server: server, Port: port, Username: fields[0], Password: fields[1]}
+			return upstream, validateUpstream(upstream)
+		}
+	}
+	if len(fields) == 2 {
+		server, port, err := parseRelayHostPort(strings.Join(fields, ":"))
+		if err != nil {
+			return RelayUpstream{}, err
+		}
+		return RelayUpstream{Server: server, Port: port}, validateUpstream(RelayUpstream{Server: server, Port: port})
+	}
+	portIndex := -1
+	for i, field := range fields {
+		if port, err := strconv.Atoi(field); err == nil && port >= 1 && port <= 65535 {
+			portIndex = i
+			break
+		}
+	}
+	if portIndex < 0 {
+		return RelayUpstream{}, common.NewError("invalid SOCKS5 port")
+	}
+	var server, username, password string
+	switch {
+	case portIndex == 1:
+		server, username, password = fields[0], "", ""
+		if len(fields) == 4 {
+			username, password = fields[2], fields[3]
+		}
+	case portIndex == 3 && len(fields) == 4:
+		username, password, server = fields[0], fields[1], fields[2]
+	default:
+		return RelayUpstream{}, common.NewError("expected host, port, username, password fields")
+	}
+	port, _ := strconv.Atoi(fields[portIndex])
 	upstream := RelayUpstream{Server: server, Port: port, Username: username, Password: password}
 	return upstream, validateUpstream(upstream)
 }
 
-func isSupportedRelayProxyScheme(scheme string) bool {
-	switch strings.ToLower(strings.TrimSpace(scheme)) {
-	case "socks", "socks5", "socks5h":
-		return true
-	default:
-		return false
+func parseRelayUpstreamJSON(text string) ([]RelayUpstream, error) {
+	decoder := json.NewDecoder(strings.NewReader(text))
+	decoder.UseNumber()
+	var value interface{}
+	if err := decoder.Decode(&value); err != nil {
+		return nil, common.NewError("invalid SOCKS5 JSON: " + err.Error())
 	}
-}
-
-func parseRelayEndpointWithCredentials(endpoint, credentials string) (RelayUpstream, bool) {
-	host, portText, err := net.SplitHostPort(strings.TrimSpace(endpoint))
-	if err != nil {
-		return RelayUpstream{}, false
+	var entries []interface{}
+	collectRelayJSONEntries(value, &entries)
+	if len(entries) == 0 {
+		return nil, common.NewError("no valid SOCKS5 entries found in JSON")
 	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		return RelayUpstream{}, false
-	}
-	parts := strings.SplitN(credentials, ":", 2)
-	if len(parts) != 2 || parts[0] == "" {
-		return RelayUpstream{}, false
-	}
-	return RelayUpstream{Server: strings.Trim(host, "[]"), Port: port, Username: parts[0], Password: parts[1]}, true
-}
-
-func splitRelayFields(line string) []string {
-	return strings.FieldsFunc(line, func(r rune) bool {
-		return r == ',' || r == '|' || r == ';' || r == '\t' || r == ' '
-	})
-}
-
-func relayFieldsToUpstream(fields []string) (RelayUpstream, bool) {
-	if len(fields) != 4 {
-		return RelayUpstream{}, false
-	}
-	if port, err := strconv.Atoi(fields[1]); err == nil {
-		return RelayUpstream{Server: strings.Trim(fields[0], "[]"), Port: port, Username: fields[2], Password: fields[3]}, true
-	}
-	if port, err := strconv.Atoi(fields[3]); err == nil {
-		return RelayUpstream{Server: strings.Trim(fields[2], "[]"), Port: port, Username: fields[0], Password: fields[1]}, true
-	}
-	return RelayUpstream{}, false
-}
-
-func parseRelayUpstreamJSON(raw interface{}) ([]RelayUpstream, error) {
-	var result []RelayUpstream
-	var walk func(interface{}) error
-	walk = func(value interface{}) error {
-		switch item := value.(type) {
+	result := make([]RelayUpstream, 0, len(entries))
+	for index, entry := range entries {
+		var upstream RelayUpstream
+		var err error
+		switch item := entry.(type) {
 		case string:
-			upstream, err := parseRelayUpstreamLine(item)
-			if err != nil {
-				return err
-			}
-			result = append(result, upstream)
-		case []interface{}:
-			for _, child := range item {
-				if err := walk(child); err != nil {
-					return err
-				}
-			}
+			upstream, err = parseRelayUpstreamLine(item)
 		case map[string]interface{}:
-			fields := relayJSONFields(item)
-			if host, ok := relayJSONString(fields, "host", "server", "ip", "address"); ok {
-				port, ok := relayJSONPort(fields, "port", "server_port")
-				if !ok {
-					return common.NewErrorf("JSON proxy %q has no valid port", host)
-				}
-				user, _ := relayJSONString(fields, "username", "user", "login")
-				pass, _ := relayJSONString(fields, "password", "pass", "pwd")
-				result = append(result, RelayUpstream{Server: host, Port: port, Username: user, Password: pass})
-				return nil
-			}
-			for _, key := range []string{"data", "proxies", "proxy", "list", "result", "items"} {
-				if child, exists := fields[key]; exists {
-					if err := walk(child); err != nil {
-						return err
-					}
-					return nil
-				}
-			}
+			upstream, err = parseRelayUpstreamMap(item)
+		default:
+			err = common.NewError("entry must be a string or object")
 		}
-		return nil
-	}
-	if err := walk(raw); err != nil {
-		return nil, fmt.Errorf("invalid proxy JSON: %w", err)
-	}
-	if len(result) == 0 {
-		return nil, common.NewError("proxy JSON contains no supported entries")
-	}
-	for index, upstream := range result {
-		if err := validateUpstream(upstream); err != nil {
-			return nil, fmt.Errorf("JSON proxy %d: %w", index+1, err)
+		if err != nil {
+			return nil, fmt.Errorf("JSON entry %d: %w", index+1, err)
 		}
+		result = append(result, upstream)
 	}
 	return result, nil
 }
 
-func relayJSONFields(item map[string]interface{}) map[string]interface{} {
-	fields := make(map[string]interface{}, len(item))
-	for key, value := range item {
-		fields[strings.ToLower(strings.TrimSpace(key))] = value
+func collectRelayJSONEntries(value interface{}, entries *[]interface{}) {
+	switch item := value.(type) {
+	case []interface{}:
+		for _, child := range item {
+			collectRelayJSONEntries(child, entries)
+		}
+	case map[string]interface{}:
+		for key, child := range item {
+			switch strings.ToLower(key) {
+			case "data", "proxies", "proxy", "list", "items", "nodes", "servers", "results":
+				collectRelayJSONEntries(child, entries)
+				return
+			}
+		}
+		*entries = append(*entries, item)
+	default:
+		*entries = append(*entries, item)
 	}
-	return fields
 }
 
-func relayJSONString(item map[string]interface{}, keys ...string) (string, bool) {
+func parseRelayUpstreamMap(item map[string]interface{}) (RelayUpstream, error) {
+	for _, key := range []string{"url", "uri", "proxy", "link"} {
+		if value, ok := relayJSONString(item, key); ok && value != "" {
+			return parseRelayUpstreamLine(value)
+		}
+	}
+	if protocol, ok := relayJSONStringAny(item, "type", "protocol", "scheme"); ok {
+		protocol = strings.ToLower(protocol)
+		if protocol != "socks5" && protocol != "socks5h" && protocol != "socks" {
+			return RelayUpstream{}, common.NewError("JSON entry is not a SOCKS5 proxy")
+		}
+	}
+	server, _ := relayJSONStringAny(item, "host", "hostname", "server", "ip", "address")
+	portText, _ := relayJSONStringAny(item, "port", "server_port")
+	if strings.Contains(server, ":") && portText == "" {
+		return parseRelayUpstreamLine(server)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return RelayUpstream{}, common.NewError("JSON entry has an invalid SOCKS5 port")
+	}
+	username, _ := relayJSONStringAny(item, "username", "user", "login")
+	password, _ := relayJSONStringAny(item, "password", "pass", "pwd")
+	upstream := RelayUpstream{Server: server, Port: port, Username: username, Password: password}
+	return upstream, validateUpstream(upstream)
+}
+
+func relayJSONStringAny(item map[string]interface{}, keys ...string) (string, bool) {
 	for _, key := range keys {
-		if value, ok := item[key]; ok {
-			if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
-				return strings.TrimSpace(text), true
-			}
+		if value, ok := relayJSONString(item, key); ok {
+			return value, true
 		}
 	}
 	return "", false
 }
 
-func relayJSONPort(item map[string]interface{}, keys ...string) (int, bool) {
-	for _, key := range keys {
-		if value, ok := item[key]; ok {
+func relayJSONString(item map[string]interface{}, key string) (string, bool) {
+	for actual, value := range item {
+		if strings.EqualFold(actual, key) {
 			switch typed := value.(type) {
-			case float64:
-				return int(typed), typed == float64(int(typed))
-			case json.Number:
-				port, err := strconv.Atoi(typed.String())
-				return port, err == nil
 			case string:
-				port, err := strconv.Atoi(strings.TrimSpace(typed))
-				return port, err == nil
+				return strings.TrimSpace(typed), true
+			case json.Number:
+				return typed.String(), true
+			case float64:
+				return strconv.FormatInt(int64(typed), 10), true
 			}
 		}
 	}
-	return 0, false
+	return "", false
 }
 
 func mustJSON(value interface{}) json.RawMessage {

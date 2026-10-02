@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/netip"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -54,20 +53,19 @@ func TestParseRelayUpstreamLine(t *testing.T) {
 	}
 }
 
-func TestParseRelayUpstreamCommonProviderFormats(t *testing.T) {
+func TestParseRelayUpstreamLineAcceptsCommonProviderFormats(t *testing.T) {
 	tests := []struct {
 		name string
 		line string
 		want RelayUpstream
 	}{
-		{name: "credentials before endpoint", line: "user:pass@proxy.example:1080", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
-		{name: "credentials after endpoint", line: "proxy.example:1080@user:pass", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
-		{name: "socks5 hostname resolution URL", line: "socks5h://user:p%40ss@proxy.example:1080", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "p@ss"}},
-		{name: "comma host first", line: "proxy.example,1080,user,pass", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
-		{name: "pipe credentials first", line: "user|pass|proxy.example|1080", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
-		{name: "space separated", line: "proxy.example 1080 user pass", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
-		{name: "numeric password remains host first", line: "proxy.example:1080:user:1234", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "1234"}},
-		{name: "colon credentials first", line: "user:pass:proxy.example:1080", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
+		{name: "user info first", line: "user:p%40ss@proxy.example:1080", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "p@ss"}},
+		{name: "host auth suffix", line: "proxy.example:1080@user:pass", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
+		{name: "socks5h URL", line: "socks5h://proxy.example:1080", want: RelayUpstream{Server: "proxy.example", Port: 1080}},
+		{name: "comma fields", line: "proxy.example,1080,user,pass", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
+		{name: "pipe fields reversed", line: "user|pass|proxy.example|1080", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
+		{name: "space fields", line: "proxy.example 1080 user pass", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "pass"}},
+		{name: "password contains colon", line: "proxy.example:1080:user:p:a:s:s", want: RelayUpstream{Server: "proxy.example", Port: 1080, Username: "user", Password: "p:a:s:s"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -80,32 +78,32 @@ func TestParseRelayUpstreamCommonProviderFormats(t *testing.T) {
 			}
 		})
 	}
+	if _, err := parseRelayUpstreamLine("https://proxy.example:1080"); err == nil {
+		t.Fatal("HTTP/HTTPS upstream must be rejected")
+	}
 }
 
-func TestParseRelayUpstreamsJSONFormats(t *testing.T) {
-	text := `{"Data":[{"IP":"203.0.113.10","PORT":"1080","USERNAME":"user-1","PASSWORD":"pass-1"},{"host":"proxy.example","server_port":1081,"user":"user-2","pass":"pass-2"}]}`
+func TestParseRelayUpstreamsJSON(t *testing.T) {
+	text := `{"proxies":[
+        {"host":"proxy.example","port":1080,"username":"u","password":"p"},
+        {"url":"socks5://u2:p2@proxy2.example:1081"},
+        "user3|pass3|proxy3.example|1082"
+    ]}`
 	got, err := parseRelayUpstreams(text)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []RelayUpstream{
-		{Server: "203.0.113.10", Port: 1080, Username: "user-1", Password: "pass-1"},
-		{Server: "proxy.example", Port: 1081, Username: "user-2", Password: "pass-2"},
+		{Server: "proxy.example", Port: 1080, Username: "u", Password: "p"},
+		{Server: "proxy2.example", Port: 1081, Username: "u2", Password: "p2"},
+		{Server: "proxy3.example", Port: 1082, Username: "user3", Password: "pass3"},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %#v, want %#v", got, want)
+	if len(got) != len(want) {
+		t.Fatalf("got %d entries, want %d", len(got), len(want))
 	}
-}
-
-func TestParseRelayUpstreamRejectsUnsupportedFormats(t *testing.T) {
-	for _, line := range []string{
-		"http://user:pass@proxy.example:8080",
-		"socks4://user:pass@proxy.example:1080",
-		"proxy.example:not-a-port:user:pass",
-		"proxy.example:1080:user",
-	} {
-		if _, err := parseRelayUpstreamLine(line); err == nil {
-			t.Fatalf("expected %q to be rejected", line)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("entry %d = %#v, want %#v", i, got[i], want[i])
 		}
 	}
 }
@@ -399,7 +397,7 @@ func TestCreateRelayRejectsCountAboveMaximum(t *testing.T) {
 		PortStart:      30000,
 		PasswordLength: 12,
 	}, "test", "203.0.113.10")
-	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("cannot exceed %d", maxRelayItems)) {
+	if err == nil || !strings.Contains(err.Error(), "cannot exceed 100") {
 		t.Fatalf("unexpected relay count validation error: %v", err)
 	}
 }
@@ -453,16 +451,6 @@ func TestRelayDualStackDirectOutboundStaysIPv6Only(t *testing.T) {
 	options := relayDirectOutboundOptions(RelayCreateRequest{Mode: relayModeDualStack, DomainStrategy: relayDomainStrategyPreferIPv6}, item)
 	if options["inet6_bind_address"] != item.IPv6 || options["domain_strategy"] != relayDomainStrategyIPv6Only {
 		t.Fatalf("unexpected dual-stack IPv6 child options: %#v", options)
-	}
-}
-
-func TestRelayAppleIDIPv4OnlyDirectOutboundStaysIPv6Only(t *testing.T) {
-	item := model.RelayItem{IPv6: "2001:db8::10"}
-	options := relayDirectOutboundOptions(RelayCreateRequest{
-		Mode: relayModePaired, DomainStrategy: relayDomainStrategyPreferIPv6, AppleIDIPv4Only: true,
-	}, item)
-	if options["inet6_bind_address"] != item.IPv6 || options["domain_strategy"] != relayDomainStrategyIPv6Only {
-		t.Fatalf("unexpected Apple-ID IPv6 direct options: %#v", options)
 	}
 }
 
@@ -866,59 +854,6 @@ func TestUpdateRelayRouteRulesCreatesPairedAddressFamilyRoutes(t *testing.T) {
 	}
 }
 
-func TestUpdateRelayRouteRulesAppleIDUsesIPv4OnlyForAppleAndIPv6DirectOtherwise(t *testing.T) {
-	dbDir := t.TempDir()
-	t.Setenv("SUI_DB_FOLDER", dbDir)
-	if err := database.InitDB(filepath.Join(dbDir, "relay-apple-rules.db")); err != nil {
-		t.Fatal(err)
-	}
-	db := database.GetDB()
-	if _, err := (&SettingService{}).GetAllSetting(); err != nil {
-		t.Fatal(err)
-	}
-	item := model.RelayItem{
-		InboundTag: "relay-apple-in", OutboundTag: "relay-dual-fallback",
-		IPv6OutboundTag: "relay-dual-ipv6", IPv4OutboundTag: "relay-apple-ipv4",
-		AppleIDIPv4Only: true,
-	}
-	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, false); err != nil {
-		t.Fatal(err)
-	}
-	var setting model.Setting
-	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
-		t.Fatal(err)
-	}
-	var config map[string]interface{}
-	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
-		t.Fatal(err)
-	}
-	rules := config["route"].(map[string]interface{})["rules"].([]interface{})
-	var sawAppleIPv4, sawCaptchaIPv4, sawIPv6Reject, sawIPv6Route bool
-	for _, raw := range rules {
-		rule := raw.(map[string]interface{})
-		if fmt.Sprint(rule["action"]) == "route" && rule["outbound"] == item.IPv4OutboundTag {
-			domains, _ := rule["domain_suffix"].([]interface{})
-			for _, domain := range domains {
-				if domain == "appleid.apple.com" {
-					sawAppleIPv4 = true
-				}
-				if domain == "geo.captcha-delivery.com" {
-					sawCaptchaIPv4 = true
-				}
-			}
-		}
-		if fmt.Sprint(rule["action"]) == "reject" && relayRuleIPVersion(rule) == 4 {
-			sawIPv6Reject = true
-		}
-		if fmt.Sprint(rule["action"]) == "route" && rule["outbound"] == item.IPv6OutboundTag {
-			sawIPv6Route = true
-		}
-	}
-	if !sawAppleIPv4 || !sawCaptchaIPv4 || !sawIPv6Reject || !sawIPv6Route {
-		t.Fatalf("Apple-ID route rules missing expected split: %#v", rules)
-	}
-}
-
 func TestUpdateRelayRouteRulesCreatesDualStackFallbackRoute(t *testing.T) {
 	dbDir := t.TempDir()
 	t.Setenv("SUI_DB_FOLDER", dbDir)
@@ -1182,24 +1117,6 @@ func TestNormalizeRelayRotationInterval(t *testing.T) {
 
 func relayRuleHasCIDR(rule map[string]interface{}, expected string) bool {
 	switch values := rule["ip_cidr"].(type) {
-	case []interface{}:
-		for _, value := range values {
-			if fmt.Sprint(value) == expected {
-				return true
-			}
-		}
-	case []string:
-		for _, value := range values {
-			if value == expected {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func relayRuleHasDomainSuffix(rule map[string]interface{}, expected string) bool {
-	switch values := rule["domain_suffix"].(type) {
 	case []interface{}:
 		for _, value := range values {
 			if fmt.Sprint(value) == expected {

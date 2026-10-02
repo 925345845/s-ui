@@ -10,8 +10,10 @@ case "$(uname -m)" in
     ;;
 esac
 
-base_url="${S_UI_PAIRED_BASE_URL:-https://raw.githubusercontent.com/925345845/s-ui/main/paired-release}"
-release_version="${S_UI_PAIRED_VERSION:-v1.5.26}"
+release_branch="${S_UI_PAIRED_BRANCH:-socks5-upstream-flexible}"
+base_url="${S_UI_PAIRED_BASE_URL:-https://raw.githubusercontent.com/925345845/s-ui/${release_branch}/paired-release}"
+release_version="${S_UI_PAIRED_VERSION:-v1.5.27-socks5}"
+archive_base_url="${S_UI_PAIRED_ARCHIVE_BASE_URL:-https://github.com/925345845/s-ui/releases/download/${release_version}}"
 tmp_dir="$(mktemp -d /tmp/1s-ui-paired-online.XXXXXX)"
 cleanup() {
   rm -rf -- "$tmp_dir"
@@ -19,21 +21,15 @@ cleanup() {
 trap cleanup EXIT
 
 installer="$tmp_dir/install-s-ui-paired.sh"
-archive="$tmp_dir/s-ui-linux-${package_arch}-paired.tar.gz"
+archive="$tmp_dir/s-ui-linux-${package_arch}.tar.gz"
 
 echo "正在下载 ${package_arch} 安装包..."
 curl -fL --retry 3 --connect-timeout 15 \
-  "$base_url/install-s-ui-paired.sh?paired_version=${release_version}" \
+  "$base_url/install-s-ui-paired.sh" \
   -o "$installer"
-release_archive="$tmp_dir/s-ui-linux-${package_arch}.tar.gz"
-if ! curl -fL --retry 3 --connect-timeout 15 \
-  "https://github.com/925345845/s-ui/releases/download/${release_version}/s-ui-linux-${package_arch}.tar.gz" \
-  -o "$release_archive"; then
-  echo "Release ${release_version} 的 ${package_arch} 安装包尚未发布；为避免降级，安装已停止。" >&2
-  echo "请等待 GitHub Actions 构建完成后重新执行本命令。" >&2
-  exit 1
-fi
-archive="$release_archive"
+curl -fL --retry 3 --connect-timeout 15 \
+  "$archive_base_url/s-ui-linux-${package_arch}.tar.gz" \
+  -o "$archive"
 
 chmod +x "$installer"
 "$installer" "$archive"

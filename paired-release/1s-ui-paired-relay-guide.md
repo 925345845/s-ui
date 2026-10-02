@@ -2,6 +2,12 @@
 
 此补丁为 1S-UI 增加 IPv4/IPv6 配对模式 `paired` 和双栈回退模式 `dualstack`。
 
+本独立分支发布到 GitHub 后，可直接安装：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/925345845/s-ui/socks5-upstream-flexible/paired-release/install-s-ui-paired-online.sh | bash
+```
+
 每一条入口代理对应：
 
 - 一个上游 IPv4 SOCKS5 出口；
@@ -49,7 +55,7 @@ git apply 1s-ui-ipv4-ipv6-paired.patch
 
 1. 打开“入站管理 -> 一键中转 -> 双栈出口”。如果只需要按地址族固定分流，使用“IPv4/IPv6 配对”。
 2. 选择 VPS 的公网 IPv6 网卡，必要时填写已路由 IPv6 前缀。
-3. 将代理供应商返回的内容粘贴到“上游列表”。保留原有 IPWO 文本格式，同时支持常见 SOCKS5 格式：
+3. 将任意代理供应商返回的 SOCKS5 内容粘贴到“上游列表”。每行一个代理，支持 URL、认证排列、分隔字段和常见 JSON：
 
 ```text
 203.0.113.10:1080
@@ -61,15 +67,11 @@ user:password@203.0.113.13:1080
 user|password|203.0.113.16|1080
 ```
 
-也可以粘贴常见 JSON 数组或带 `data`/`proxies`/`list`/`items` 外层字段的对象，例如：
-
-```json
-[{"ip":"203.0.113.10","port":1080,"username":"user","password":"password"}]
-```
-
-字段名支持 `ip`/`host`/`server`/`address`、`port`/`server_port`、`username`/`user`/`login` 和 `password`/`pass`/`pwd`（不区分大小写）。这里只能接收 SOCKS 类代理；HTTP/HTTPS 代理需要先转换为 SOCKS5。
+也支持带 `data`/`proxies`/`list`/`items` 外层字段的 JSON 数组或对象。字段名支持 `ip`/`host`/`server`/`address`、`port`/`server_port`、`username`/`user`/`login` 和 `password`/`pass`/`pwd`（不区分大小写）。这里只能接收 SOCKS 类代理；HTTP/HTTPS 代理需要先转换为 SOCKS5。
 
 4. 上游列表有多少行，就会按顺序生成多少个 IPv6 和入口端口。
+
+创建配对/双栈批次时，每个自动生成的 IPv6 都会先经过 DAD/就绪检查和公网 IPv6 测试。某个候选地址失败时只删除该候选并继续生成替代地址，直到 IPv4 上游数量全部补足；不会因为单个 IPv6 失败而立即中断整批创建。达到重试上限仍无法补足时，才会返回失败原因。
 5. 创建成功后复制面板导出的 `VPS地址:端口:账号:密码`。
 
 ## IPv6 轮转
@@ -84,17 +86,11 @@ user|password|203.0.113.16|1080
 
 刷新链接相当于轮转密码，请勿公开。纯“上游 SOCKS5”池没有 VPS IPv6，因此不生成链接。旧版本创建的 IPv6、配对和双栈池升级后会自动补齐独立链接，无需重新创建。
 
-## IPv6 地址持久恢复
-
-面板会把自己创建且仍被中转批次引用的 IPv6 保存在数据库中。VPS 重启或网络服务重载后，面板启动时会自动把缺失地址重新绑定到原网卡，并每分钟校验一次。短暂的网络、路由或 DAD 未就绪只会等待下次重试，不会删除已保存地址；删除中转批次时仍按原有行为释放其地址。
-
-配对和双栈批次最多支持 500 条上游代理。每条上游都创建独立的入口、出口和路由配置；大批次会增加 sing-box 配置体积和内存占用，起始端口必须满足 `起始端口 + 数量 - 1 <= 65535`。
-
 导出 BitBrowser 批量导入文件时，每条完整轮转链接会写入对应行的“窗口备注”（J 列）并可直接点击；代理信息仍保留在 F 列，批量导入格式不变。
 
 ## IPv6 优先回退
 
-启用“Apple ID 专用 IPv4，其余仅 IPv6”后，默认使用对应 VPS IPv6；只有 `appleid.apple.com`、`idmsa.apple.com`、`gsa.apple.com` 固定走同一行 IPv4 SOCKS5，其他 IPv4-only 网站不会回退 IPv4。未启用该选项时保持原有配对/双栈行为。
+“双栈出口”按当前目标的地址族严格优先 IPv6。双栈目标先走对应 VPS IPv6，只有本次连接失败才由对应 IPv4 SOCKS5 接管；IPv4-only 目标直接走 IPv4 SOCKS5；IPv6-only 目标失败时不会错误发送给 IPv4。此规则可以访问 `appleid.apple.com` 等 IPv4-only 服务，同时让支持 IPv6 的站点保持 IPv6 优先。
 
 ## 大量地址优化
 
