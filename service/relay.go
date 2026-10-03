@@ -60,6 +60,11 @@ var relayAppleIDDomains = []string{
 }
 
 var relayVintedCaptchaDomains = []string{
+	// Vinted's publish workflow (including /items/new) uses the main Vinted
+	// origin as well as the captcha endpoints below.  Sing-box route rules can
+	// match the TLS hostname before the HTTP path is visible; routing the
+	// Vinted origin here is therefore the reliable HTTPS-safe behavior.
+	"vinted.co.uk",
 	"geo.captcha-delivery.com",
 	"captcha-delivery.com",
 	"js.datadome.co",

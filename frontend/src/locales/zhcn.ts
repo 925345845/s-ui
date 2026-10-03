@@ -683,7 +683,7 @@
     ipv6ListHint: "每行一个地址；留空则按基准前缀随机生成",
     addSystemAddresses: "自动添加到系统网卡",
     appleIDIPv4Only: "仅 Apple ID/指定域名使用 IPv4",
-    appleIDIPv4OnlyHint: "开启后只有 Apple ID 和验证码域名走对应 IPv4 SOCKS5，其余域名及 IPv4 目标均强制使用 VPS IPv6。",
+    appleIDIPv4OnlyHint: "开启后 Apple ID、Vinted 发布页面（/items/new）及验证码域名走对应 IPv4 SOCKS5，其余域名及 IPv4 目标均强制使用 VPS IPv6。",
     detectedIPv6: "检测到的公网 IPv6",
     ipv6ListLimited: "为保持面板流畅，仅显示 {shown} 条可用地址（共 {total} 条）；中转池已使用的地址不会在此重复显示。",
     noIPv6: "未检测到可用公网 IPv6",

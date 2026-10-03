@@ -438,6 +438,15 @@ func TestNormalizeRelayDomainStrategy(t *testing.T) {
 	}
 }
 
+func TestRelayVintedIPv4ExceptionIncludesPublishingOrigin(t *testing.T) {
+	for _, domain := range relayVintedCaptchaDomains {
+		if domain == "vinted.co.uk" {
+			return
+		}
+	}
+	t.Fatal("Vinted publishing origin is not included in the IPv4 exception domains")
+}
+
 func TestRelayDirectOutboundOptionsForceIPv6(t *testing.T) {
 	item := model.RelayItem{IPv6: "2001:db8::10"}
 	options := relayDirectOutboundOptions(RelayCreateRequest{Mode: relayModeIPv6, DomainStrategy: relayDomainStrategyIPv6Only}, item)

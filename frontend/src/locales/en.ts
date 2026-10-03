@@ -683,7 +683,7 @@
     ipv6ListHint: "One address per line. Leave empty to generate addresses in the base prefix.",
     addSystemAddresses: "Add addresses to the system interface",
     appleIDIPv4Only: "Use IPv4 only for Apple ID and selected domains",
-    appleIDIPv4OnlyHint: "When enabled, only Apple ID and captcha domains use the paired IPv4 SOCKS5; all other traffic is forced through VPS IPv6.",
+    appleIDIPv4OnlyHint: "When enabled, Apple ID, the Vinted publishing page (/items/new), and captcha domains use the paired IPv4 SOCKS5; all other traffic is forced through VPS IPv6.",
     detectedIPv6: "Detected public IPv6",
     ipv6ListLimited: "To keep the panel responsive, {shown} of {total} available addresses are shown. Addresses already managed by relay pools are omitted.",
     noIPv6: "No usable public IPv6 address detected",
