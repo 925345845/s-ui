@@ -194,7 +194,7 @@
                 <v-textarea v-model="form.ipv6_text" :label="$t('relay.ipv6List')" :hint="$t('relay.pairedIPv6Hint')" persistent-hint rows="3" dir="ltr" hide-details="auto" />
               </v-col>
               <v-col cols="12">
-                <v-textarea v-model="form.upstream_text" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
+                <v-textarea v-model="form.upstream_text" class="relay-upstream-field" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
               </v-col>
               <v-col cols="12">
                 <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
@@ -241,7 +241,7 @@
                 <v-textarea v-model="form.ipv6_text" :label="$t('relay.ipv6List')" :hint="$t('relay.pairedIPv6Hint')" persistent-hint rows="3" dir="ltr" hide-details="auto" />
               </v-col>
               <v-col cols="12">
-                <v-textarea v-model="form.upstream_text" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
+                <v-textarea v-model="form.upstream_text" class="relay-upstream-field" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
               </v-col>
               <v-col cols="12">
                 <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
