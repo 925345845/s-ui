@@ -34,6 +34,7 @@ const (
 	relayModePaired               = "paired"
 	relayModeDualStack            = "dualstack"
 	relaySourceAutoAddIPv6        = "help660vip/auto-add-ipv6"
+	relayDomainStrategyIPv4Only   = "ipv4_only"
 	relayDomainStrategyIPv6Only   = "ipv6_only"
 	relayDomainStrategyPreferIPv6 = "prefer_ipv6"
 	relayPairedDNSResolverTag     = "relay-paired-local-dns"
@@ -48,9 +49,22 @@ const (
 	relayRotationMinMinutes       = 5
 	relayRotationMaxMinutes       = 7 * 24 * 60
 	relayRotationDefaultMinutes   = 60
-	maxRelayItems                 = 100
+	maxRelayItems                 = 500
 	relayCoreSingBox              = model.CoreTypeSingBox
 )
+
+var relayAppleIDDomains = []string{
+	"appleid.apple.com",
+	"idmsa.apple.com",
+	"gsa.apple.com",
+}
+
+var relayVintedCaptchaDomains = []string{
+	"geo.captcha-delivery.com",
+	"captcha-delivery.com",
+	"js.datadome.co",
+	"api-js.datadome.co",
+}
 
 func relayModeUsesUpstream(mode string) bool {
 	return mode == relayModeUpstream || mode == relayModePaired || mode == relayModeDualStack
@@ -127,6 +141,7 @@ type RelayCreateRequest struct {
 	Transport          string          `json:"transport"`
 	DomainStrategy     string          `json:"domain_strategy"`
 	ShadowsocksMethod  string          `json:"shadowsocks_method"`
+	AppleIDIPv4Only    bool            `json:"apple_id_ipv4_only"`
 }
 
 type RelayData struct {
@@ -609,6 +624,10 @@ func (s *ConfigService) repairRelayIPv6OutboundStrategies() error {
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
 		var ipv6OnlyItems, dualStackItems []model.RelayItem
+		var pairedPools []model.RelayPool
+		if err := tx.Where("mode IN ?", []string{relayModePaired, relayModeDualStack}).Find(&pairedPools).Error; err != nil {
+			return err
+		}
 		for _, pool := range pools {
 			strategy, err := normalizeRelayDomainStrategy(relayModeIPv6, pool.DomainStrategy)
 			if err != nil {
@@ -665,6 +684,88 @@ func (s *ConfigService) repairRelayIPv6OutboundStrategies() error {
 			if err := repairRelayIPv6ConnectionHost(tx, pool, items); err != nil {
 				return err
 			}
+		}
+		// Repair paired pools created before address-family strategies and Apple-only
+		// routing were persisted. Every upstream must keep its own IPv4 SOCKS
+		// outbound and that outbound must resolve/connect over IPv4 only.
+		for _, pool := range pairedPools {
+			var items []model.RelayItem
+			if err := json.Unmarshal(pool.Items, &items); err != nil {
+				return fmt.Errorf("relay pool %q: invalid items: %w", pool.Name, err)
+			}
+			seen := make(map[string]bool)
+			changed := false
+			for index := range items {
+				item := &items[index]
+				// This branch historically used Apple-ID-only routing as its paired
+				// default. Older JSON did not contain the flag, so restore that
+				// behavior when upgrading an existing paired pool.
+				if !item.AppleIDIPv4Only {
+					item.AppleIDIPv4Only = true
+					changed = true
+				}
+				if item.IPv4OutboundTag == "" || item.UpstreamServer == "" || item.UpstreamPort < 1 {
+					continue
+				}
+				var outbound model.Outbound
+				if err := tx.Where("tag = ?", item.IPv4OutboundTag).First(&outbound).Error; err != nil {
+					if database.IsNotFound(err) {
+						continue
+					}
+					return err
+				}
+				desired := mustJSON(map[string]interface{}{"server": item.UpstreamServer, "server_port": item.UpstreamPort, "version": "5", "username": item.UpstreamUsername, "password": item.UpstreamPassword, "domain_strategy": relayDomainStrategyIPv4Only})
+				if seen[item.IPv4OutboundTag] {
+					clone := model.Outbound{Type: "socks", Tag: fmt.Sprintf("relay-ipv4-%s", common.Random(7)), Options: desired}
+					if err := tx.Create(&clone).Error; err != nil {
+						return err
+					}
+					item.IPv4OutboundTag = clone.Tag
+					outbound = clone
+					changed = true
+				}
+				seen[item.IPv4OutboundTag] = true
+				if string(outbound.Options) != string(desired) {
+					if err := tx.Model(&model.Outbound{}).Where("id = ?", outbound.Id).Update("options", desired).Error; err != nil {
+						return err
+					}
+				}
+			}
+			if changed {
+				if err := tx.Model(&model.RelayPool{}).Where("id = ?", pool.Id).Update("items", mustJSON(items)).Error; err != nil {
+					return err
+				}
+			}
+			for _, item := range items {
+				if !item.AppleIDIPv4Only || item.IPv6 == "" || item.OutboundTag == "" {
+					continue
+				}
+				var outbound model.Outbound
+				if err := tx.Where("tag = ?", item.OutboundTag).First(&outbound).Error; err != nil {
+					if database.IsNotFound(err) {
+						continue
+					}
+					return err
+				}
+				if outbound.Type != "direct" {
+					continue
+				}
+				var options map[string]interface{}
+				if len(outbound.Options) > 0 {
+					if err := json.Unmarshal(outbound.Options, &options); err != nil {
+						return err
+					}
+				}
+				if options == nil {
+					options = map[string]interface{}{}
+				}
+				options["inet6_bind_address"] = item.IPv6
+				options["domain_strategy"] = relayDomainStrategyIPv6Only
+				if err := tx.Model(&model.Outbound{}).Where("id = ?", outbound.Id).Update("options", mustJSON(options)).Error; err != nil {
+					return err
+				}
+			}
+			dualStackItems = append(dualStackItems, items...)
 		}
 		if len(dualStackItems) > 0 {
 			if err := updateRelayRouteRules(tx, dualStackItems, false, false); err != nil {
@@ -1042,12 +1143,14 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		items[i].OutboundTag = outbound.Tag
 		if relayModePairsUpstream(req.Mode) {
 			upstream := req.Upstreams[i]
+			items[i].AppleIDIPv4Only = req.AppleIDIPv4Only
 			ipv4Outbound := model.Outbound{
 				Type: "socks",
 				Tag:  fmt.Sprintf("relay-ipv4-%s", common.Random(7)),
 				Options: mustJSON(map[string]interface{}{
 					"server": upstream.Server, "server_port": upstream.Port,
 					"version": "5", "username": upstream.Username, "password": upstream.Password,
+					"domain_strategy": relayDomainStrategyIPv4Only,
 				}),
 			}
 			if err := tx.Create(&ipv4Outbound).Error; err != nil {
@@ -1179,7 +1282,7 @@ func normalizeRelayDomainStrategy(mode, value string) (string, error) {
 
 func relayDirectOutboundOptions(req RelayCreateRequest, item model.RelayItem) map[string]interface{} {
 	strategy := req.DomainStrategy
-	if req.Mode == relayModeDualStack {
+	if req.Mode == relayModeDualStack || req.AppleIDIPv4Only {
 		strategy = relayDomainStrategyIPv6Only
 	}
 	if strategy == "" {
@@ -1635,6 +1738,9 @@ func updateRelayRotatedOutbounds(tx *gorm.DB, mode string, items []model.RelayIt
 			options = make(map[string]interface{})
 		}
 		options["inet6_bind_address"] = items[index].IPv6
+		if items[index].AppleIDIPv4Only {
+			options["domain_strategy"] = relayDomainStrategyIPv6Only
+		}
 		if err := tx.Model(&model.Outbound{}).Where("id = ?", outbound.Id).Update("options", mustJSON(options)).Error; err != nil {
 			return err
 		}
@@ -2528,9 +2634,27 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 		filtered = append(filtered, raw)
 	}
 	if !remove {
-		newRules := make([]interface{}, 0, len(items)*3)
+		newRules := make([]interface{}, 0, len(items)*5)
 		for _, item := range items {
 			if _, ok := targets[item.InboundTag]; !ok {
+				continue
+			}
+			if item.AppleIDIPv4Only && item.IPv4OutboundTag != "" && (item.IPv6OutboundTag != "" || item.OutboundTag != "") {
+				newRules = append(newRules,
+					map[string]interface{}{"inbound": []string{item.InboundTag}, "domain_suffix": relayAppleIDDomains, "action": "route", "outbound": item.IPv4OutboundTag},
+					map[string]interface{}{"inbound": []string{item.InboundTag}, "domain_suffix": relayVintedCaptchaDomains, "action": "route", "outbound": item.IPv4OutboundTag},
+				)
+			}
+			if item.AppleIDIPv4Only && item.IPv4OutboundTag != "" {
+				ipv6Outbound := item.IPv6OutboundTag
+				if ipv6Outbound == "" {
+					ipv6Outbound = item.OutboundTag
+				}
+				newRules = append(newRules,
+					map[string]interface{}{"inbound": []string{item.InboundTag}, "action": "resolve", "strategy": relayDomainStrategyIPv6Only, "server": relayPairedDNSResolverTag},
+					map[string]interface{}{"inbound": []string{item.InboundTag}, "ip_version": 4, "ip_cidr": []string{"0.0.0.0/0"}, "action": "reject"},
+					map[string]interface{}{"inbound": []string{item.InboundTag}, "action": "route", "outbound": ipv6Outbound},
+				)
 				continue
 			}
 			if item.IPv6OutboundTag != "" && item.IPv4OutboundTag != "" {

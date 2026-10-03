@@ -193,8 +193,8 @@
               <v-col cols="12">
                 <v-textarea v-model="form.ipv6_text" :label="$t('relay.ipv6List')" :hint="$t('relay.pairedIPv6Hint')" persistent-hint rows="3" dir="ltr" hide-details="auto" />
               </v-col>
-              <v-col cols="12" class="relay-upstream-editor-col">
-                <v-textarea v-model="form.upstream_text" class="relay-upstream-field" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
+              <v-col cols="12">
+                <v-textarea v-model="form.upstream_text" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
               </v-col>
               <v-col cols="12">
                 <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
@@ -240,8 +240,8 @@
               <v-col cols="12">
                 <v-textarea v-model="form.ipv6_text" :label="$t('relay.ipv6List')" :hint="$t('relay.pairedIPv6Hint')" persistent-hint rows="3" dir="ltr" hide-details="auto" />
               </v-col>
-              <v-col cols="12" class="relay-upstream-editor-col">
-                <v-textarea v-model="form.upstream_text" class="relay-upstream-field" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
+              <v-col cols="12">
+                <v-textarea v-model="form.upstream_text" :label="$t('relay.upstreamList')" :hint="$t('relay.pairedUpstreamHint')" persistent-hint rows="9" dir="ltr" hide-details="auto" />
               </v-col>
               <v-col cols="12">
                 <v-switch v-model="form.add_system_addresses" color="primary" :label="$t('relay.addSystemAddresses')" hide-details />
@@ -400,27 +400,10 @@ const visiblePools = computed(() => {
 const relayCountValid = computed(() => Number.isInteger(form.count) && form.count >= 1 && form.count <= 500)
 const canCreateIPv6 = computed(() => relayCountValid.value && (ipv6.value.length > 0 || form.base_ipv6.trim().length > 0))
 const canQuickCreateIPv6 = computed(() => canCreateIPv6.value && capabilities.value?.can_add_system_ipv6 === true)
-const countJSONUpstreams = (value: any): number => {
-  if (typeof value === 'string') return value.trim() ? 1 : 0
-  if (Array.isArray(value)) return value.reduce((total, child) => total + countJSONUpstreams(child), 0)
-  if (!value || typeof value !== 'object') return 0
-  const fields = Object.fromEntries(Object.entries(value).map(([key, child]) => [key.toLowerCase(), child]))
-  if (['host', 'server', 'ip', 'address'].some((key) => typeof fields[key] === 'string' && fields[key].trim())) return 1
-  for (const key of ['data', 'proxies', 'proxy', 'list', 'result', 'items']) {
-    if (key in fields) return countJSONUpstreams(fields[key])
-  }
-  return 0
-}
-const pairedUpstreamCount = computed(() => {
-  const text = form.upstream_text.trim().replace(/^\uFEFF/, '')
-  if (text.startsWith('{') || text.startsWith('[')) {
-    try { return countJSONUpstreams(JSON.parse(text)) } catch { /* backend will report the exact invalid line */ }
-  }
-  return text.split(/\r?\n/).filter((line) => {
-    const value = line.trim()
-    return value.length > 0 && !value.startsWith('#')
-  }).length
-})
+const pairedUpstreamCount = computed(() => form.upstream_text.split(/\r?\n/).filter((line) => {
+  const value = line.trim()
+  return value.length > 0 && !value.startsWith('#')
+}).length)
 const canCreatePaired = computed(() => pairedUpstreamCount.value >= 1 && pairedUpstreamCount.value <= 500
   && (ipv6.value.length > 0 || form.base_ipv6.trim().length > 0))
 const capabilityMessage = computed(() => {
@@ -713,9 +696,6 @@ watch(() => props.connectionHost, (host) => {
 .relay-refresh-list { border: 1px solid rgba(var(--v-theme-on-surface), 0.1); border-radius: 6px; }
 .relay-refresh-url { overflow-wrap: anywhere; white-space: normal; }
 .relay-pool-card { height: 100%; }
-.relay-upstream-editor-col { display: block !important; visibility: visible !important; }
-.relay-upstream-field { display: block !important; visibility: visible !important; width: 100%; }
-.relay-upstream-field :deep(textarea) { min-height: 180px; }
 
 @media (max-width: 959px) {
   .relay-quick-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
