@@ -438,13 +438,18 @@ func TestNormalizeRelayDomainStrategy(t *testing.T) {
 	}
 }
 
-func TestRelayVintedIPv4ExceptionIncludesPublishingOrigin(t *testing.T) {
+func TestRelayVintedPublishingOriginIsNotCaptchaIPv4Only(t *testing.T) {
 	for _, domain := range relayVintedCaptchaDomains {
+		if domain == "vinted.co.uk" {
+			t.Fatal("Vinted publishing origin must not be forced IPv4-only")
+		}
+	}
+	for _, domain := range relayVintedDualStackDomains {
 		if domain == "vinted.co.uk" {
 			return
 		}
 	}
-	t.Fatal("Vinted publishing origin is not included in the IPv4 exception domains")
+	t.Fatal("Vinted publishing origin is missing from the dual-stack domains")
 }
 
 func TestRelayDirectOutboundOptionsForceIPv6(t *testing.T) {
@@ -928,6 +933,64 @@ func TestUpdateRelayRouteRulesCreatesDualStackFallbackRoute(t *testing.T) {
 	rules = config["route"].(map[string]interface{})["rules"].([]interface{})
 	if len(rules) != 2 {
 		t.Fatalf("dual-stack rule count after removal = %d, want 2", len(rules))
+	}
+}
+
+func TestUpdateRelayRouteRulesRoutesVintedThroughIPv6FirstFallback(t *testing.T) {
+	dbDir := t.TempDir()
+	t.Setenv("SUI_DB_FOLDER", dbDir)
+	if err := database.InitDB(filepath.Join(dbDir, "relay-vinted-dualstack.db")); err != nil {
+		t.Fatal(err)
+	}
+	db := database.GetDB()
+	if _, err := (&SettingService{}).GetAllSetting(); err != nil {
+		t.Fatal(err)
+	}
+	item := model.RelayItem{
+		InboundTag: "relay-vinted-in", OutboundTag: "relay-vinted-fallback",
+		IPv6OutboundTag: "relay-vinted-ipv6", IPv4OutboundTag: "relay-vinted-ipv4",
+		AppleIDIPv4Only: true,
+	}
+	if err := updateRelayRouteRules(db, []model.RelayItem{item}, false, false); err != nil {
+		t.Fatal(err)
+	}
+	var setting model.Setting
+	if err := db.Where("key = ?", "config").First(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(setting.Value), &config); err != nil {
+		t.Fatal(err)
+	}
+	rules := config["route"].(map[string]interface{})["rules"].([]interface{})
+	var vintedResolve, vintedRoute, appleRoute, captchaRoute map[string]interface{}
+	for _, raw := range rules {
+		rule := raw.(map[string]interface{})
+		domains, _ := rule["domain_suffix"].([]interface{})
+		for _, rawDomain := range domains {
+			domain := rawDomain.(string)
+			switch domain {
+			case "vinted.co.uk":
+				if rule["action"] == "resolve" {
+					vintedResolve = rule
+				} else if rule["action"] == "route" {
+					vintedRoute = rule
+				}
+			case "appleid.apple.com":
+				appleRoute = rule
+			case "captcha-delivery.com":
+				captchaRoute = rule
+			}
+		}
+	}
+	if vintedResolve == nil || vintedResolve["strategy"] != relayDomainStrategyPreferIPv6 || vintedResolve["server"] != relayPairedDNSResolverTag {
+		t.Fatalf("Vinted resolve rule = %#v", vintedResolve)
+	}
+	if vintedRoute == nil || vintedRoute["outbound"] != item.OutboundTag {
+		t.Fatalf("Vinted fallback route = %#v", vintedRoute)
+	}
+	if appleRoute == nil || appleRoute["outbound"] != item.IPv4OutboundTag || captchaRoute == nil || captchaRoute["outbound"] != item.IPv4OutboundTag {
+		t.Fatalf("IPv4-only exception routes: apple=%#v captcha=%#v", appleRoute, captchaRoute)
 	}
 }
 

@@ -60,16 +60,13 @@ var relayAppleIDDomains = []string{
 }
 
 var relayVintedCaptchaDomains = []string{
-	// Vinted's publish workflow (including /items/new) uses the main Vinted
-	// origin as well as the captcha endpoints below.  Sing-box route rules can
-	// match the TLS hostname before the HTTP path is visible; routing the
-	// Vinted origin here is therefore the reliable HTTPS-safe behavior.
-	"vinted.co.uk",
 	"geo.captcha-delivery.com",
 	"captcha-delivery.com",
 	"js.datadome.co",
 	"api-js.datadome.co",
 }
+
+var relayVintedDualStackDomains = []string{"vinted.co.uk"}
 
 func relayModeUsesUpstream(mode string) bool {
 	return mode == relayModeUpstream || mode == relayModePaired || mode == relayModeDualStack
@@ -2648,6 +2645,15 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 				newRules = append(newRules,
 					map[string]interface{}{"inbound": []string{item.InboundTag}, "domain_suffix": relayAppleIDDomains, "action": "route", "outbound": item.IPv4OutboundTag},
 					map[string]interface{}{"inbound": []string{item.InboundTag}, "domain_suffix": relayVintedCaptchaDomains, "action": "route", "outbound": item.IPv4OutboundTag},
+				)
+			}
+			// Vinted's main origin is routed through the dual-stack fallback only
+			// when that outbound exists. The fallback tries IPv6 first and retains
+			// IPv4 for connection failures; HTTPS paths are not visible to routing.
+			if item.IPv6OutboundTag != "" && item.IPv4OutboundTag != "" {
+				newRules = append(newRules,
+					map[string]interface{}{"inbound": []string{item.InboundTag}, "domain_suffix": relayVintedDualStackDomains, "action": "resolve", "strategy": relayDomainStrategyPreferIPv6, "server": relayPairedDNSResolverTag},
+					map[string]interface{}{"inbound": []string{item.InboundTag}, "domain_suffix": relayVintedDualStackDomains, "action": "route", "outbound": item.OutboundTag},
 				)
 			}
 			if item.AppleIDIPv4Only && item.IPv4OutboundTag != "" {
