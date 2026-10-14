@@ -20,6 +20,7 @@ import (
 const RelayFallbackOutboundType = "relay-fallback"
 
 const defaultRelayIPv6Timeout = 3 * time.Second
+const relayHappyEyeballsDelay = 250 * time.Millisecond
 
 type RelayFallbackOutboundOptions struct {
 	IPv6Outbound string `json:"ipv6_outbound"`
@@ -127,7 +128,9 @@ func (o *relayFallbackOutbound) ListenPacket(ctx context.Context, destination M.
 
 func (o *relayFallbackOutbound) DialParallelNetwork(ctx context.Context, network string, destination M.Socksaddr, destinationAddresses []netip.Addr, strategy *C.NetworkStrategy, networkType []C.InterfaceType, fallbackNetworkType []C.InterfaceType, fallbackDelay time.Duration) (net.Conn, error) {
 	addresses6, addresses4 := splitRelayDestinationAddresses(destination, destinationAddresses)
-	var ipv6Err error
+	if len(addresses6) > 0 && len(addresses4) > 0 {
+		return o.dialHappyEyeballs(ctx, network, destination, addresses6, addresses4, strategy, networkType, fallbackNetworkType, fallbackDelay)
+	}
 	if len(addresses6) > 0 {
 		ipv6Ctx, cancel := context.WithTimeout(ctx, o.ipv6Timeout)
 		conn, err := dialRelayAddresses(ipv6Ctx, o.ipv6Outbound, network, destination, addresses6, strategy, networkType, fallbackNetworkType, fallbackDelay)
@@ -135,22 +138,86 @@ func (o *relayFallbackOutbound) DialParallelNetwork(ctx context.Context, network
 		if err == nil {
 			return conn, nil
 		}
-		ipv6Err = err
+		return nil, E.Cause(err, "IPv6 connection failed and the destination has no IPv4 address")
 	}
 	if len(addresses4) > 0 {
 		conn, err := o.dialIPv4(ctx, network, destination, addresses4, strategy, networkType, fallbackNetworkType, fallbackDelay)
 		if err == nil {
 			return conn, nil
 		}
-		if ipv6Err != nil {
-			return nil, E.Errors(E.Cause(ipv6Err, "IPv6 attempt failed"), E.Cause(err, "IPv4 SOCKS5 fallback failed"))
-		}
 		return nil, E.Cause(err, "IPv4 SOCKS5 connection failed")
 	}
-	if ipv6Err != nil {
-		return nil, E.Cause(ipv6Err, "IPv6 connection failed and the destination has no IPv4 address")
-	}
 	return o.DialContext(ctx, network, destination)
+}
+
+type relayHappyEyeballsResult struct {
+	conn net.Conn
+	err  error
+	ipv6 bool
+}
+
+func (o *relayFallbackOutbound) dialHappyEyeballs(ctx context.Context, network string, destination M.Socksaddr, addresses6, addresses4 []netip.Addr, strategy *C.NetworkStrategy, networkType, fallbackNetworkType []C.InterfaceType, fallbackDelay time.Duration) (net.Conn, error) {
+	raceCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan relayHappyEyeballsResult, 2)
+	startIPv6 := func() {
+		go func() {
+			ipv6Ctx, timeoutCancel := context.WithTimeout(raceCtx, o.ipv6Timeout)
+			conn, err := dialRelayAddresses(ipv6Ctx, o.ipv6Outbound, network, destination, addresses6, strategy, networkType, fallbackNetworkType, fallbackDelay)
+			timeoutCancel()
+			results <- relayHappyEyeballsResult{conn: conn, err: err, ipv6: true}
+		}()
+	}
+	startIPv4 := func() {
+		go func() {
+			conn, err := o.dialIPv4(raceCtx, network, destination, addresses4, strategy, networkType, fallbackNetworkType, fallbackDelay)
+			results <- relayHappyEyeballsResult{conn: conn, err: err, ipv6: false}
+		}()
+	}
+
+	startIPv6()
+	timer := time.NewTimer(relayHappyEyeballsDelay)
+	defer timer.Stop()
+	started, completed := 1, 0
+	ipv4Started := false
+	var ipv6Err, ipv4Err error
+	for completed < 2 {
+		select {
+		case result := <-results:
+			completed++
+			if result.err == nil {
+				cancel()
+				go func(remaining int) {
+					for i := 0; i < remaining; i++ {
+						loser := <-results
+						if loser.conn != nil {
+							_ = loser.conn.Close()
+						}
+					}
+				}(started - completed)
+				return result.conn, nil
+			}
+			if result.ipv6 && !ipv4Started {
+				ipv6Err = result.err
+				startIPv4()
+				ipv4Started = true
+				started++
+			} else {
+				if result.ipv6 {
+					ipv6Err = result.err
+				} else {
+					ipv4Err = result.err
+				}
+			}
+		case <-timer.C:
+			if !ipv4Started {
+				startIPv4()
+				ipv4Started = true
+				started++
+			}
+		}
+	}
+	return nil, E.Errors(E.Cause(ipv6Err, "IPv6 attempt failed"), E.Cause(ipv4Err, "IPv4 SOCKS5 fallback failed"))
 }
 
 func (o *relayFallbackOutbound) ListenSerialNetworkPacket(ctx context.Context, destination M.Socksaddr, destinationAddresses []netip.Addr, _ *C.NetworkStrategy, _ []C.InterfaceType, _ []C.InterfaceType, _ time.Duration) (net.PacketConn, netip.Addr, error) {

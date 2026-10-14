@@ -19,6 +19,7 @@ import (
 type relayFallbackTestOutbound struct {
 	sbOutbound.Adapter
 	err         error
+	delay       time.Duration
 	calls       int
 	destination M.Socksaddr
 }
@@ -53,6 +54,11 @@ func newRelayFallbackTestOutbound(tag string, err error) *relayFallbackTestOutbo
 }
 
 func (o *relayFallbackTestOutbound) DialContext(_ context.Context, _ string, destination M.Socksaddr) (net.Conn, error) {
+	// The delay is used to verify that the fallback starts both address
+	// families before the slower IPv6 attempt reaches its timeout.
+	if o.delay > 0 {
+		time.Sleep(o.delay)
+	}
 	o.calls++
 	o.destination = destination
 	if o.err != nil {
@@ -61,6 +67,28 @@ func (o *relayFallbackTestOutbound) DialContext(_ context.Context, _ string, des
 	client, server := net.Pipe()
 	_ = server.Close()
 	return client, nil
+}
+
+func TestRelayFallbackRacesIPv4WhenIPv6IsSlow(t *testing.T) {
+	ipv6 := newRelayFallbackTestOutbound("ipv6", nil)
+	ipv6.delay = 700 * time.Millisecond
+	ipv4 := newRelayFallbackTestOutbound("ipv4", nil)
+	outbound := &relayFallbackOutbound{ipv6Outbound: ipv6, ipv4Outbound: ipv4, ipv6Timeout: 3 * time.Second}
+	started := time.Now()
+	conn, err := outbound.DialParallelNetwork(context.Background(), N.NetworkTCP, M.ParseSocksaddr("vinted.co.uk:443"), []netip.Addr{
+		netip.MustParseAddr("2001:db8::60"),
+		netip.MustParseAddr("192.0.2.60"),
+	}, nil, nil, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	if ipv6.calls != 0 || ipv4.calls != 1 {
+		t.Fatalf("calls before slow IPv6 completes: IPv6=%d IPv4=%d", ipv6.calls, ipv4.calls)
+	}
+	if elapsed := time.Since(started); elapsed >= 700*time.Millisecond {
+		t.Fatalf("parallel IPv4 connection waited for IPv6: elapsed=%s", elapsed)
+	}
 }
 
 func (o *relayFallbackTestOutbound) ListenPacket(context.Context, M.Socksaddr) (net.PacketConn, error) {
