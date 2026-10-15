@@ -10,7 +10,7 @@ case "$(uname -m)" in
     ;;
 esac
 
-release_branch="${S_UI_PAIRED_BRANCH:-socks5-upstream-flexible}"
+release_branch="${S_UI_PAIRED_BRANCH:-socks5-upstream-flexible-500}"
 base_url="${S_UI_PAIRED_BASE_URL:-https://raw.githubusercontent.com/925345845/s-ui/${release_branch}/paired-release}"
 release_version="${S_UI_PAIRED_VERSION:-v1.5.28-socks5-500}"
 archive_base_url="${S_UI_PAIRED_ARCHIVE_BASE_URL:-https://github.com/925345845/s-ui/releases/download/${release_version}}"
@@ -33,5 +33,6 @@ curl -fL --retry 3 --connect-timeout 15 \
 
 chmod +x "$installer"
 "$installer" "$archive"
+
 
 
