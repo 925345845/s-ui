@@ -66,7 +66,7 @@ var relayVintedCaptchaDomains = []string{
 	"api-js.datadome.co",
 }
 
-var relayVintedDualStackDomains = []string{"vinted.co.uk"}
+var relayVintedDualStackDomains = []string{"vinted.com", "vinted.co.uk"}
 
 func relayModeUsesUpstream(mode string) bool {
 	return mode == relayModeUpstream || mode == relayModePaired || mode == relayModeDualStack

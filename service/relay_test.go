@@ -444,12 +444,18 @@ func TestRelayVintedPublishingOriginIsNotCaptchaIPv4Only(t *testing.T) {
 			t.Fatal("Vinted publishing origin must not be forced IPv4-only")
 		}
 	}
-	for _, domain := range relayVintedDualStackDomains {
-		if domain == "vinted.co.uk" {
-			return
+	for _, want := range []string{"vinted.com", "vinted.co.uk"} {
+		found := false
+		for _, domain := range relayVintedDualStackDomains {
+			if domain == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("Vinted publishing origin is missing from dual-stack domains: %s", want)
 		}
 	}
-	t.Fatal("Vinted publishing origin is missing from the dual-stack domains")
 }
 
 func TestRelayDirectOutboundOptionsForceIPv6(t *testing.T) {
