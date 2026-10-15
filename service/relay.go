@@ -48,7 +48,7 @@ const (
 	relayRotationMinMinutes       = 5
 	relayRotationMaxMinutes       = 7 * 24 * 60
 	relayRotationDefaultMinutes   = 60
-	maxRelayItems                 = 100
+	maxRelayItems                 = 500
 	relayCoreSingBox              = model.CoreTypeSingBox
 )
 
@@ -3066,3 +3066,5 @@ func relayInboundListenAddress(mode, publicHost string) string {
 	}
 	return "::"
 }
+
+
