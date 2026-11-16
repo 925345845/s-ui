@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,9 +19,17 @@ import (
 
 type relayFallbackTestOutbound struct {
 	sbOutbound.Adapter
+	family      string
 	err         error
+	delay       time.Duration
+	mu          sync.Mutex
 	calls       int
 	destination M.Socksaddr
+}
+
+type relayFallbackTestConn struct {
+	net.Conn
+	family string
 }
 
 type relayFallbackTestDNSRouter struct {
@@ -48,19 +57,50 @@ func (r *relayFallbackTestDNSRouter) ResetNetwork() {}
 func newRelayFallbackTestOutbound(tag string, err error) *relayFallbackTestOutbound {
 	return &relayFallbackTestOutbound{
 		Adapter: sbOutbound.NewAdapter("test", tag, []string{N.NetworkTCP, N.NetworkUDP}, nil),
+		family:  tag,
 		err:     err,
 	}
 }
 
-func (o *relayFallbackTestOutbound) DialContext(_ context.Context, _ string, destination M.Socksaddr) (net.Conn, error) {
+func (o *relayFallbackTestOutbound) DialContext(ctx context.Context, _ string, destination M.Socksaddr) (net.Conn, error) {
+	if o.delay > 0 {
+		timer := time.NewTimer(o.delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	o.mu.Lock()
 	o.calls++
 	o.destination = destination
+	o.mu.Unlock()
 	if o.err != nil {
 		return nil, o.err
 	}
 	client, server := net.Pipe()
 	_ = server.Close()
-	return client, nil
+	return &relayFallbackTestConn{Conn: client, family: o.family}, nil
+}
+
+func TestRelayFallbackIPv6WinsDuringPreferenceWindow(t *testing.T) {
+	ipv6 := newRelayFallbackTestOutbound("ipv6", nil)
+	ipv6.delay = 50 * time.Millisecond
+	ipv4 := newRelayFallbackTestOutbound("ipv4", nil)
+	outbound := &relayFallbackOutbound{ipv6Outbound: ipv6, ipv4Outbound: ipv4, ipv6Timeout: time.Second}
+	conn, err := outbound.DialParallelNetwork(context.Background(), N.NetworkTCP, M.ParseSocksaddr("example.com:443"), []netip.Addr{
+		netip.MustParseAddr("2001:db8::10"),
+		netip.MustParseAddr("192.0.2.10"),
+	}, nil, nil, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	winner, ok := conn.(*relayFallbackTestConn)
+	if !ok || winner.family != "ipv6" {
+		t.Fatalf("winner = %#v, want IPv6", conn)
+	}
 }
 
 func (o *relayFallbackTestOutbound) ListenPacket(context.Context, M.Socksaddr) (net.PacketConn, error) {
@@ -70,6 +110,7 @@ func (o *relayFallbackTestOutbound) ListenPacket(context.Context, M.Socksaddr) (
 func TestRelayFallbackPrefersIPv6(t *testing.T) {
 	ipv6 := newRelayFallbackTestOutbound("ipv6", nil)
 	ipv4 := newRelayFallbackTestOutbound("ipv4", nil)
+	ipv4.delay = 50 * time.Millisecond
 	outbound := &relayFallbackOutbound{ipv6Outbound: ipv6, ipv4Outbound: ipv4, ipv6Timeout: time.Second}
 	destination := M.ParseSocksaddr("example.com:443")
 	conn, err := outbound.DialParallelNetwork(context.Background(), N.NetworkTCP, destination, []netip.Addr{
@@ -80,7 +121,7 @@ func TestRelayFallbackPrefersIPv6(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = conn.Close()
-	if ipv6.calls != 1 || ipv4.calls != 0 {
+	if ipv6.calls != 1 {
 		t.Fatalf("calls: IPv6=%d IPv4=%d", ipv6.calls, ipv4.calls)
 	}
 }

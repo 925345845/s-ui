@@ -16,6 +16,30 @@
           <v-tab value="pools">{{ $t('relay.pools') }}</v-tab>
         </v-tabs>
 
+        <section v-if="loading && relayProgress && relayProgress.target > 0" class="relay-create-progress mb-4">
+          <div class="d-flex align-center ga-2 mb-2">
+            <v-icon icon="mdi-progress-check" color="primary" />
+            <span class="text-subtitle-2 font-weight-medium">{{ $t('relay.progressTitle') }}</span>
+            <v-spacer />
+            <span class="text-body-2">{{ relayProgress.succeeded }} / {{ relayProgress.target }}</span>
+          </div>
+          <v-progress-linear :model-value="progressPercent" color="primary" height="10" rounded />
+          <div class="relay-progress-stats mt-2">
+            <span>{{ $t('relay.progressSucceeded') }}: {{ relayProgress.succeeded }}</span>
+            <span>{{ $t('relay.progressFailed') }}: {{ relayProgress.failed }}</span>
+            <span>{{ $t('relay.progressTested') }}: {{ relayProgress.tested }}</span>
+          </div>
+          <div v-if="relayProgress.current" class="text-body-2 mt-2" dir="ltr">
+            {{ $t('relay.progressCurrent') }}: {{ relayProgress.current }}
+          </div>
+          <div v-if="relayProgress.successful_ip.length > 0" class="mt-3">
+            <div class="text-caption mb-1">{{ $t('relay.progressKept') }}</div>
+            <div class="relay-progress-addresses" dir="ltr">
+              <div v-for="(address, index) in relayProgress.successful_ip" :key="address">#{{ index + 1 }} {{ address }}</div>
+            </div>
+          </div>
+        </section>
+
         <v-window v-model="tab">
           <v-window-item value="ipv6">
             <section class="relay-quick-section">
@@ -356,6 +380,10 @@ interface RelayPool {
   listen_host: string; port_start: number; count: number; items: RelayItem[]; export_text: string
 }
 interface RelayCapabilities { os: string; can_add_system_ipv6: boolean; unavailable_reason?: string }
+interface RelayCreateProgress {
+  active: boolean; mode: string; target: number; tested: number; failed: number; succeeded: number
+  current?: string; successful_ip: string[]; started_at: number; updated_at: number
+}
 
 const props = defineProps<{
   visible: boolean
@@ -380,6 +408,7 @@ const ipv6Truncated = ref(false)
 const rotationSupported = ref(false)
 const poolPage = ref(1)
 const capabilities = ref<RelayCapabilities | null>(null)
+const relayProgress = ref<RelayCreateProgress | null>(null)
 const poolPageSize = 8
 const exportPreviewLimit = 8
 const isRemote = computed(() => Number.isInteger(props.agentId) && Number(props.agentId) > 0)
@@ -400,6 +429,10 @@ const visiblePools = computed(() => {
 const relayCountValid = computed(() => Number.isInteger(form.count) && form.count >= 1 && form.count <= 500)
 const canCreateIPv6 = computed(() => relayCountValid.value && (ipv6.value.length > 0 || form.base_ipv6.trim().length > 0))
 const canQuickCreateIPv6 = computed(() => canCreateIPv6.value && capabilities.value?.can_add_system_ipv6 === true)
+const progressPercent = computed(() => {
+  if (!relayProgress.value?.target) return 0
+  return Math.min(100, (relayProgress.value.succeeded / relayProgress.value.target) * 100)
+})
 const countJSONUpstreams = (value: any): number => {
   if (typeof value === 'string') return value.trim() ? 1 : 0
   if (Array.isArray(value)) return value.reduce((total, child) => total + countJSONUpstreams(child), 0)
@@ -459,8 +492,8 @@ watch(() => form.protocol, (protocol) => {
   if (!requiresTls.value && !supportsOptionalTls.value) form.tls_id = 0
 })
 
-const loadData = async () => {
-  refreshing.value = true
+const loadData = async (silent = false) => {
+  if (!silent) refreshing.value = true
   try {
     let data: any
     if (isRemote.value) {
@@ -485,12 +518,13 @@ const loadData = async () => {
       pool.export_text = buildExportText(pool)
       return pool
     })
+    relayProgress.value = data?.progress ?? null
     if (poolPage.value > poolPageCount.value) poolPage.value = poolPageCount.value
     capabilities.value = data?.capabilities ?? null
   } catch (error: any) {
-    push.error({ message: error?.message || i18n.global.t('agent.loadFailed') })
+    if (!silent) push.error({ message: error?.message || i18n.global.t('agent.loadFailed') })
   } finally {
-    refreshing.value = false
+    if (!silent) refreshing.value = false
   }
 }
 
@@ -520,6 +554,11 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick 
     return
   }
   loading.value = true
+  relayProgress.value = null
+  let progressTimer: ReturnType<typeof setInterval> | undefined
+  if (mode !== 'upstream') {
+    progressTimer = setInterval(() => { void loadData(true) }, 1000)
+  }
   try {
     const payload: any = { ...form, mode }
     payload.source = quick ? 'help660vip/auto-add-ipv6' : ''
@@ -579,6 +618,7 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick 
   } catch (error: any) {
     push.error({ message: error?.message || i18n.global.t('relay.createFailed') })
   } finally {
+    if (progressTimer) clearInterval(progressTimer)
     loading.value = false
   }
 }
@@ -690,6 +730,9 @@ watch(() => props.connectionHost, (host) => {
 .relay-dialog-body { min-height: 0; background: rgba(var(--v-theme-surface), 0.34); overflow-y: auto !important; }
 .relay-list { border: 1px solid rgba(var(--v-theme-on-surface), 0.08); border-radius: 10px; }
 .relay-quick-section { padding: 14px; border: 1px solid rgba(var(--v-theme-primary), 0.2); border-radius: 8px; background: rgba(var(--v-theme-primary), 0.045); }
+.relay-create-progress { padding: 14px; border: 1px solid rgba(var(--v-theme-primary), 0.24); border-radius: 8px; background: rgba(var(--v-theme-primary), 0.055); }
+.relay-progress-stats { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; }
+.relay-progress-addresses { max-height: 160px; overflow-y: auto; padding: 8px 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.1); border-radius: 6px; font-family: monospace; font-size: 12px; line-height: 1.65; background: rgba(var(--v-theme-surface), 0.55); }
 .relay-pool-actions { display: flex !important; flex-wrap: wrap; gap: 8px; }
 .relay-pool-actions :deep(.v-btn) { margin: 0 !important; }
 .relay-pool-actions :deep(.v-btn:not(.relay-delete-button)) { min-width: 0; flex: 1 1 150px; }

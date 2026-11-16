@@ -91,6 +91,8 @@ var relayShadowsocksMethods = map[string]bool{
 }
 
 var relayMu sync.Mutex
+var relayProgressMu sync.RWMutex
+var relayProgress *RelayCreateProgress
 
 type RelayIPv6 struct {
 	Interface string `json:"interface"`
@@ -130,12 +132,77 @@ type RelayCreateRequest struct {
 }
 
 type RelayData struct {
-	Pools             []model.RelayPool `json:"pools"`
-	IPv6              []RelayIPv6       `json:"ipv6"`
-	IPv6Total         int               `json:"ipv6_total"`
-	IPv6Truncated     bool              `json:"ipv6_truncated"`
-	RotationSupported bool              `json:"rotation_supported"`
-	Capabilities      RelayCapabilities `json:"capabilities"`
+	Pools             []model.RelayPool    `json:"pools"`
+	IPv6              []RelayIPv6          `json:"ipv6"`
+	IPv6Total         int                  `json:"ipv6_total"`
+	IPv6Truncated     bool                 `json:"ipv6_truncated"`
+	RotationSupported bool                 `json:"rotation_supported"`
+	Capabilities      RelayCapabilities    `json:"capabilities"`
+	Progress          *RelayCreateProgress `json:"progress,omitempty"`
+}
+
+type RelayCreateProgress struct {
+	Active       bool     `json:"active"`
+	Mode         string   `json:"mode"`
+	Target       int      `json:"target"`
+	Tested       int      `json:"tested"`
+	Failed       int      `json:"failed"`
+	Succeeded    int      `json:"succeeded"`
+	Current      string   `json:"current,omitempty"`
+	SuccessfulIP []string `json:"successful_ip"`
+	StartedAt    int64    `json:"started_at"`
+	UpdatedAt    int64    `json:"updated_at"`
+}
+
+func beginRelayCreateProgress(mode string, target int) {
+	now := time.Now().UnixMilli()
+	relayProgressMu.Lock()
+	relayProgress = &RelayCreateProgress{
+		Active: true, Mode: mode, Target: target, SuccessfulIP: make([]string, 0, target), StartedAt: now, UpdatedAt: now,
+	}
+	relayProgressMu.Unlock()
+}
+
+func updateRelayCreateProgress(status, address string) {
+	relayProgressMu.Lock()
+	defer relayProgressMu.Unlock()
+	if relayProgress == nil {
+		return
+	}
+	switch status {
+	case "testing":
+		relayProgress.Tested++
+		relayProgress.Current = address
+	case "failed":
+		relayProgress.Failed++
+		relayProgress.Current = address
+	case "succeeded":
+		relayProgress.Succeeded++
+		relayProgress.SuccessfulIP = append(relayProgress.SuccessfulIP, address)
+		relayProgress.Current = ""
+	}
+	relayProgress.UpdatedAt = time.Now().UnixMilli()
+}
+
+func finishRelayCreateProgress() {
+	relayProgressMu.Lock()
+	if relayProgress != nil {
+		relayProgress.Active = false
+		relayProgress.Current = ""
+		relayProgress.UpdatedAt = time.Now().UnixMilli()
+	}
+	relayProgressMu.Unlock()
+}
+
+func relayCreateProgressSnapshot() *RelayCreateProgress {
+	relayProgressMu.RLock()
+	defer relayProgressMu.RUnlock()
+	if relayProgress == nil {
+		return nil
+	}
+	snapshot := *relayProgress
+	snapshot.SuccessfulIP = append([]string(nil), relayProgress.SuccessfulIP...)
+	return &snapshot
 }
 
 type RelayRotationRequest struct {
@@ -201,7 +268,7 @@ func (s *ConfigService) GetRelayData() (*RelayData, error) {
 	}
 	return &RelayData{
 		Pools: pools, IPv6: ipv6, IPv6Total: total, IPv6Truncated: total > len(ipv6), RotationSupported: true,
-		Capabilities: getRelayCapabilities(),
+		Capabilities: getRelayCapabilities(), Progress: relayCreateProgressSnapshot(),
 	}, nil
 }
 
@@ -880,6 +947,10 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	if err != nil {
 		return nil, err
 	}
+	if relayModeUsesIPv6(req.Mode) {
+		beginRelayCreateProgress(req.Mode, len(items))
+		defer finishRelayCreateProgress()
+	}
 	added := make([]model.RelayItem, 0)
 	cleanup := true
 	defer func() {
@@ -901,11 +972,10 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 			existingAddresses[address.Address] = true
 		}
 	}
-	if relayModePairsUpstream(req.Mode) && runtime.GOOS == "linux" {
-		// A paired pool must contain one usable IPv6 for every IPv4 SOCKS5
-		// upstream. Failed candidates are removed and replaced one at a time;
-		// one provider-rejected address must not cancel the whole batch.
-		items, err = s.ensurePairedRelayIPv6(items, req.AddSystemAddresses, existingAddresses, &added)
+	if relayModeUsesIPv6(req.Mode) && runtime.GOOS == "linux" {
+		// Accept addresses one at a time. A failed candidate is removed and
+		// replaced without rolling back addresses that already passed.
+		items, err = s.ensureRelayIPv6(items, req.AddSystemAddresses, existingAddresses, &added)
 		if err != nil {
 			return nil, err
 		}
@@ -929,11 +999,6 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		}
 		if err := waitRelayAddressesReady(items); err != nil {
 			return nil, err
-		}
-		if relayModeUsesIPv6(req.Mode) && runtime.GOOS == "linux" {
-			if err := validateRelayIPv6Egress(context.Background(), items, probeRelayIPv6Egress); err != nil {
-				return nil, err
-			}
 		}
 	}
 
@@ -1827,17 +1892,38 @@ func relayListenPort(inbound model.Inbound) int {
 	return options.ListenPort
 }
 
-// ensurePairedRelayIPv6 guarantees that every paired upstream gets an IPv6
-// address that passed the local readiness check and the public IPv6 probe.
-// Providers commonly allow only a subset of a routed prefix, so candidates
-// are tested independently and failed addresses are replaced instead of
-// aborting the complete IPv4/IPv6 batch.
-func (s *ConfigService) ensurePairedRelayIPv6(items []model.RelayItem, addSystemAddresses bool, existing map[string]bool, added *[]model.RelayItem) ([]model.RelayItem, error) {
+type relayIPv6CandidateOperations struct {
+	add      func(string, string, int) error
+	remove   func(string, string, int) error
+	ready    func([]model.RelayItem) error
+	probe    relayIPv6EgressProbe
+	random   func(netip.Addr, int) (netip.Addr, error)
+	progress func(string, string)
+}
+
+func defaultRelayIPv6CandidateOperations() relayIPv6CandidateOperations {
+	return relayIPv6CandidateOperations{
+		add:      addRelayAddress,
+		remove:   deleteRelayAddress,
+		ready:    waitRelayAddressesReady,
+		probe:    probeRelayIPv6Egress,
+		random:   randomRelayIPv6,
+		progress: updateRelayCreateProgress,
+	}
+}
+
+// ensureRelayIPv6 fills every requested slot with an independently verified
+// address. Accepted addresses stay assigned while failed candidates are
+// removed and replaced, so one bad address cannot cancel a successful batch.
+func (s *ConfigService) ensureRelayIPv6(items []model.RelayItem, addSystemAddresses bool, existing map[string]bool, added *[]model.RelayItem) ([]model.RelayItem, error) {
+	return ensureRelayIPv6Candidates(items, addSystemAddresses, existing, added, defaultRelayIPv6CandidateOperations())
+}
+
+func ensureRelayIPv6Candidates(items []model.RelayItem, addSystemAddresses bool, existing map[string]bool, added *[]model.RelayItem, operations relayIPv6CandidateOperations) ([]model.RelayItem, error) {
 	occupied := make(map[string]bool, len(existing)+len(items))
 	for address := range existing {
 		occupied[address] = true
 	}
-	const attemptsPerItem = 32
 	acceptedByPool := make(map[string]bool, len(items))
 	for index := range items {
 		initial := items[index].IPv6
@@ -1845,13 +1931,13 @@ func (s *ConfigService) ensurePairedRelayIPv6(items []model.RelayItem, addSystem
 		if initialErr != nil || !initialAddr.Is6() {
 			return nil, common.NewErrorf("invalid generated IPv6 address %q", initial)
 		}
-		var lastErr error
-		rejected := make(map[string]bool, attemptsPerItem)
-		for attempt := 0; attempt < attemptsPerItem; attempt++ {
+		rejected := make(map[string]bool)
+		for attempt := 0; ; attempt++ {
 			candidate := initialAddr
 			if attempt > 0 {
-				candidate, lastErr = randomRelayIPv6(initialAddr, items[index].Prefix)
-				if lastErr != nil {
+				var randomErr error
+				candidate, randomErr = operations.random(initialAddr, items[index].Prefix)
+				if randomErr != nil {
 					continue
 				}
 			}
@@ -1875,6 +1961,9 @@ func (s *ConfigService) ensurePairedRelayIPv6(items []model.RelayItem, addSystem
 			if occupied[candidateText] && candidateText != initial {
 				continue
 			}
+			if operations.progress != nil {
+				operations.progress("testing", candidateText)
+			}
 			items[index].IPv6 = candidateText
 			items[index].AddedByUs = false
 			alreadyAssigned := existing[candidateText]
@@ -1882,49 +1971,54 @@ func (s *ConfigService) ensurePairedRelayIPv6(items []model.RelayItem, addSystem
 				if !addSystemAddresses {
 					return nil, common.NewErrorf("IPv6 %s is not currently assigned; enable system address creation", candidateText)
 				}
-				if err := addRelayAddress(items[index].Interface, candidateText, items[index].Prefix); err != nil {
-					lastErr = err
+				if err := operations.add(items[index].Interface, candidateText, items[index].Prefix); err != nil {
+					if operations.progress != nil {
+						operations.progress("failed", candidateText)
+					}
 					rejected[candidateText] = true
 					continue
 				}
 				items[index].AddedByUs = true
 			}
 
-			if err := waitRelayAddressesReady([]model.RelayItem{items[index]}); err != nil {
-				lastErr = err
+			if err := operations.ready([]model.RelayItem{items[index]}); err != nil {
 				if items[index].AddedByUs {
-					if deleteErr := deleteRelayAddress(items[index].Interface, candidateText, items[index].Prefix); deleteErr != nil {
-						logger.Warningf("remove failed paired IPv6 %s: %v", candidateText, deleteErr)
+					if deleteErr := operations.remove(items[index].Interface, candidateText, items[index].Prefix); deleteErr != nil {
+						logger.Warningf("remove failed relay IPv6 %s: %v", candidateText, deleteErr)
 						*added = append(*added, items[index])
 					}
 				}
 				items[index].AddedByUs = false
+				if operations.progress != nil {
+					operations.progress("failed", candidateText)
+				}
 				rejected[candidateText] = true
 				continue
 			}
-			if err := probeRelayIPv6Egress(context.Background(), candidate); err != nil {
-				lastErr = err
+			if err := operations.probe(context.Background(), candidate); err != nil {
 				if items[index].AddedByUs {
-					if deleteErr := deleteRelayAddress(items[index].Interface, candidateText, items[index].Prefix); deleteErr != nil {
-						logger.Warningf("remove failed paired IPv6 %s: %v", candidateText, deleteErr)
+					if deleteErr := operations.remove(items[index].Interface, candidateText, items[index].Prefix); deleteErr != nil {
+						logger.Warningf("remove failed relay IPv6 %s: %v", candidateText, deleteErr)
 						*added = append(*added, items[index])
 					}
 				}
 				items[index].AddedByUs = false
+				if operations.progress != nil {
+					operations.progress("failed", candidateText)
+				}
 				rejected[candidateText] = true
 				continue
 			}
 			occupied[candidateText] = true
 			acceptedByPool[candidateText] = true
+			if operations.progress != nil {
+				operations.progress("succeeded", candidateText)
+			}
 			if items[index].AddedByUs {
 				*added = append(*added, items[index])
 				existing[candidateText] = true
 			}
-			lastErr = nil
 			break
-		}
-		if lastErr != nil {
-			return nil, common.NewErrorf("unable to find a usable IPv6 for paired upstream %d after %d attempts: %v", index+1, attemptsPerItem, lastErr)
 		}
 	}
 	return items, nil
@@ -3066,5 +3160,3 @@ func relayInboundListenAddress(mode, publicHost string) string {
 	}
 	return "::"
 }
-
-

@@ -121,6 +121,136 @@ func TestRandomRelayIPv6KeepsPrefix(t *testing.T) {
 	}
 }
 
+func TestEnsureRelayIPv6CandidatesKeepsSuccessesAndReplacesFailures(t *testing.T) {
+	beginRelayCreateProgress(relayModeIPv6, 3)
+	defer finishRelayCreateProgress()
+	items := []model.RelayItem{
+		{IPv6: "2001:db8::10", Interface: "eth0", Prefix: 64},
+		{IPv6: "2001:db8::20", Interface: "eth0", Prefix: 64},
+		{IPv6: "2001:db8::30", Interface: "eth0", Prefix: 64},
+	}
+	replacements := []netip.Addr{
+		netip.MustParseAddr("2001:db8::21"),
+		netip.MustParseAddr("2001:db8::22"),
+	}
+	replacementIndex := 0
+	removed := make(map[string]bool)
+	probes := make([]string, 0)
+	var firstSuccessSnapshot *RelayCreateProgress
+	operations := relayIPv6CandidateOperations{
+		add: func(_, _ string, _ int) error { return nil },
+		remove: func(_, address string, _ int) error {
+			removed[address] = true
+			return nil
+		},
+		ready: func([]model.RelayItem) error { return nil },
+		probe: func(_ context.Context, address netip.Addr) error {
+			probes = append(probes, address.String())
+			if address.String() == "2001:db8::20" || address.String() == "2001:db8::21" {
+				return errors.New("candidate cannot reach the IPv6 Internet")
+			}
+			return nil
+		},
+		random: func(netip.Addr, int) (netip.Addr, error) {
+			if replacementIndex >= len(replacements) {
+				return netip.Addr{}, errors.New("unexpected extra replacement")
+			}
+			candidate := replacements[replacementIndex]
+			replacementIndex++
+			return candidate, nil
+		},
+		progress: func(status, address string) {
+			updateRelayCreateProgress(status, address)
+			if status == "succeeded" && firstSuccessSnapshot == nil {
+				firstSuccessSnapshot = relayCreateProgressSnapshot()
+			}
+		},
+	}
+	existing := make(map[string]bool)
+	added := make([]model.RelayItem, 0)
+
+	got, err := ensureRelayIPv6Candidates(items, true, existing, &added, operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"2001:db8::10", "2001:db8::22", "2001:db8::30"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d relay items, want %d", len(got), len(want))
+	}
+	for index, address := range want {
+		if got[index].IPv6 != address {
+			t.Errorf("item %d IPv6 = %s, want %s", index, got[index].IPv6, address)
+		}
+		if !existing[address] {
+			t.Errorf("accepted IPv6 %s was not retained", address)
+		}
+	}
+	if removed["2001:db8::10"] || removed["2001:db8::30"] {
+		t.Fatalf("successful IPv6 was removed: %#v", removed)
+	}
+	for _, failed := range []string{"2001:db8::20", "2001:db8::21"} {
+		if !removed[failed] {
+			t.Errorf("failed IPv6 %s was not removed", failed)
+		}
+	}
+	if len(added) != len(want) {
+		t.Fatalf("retained added addresses = %d, want %d", len(added), len(want))
+	}
+	if len(probes) != 5 {
+		t.Fatalf("probe count = %d, want 5 (%v)", len(probes), probes)
+	}
+	if firstSuccessSnapshot == nil || firstSuccessSnapshot.Succeeded != 1 || len(firstSuccessSnapshot.SuccessfulIP) != 1 || firstSuccessSnapshot.SuccessfulIP[0] != "2001:db8::10" {
+		t.Fatalf("first success was not visible immediately: %#v", firstSuccessSnapshot)
+	}
+}
+
+func TestEnsureRelayIPv6CandidatesContinuesPastOldAttemptLimit(t *testing.T) {
+	items := []model.RelayItem{
+		{IPv6: "2001:db8::1", Interface: "eth0", Prefix: 64},
+		{IPv6: "2001:db8::2", Interface: "eth0", Prefix: 64},
+	}
+	randomCalls := 0
+	removed := make(map[string]bool)
+	successAddress := "2001:db8::182"
+	operations := relayIPv6CandidateOperations{
+		add: func(_, _ string, _ int) error { return nil },
+		remove: func(_, address string, _ int) error {
+			removed[address] = true
+			return nil
+		},
+		ready: func([]model.RelayItem) error { return nil },
+		probe: func(_ context.Context, address netip.Addr) error {
+			if address.String() == "2001:db8::1" || address.String() == successAddress {
+				return nil
+			}
+			return errors.New("candidate rejected")
+		},
+		random: func(netip.Addr, int) (netip.Addr, error) {
+			randomCalls++
+			return netip.MustParseAddr(fmt.Sprintf("2001:db8::%x", 0x100+randomCalls)), nil
+		},
+	}
+	existing := make(map[string]bool)
+	added := make([]model.RelayItem, 0)
+
+	got, err := ensureRelayIPv6Candidates(items, true, existing, &added, operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if randomCalls != 130 {
+		t.Fatalf("replacement attempts = %d, want 130", randomCalls)
+	}
+	if len(got) != 2 || got[0].IPv6 != "2001:db8::1" || got[1].IPv6 != successAddress {
+		t.Fatalf("filled items = %#v", got)
+	}
+	if removed["2001:db8::1"] {
+		t.Fatal("the first successful IPv6 was removed while later candidates failed")
+	}
+	if !existing["2001:db8::1"] || !existing[successAddress] {
+		t.Fatalf("successful addresses were not retained: %#v", existing)
+	}
+}
+
 func TestNormalizeRelayPublicHost(t *testing.T) {
 	tests := []struct {
 		value string
@@ -1142,5 +1272,3 @@ func mustParseRelayTestPrefix(value string) (prefix netip.Prefix) {
 	prefix, _ = netip.ParsePrefix(value)
 	return prefix
 }
-
-
