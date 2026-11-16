@@ -204,6 +204,18 @@ func TestEnsureRelayIPv6CandidatesKeepsSuccessesAndReplacesFailures(t *testing.T
 	}
 }
 
+func TestRelayCreateProgressSerializesEmptySuccessListAsArray(t *testing.T) {
+	beginRelayCreateProgress(relayModeIPv6, 10)
+	defer finishRelayCreateProgress()
+	encoded, err := json.Marshal(relayCreateProgressSnapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"successful_ip":[]`)) {
+		t.Fatalf("empty successful IP list must be a JSON array: %s", encoded)
+	}
+}
+
 func TestEnsureRelayIPv6CandidatesContinuesPastOldAttemptLimit(t *testing.T) {
 	items := []model.RelayItem{
 		{IPv6: "2001:db8::1", Interface: "eth0", Prefix: 64},

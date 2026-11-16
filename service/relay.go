@@ -201,7 +201,7 @@ func relayCreateProgressSnapshot() *RelayCreateProgress {
 		return nil
 	}
 	snapshot := *relayProgress
-	snapshot.SuccessfulIP = append([]string(nil), relayProgress.SuccessfulIP...)
+	snapshot.SuccessfulIP = append(make([]string, 0, len(relayProgress.SuccessfulIP)), relayProgress.SuccessfulIP...)
 	return &snapshot
 }
 

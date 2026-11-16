@@ -32,7 +32,7 @@
           <div v-if="relayProgress.current" class="text-body-2 mt-2" dir="ltr">
             {{ $t('relay.progressCurrent') }}: {{ relayProgress.current }}
           </div>
-          <div v-if="relayProgress.successful_ip.length > 0" class="mt-3">
+          <div v-if="relayProgress.successful_ip?.length > 0" class="mt-3">
             <div class="text-caption mb-1">{{ $t('relay.progressKept') }}</div>
             <div class="relay-progress-addresses" dir="ltr">
               <div v-for="(address, index) in relayProgress.successful_ip" :key="address">#{{ index + 1 }} {{ address }}</div>
@@ -503,6 +503,13 @@ const loadData = async (silent = false) => {
       const msg = await response.json()
       if (!response.ok || !msg.success) throw new Error(msg.msg || response.statusText)
       data = msg.obj
+    } else if (silent) {
+      const response = await fetch('api/relay', {
+        credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      })
+      const msg = await response.json()
+      if (!response.ok || !msg.success) throw new Error(msg.msg || response.statusText)
+      data = msg.obj
     } else {
       const msg = await HttpUtils.get('api/relay')
       if (!msg.success) throw new Error(msg.msg || i18n.global.t('failed'))
@@ -518,7 +525,10 @@ const loadData = async (silent = false) => {
       pool.export_text = buildExportText(pool)
       return pool
     })
-    relayProgress.value = data?.progress ?? null
+    const progress = data?.progress
+    relayProgress.value = progress
+      ? { ...progress, successful_ip: Array.isArray(progress.successful_ip) ? progress.successful_ip : [] }
+      : null
     if (poolPage.value > poolPageCount.value) poolPage.value = poolPageCount.value
     capabilities.value = data?.capabilities ?? null
   } catch (error: any) {
@@ -556,8 +566,13 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack', quick 
   loading.value = true
   relayProgress.value = null
   let progressTimer: ReturnType<typeof setInterval> | undefined
+  let progressPollPending = false
   if (mode !== 'upstream') {
-    progressTimer = setInterval(() => { void loadData(true) }, 1000)
+    progressTimer = setInterval(() => {
+      if (progressPollPending) return
+      progressPollPending = true
+      void loadData(true).finally(() => { progressPollPending = false })
+    }, 1000)
   }
   try {
     const payload: any = { ...form, mode }
