@@ -622,6 +622,7 @@
     progressSucceeded: "موفق",
     progressFailed: "ناموفق و جایگزین‌شده",
     progressTested: "آزمایش‌شده",
+    progressBatch: "در حال آزمایش در این دسته",
     progressCurrent: "در حال آزمایش",
     progressKept: "IPهای موفق حفظ‌شده",
     pools: "استخرهای رله",

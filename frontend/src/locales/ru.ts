@@ -623,6 +623,7 @@
     progressSucceeded: "Успешно",
     progressFailed: "Ошибки и замены",
     progressTested: "Проверено",
+    progressBatch: "Проверяется в пакете",
     progressCurrent: "Текущая проверка",
     progressKept: "Сохраненные успешные IP",
     pools: "Пулы ретрансляции",

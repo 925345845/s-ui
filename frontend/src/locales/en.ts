@@ -669,6 +669,7 @@
     progressSucceeded: "Succeeded",
     progressFailed: "Failed and replaced",
     progressTested: "Tested",
+    progressBatch: "Testing in this batch",
     progressCurrent: "Testing now",
     progressKept: "Successful IPs retained",
     pools: "Relay pools",

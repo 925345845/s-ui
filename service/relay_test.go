@@ -10,6 +10,8 @@ import (
 	"net/netip"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -136,6 +138,7 @@ func TestEnsureRelayIPv6CandidatesKeepsSuccessesAndReplacesFailures(t *testing.T
 	replacementIndex := 0
 	removed := make(map[string]bool)
 	probes := make([]string, 0)
+	var probesMu sync.Mutex
 	var firstSuccessSnapshot *RelayCreateProgress
 	operations := relayIPv6CandidateOperations{
 		add: func(_, _ string, _ int) error { return nil },
@@ -145,7 +148,9 @@ func TestEnsureRelayIPv6CandidatesKeepsSuccessesAndReplacesFailures(t *testing.T
 		},
 		ready: func([]model.RelayItem) error { return nil },
 		probe: func(_ context.Context, address netip.Addr) error {
+			probesMu.Lock()
 			probes = append(probes, address.String())
+			probesMu.Unlock()
 			if address.String() == "2001:db8::20" || address.String() == "2001:db8::21" {
 				return errors.New("candidate cannot reach the IPv6 Internet")
 			}
@@ -199,8 +204,61 @@ func TestEnsureRelayIPv6CandidatesKeepsSuccessesAndReplacesFailures(t *testing.T
 	if len(probes) != 5 {
 		t.Fatalf("probe count = %d, want 5 (%v)", len(probes), probes)
 	}
-	if firstSuccessSnapshot == nil || firstSuccessSnapshot.Succeeded != 1 || len(firstSuccessSnapshot.SuccessfulIP) != 1 || firstSuccessSnapshot.SuccessfulIP[0] != "2001:db8::10" {
+	if firstSuccessSnapshot == nil || firstSuccessSnapshot.Succeeded != 1 || len(firstSuccessSnapshot.SuccessfulIP) != 1 {
 		t.Fatalf("first success was not visible immediately: %#v", firstSuccessSnapshot)
+	}
+}
+
+func TestEnsureRelayIPv6CandidatesTestsBatchConcurrently(t *testing.T) {
+	items := make([]model.RelayItem, relayIPv6ProbeWorkers)
+	for index := range items {
+		items[index] = model.RelayItem{
+			IPv6: netip.MustParseAddr(fmt.Sprintf("2001:db8::%x", index+1)).String(), Interface: "eth0", Prefix: 64,
+		}
+	}
+	release := make(chan struct{})
+	started := make(chan struct{}, len(items))
+	var active atomic.Int32
+	var maximum atomic.Int32
+	operations := relayIPv6CandidateOperations{
+		add:    func(_, _ string, _ int) error { return nil },
+		remove: func(_, _ string, _ int) error { return nil },
+		ready:  func([]model.RelayItem) error { return nil },
+		probe: func(context.Context, netip.Addr) error {
+			current := active.Add(1)
+			for {
+				observed := maximum.Load()
+				if current <= observed || maximum.CompareAndSwap(observed, current) {
+					break
+				}
+			}
+			started <- struct{}{}
+			<-release
+			active.Add(-1)
+			return nil
+		},
+		random: randomRelayIPv6,
+	}
+	existing := make(map[string]bool)
+	added := make([]model.RelayItem, 0)
+	done := make(chan error, 1)
+	go func() {
+		_, err := ensureRelayIPv6Candidates(items, true, existing, &added, operations)
+		done <- err
+	}()
+	for range items {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("IPv6 candidates were not started as one concurrent batch")
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if maximum.Load() != int32(relayIPv6ProbeWorkers) {
+		t.Fatalf("maximum concurrent probes = %d, want %d", maximum.Load(), relayIPv6ProbeWorkers)
 	}
 }
 

@@ -28,9 +28,10 @@
             <span>{{ $t('relay.progressSucceeded') }}: {{ relayProgress.succeeded }}</span>
             <span>{{ $t('relay.progressFailed') }}: {{ relayProgress.failed }}</span>
             <span>{{ $t('relay.progressTested') }}: {{ relayProgress.tested }}</span>
+            <span>{{ $t('relay.progressBatch') }}: {{ relayProgress.testing_ip?.length ?? 0 }}</span>
           </div>
-          <div v-if="relayProgress.current" class="text-body-2 mt-2" dir="ltr">
-            {{ $t('relay.progressCurrent') }}: {{ relayProgress.current }}
+          <div v-if="relayProgress.testing_ip?.length" class="relay-progress-testing mt-2" dir="ltr">
+            <span v-for="address in relayProgress.testing_ip" :key="address">{{ address }}</span>
           </div>
           <div v-if="relayProgress.successful_ip?.length > 0" class="mt-3">
             <div class="text-caption mb-1">{{ $t('relay.progressKept') }}</div>
@@ -382,7 +383,7 @@ interface RelayPool {
 interface RelayCapabilities { os: string; can_add_system_ipv6: boolean; unavailable_reason?: string }
 interface RelayCreateProgress {
   active: boolean; mode: string; target: number; tested: number; failed: number; succeeded: number
-  current?: string; successful_ip: string[]; started_at: number; updated_at: number
+  current?: string; testing_ip: string[]; successful_ip: string[]; started_at: number; updated_at: number
 }
 
 const props = defineProps<{
@@ -527,7 +528,11 @@ const loadData = async (silent = false) => {
     })
     const progress = data?.progress
     relayProgress.value = progress
-      ? { ...progress, successful_ip: Array.isArray(progress.successful_ip) ? progress.successful_ip : [] }
+      ? {
+          ...progress,
+          testing_ip: Array.isArray(progress.testing_ip) ? progress.testing_ip : [],
+          successful_ip: Array.isArray(progress.successful_ip) ? progress.successful_ip : [],
+        }
       : null
     if (poolPage.value > poolPageCount.value) poolPage.value = poolPageCount.value
     capabilities.value = data?.capabilities ?? null
@@ -747,6 +752,7 @@ watch(() => props.connectionHost, (host) => {
 .relay-quick-section { padding: 14px; border: 1px solid rgba(var(--v-theme-primary), 0.2); border-radius: 8px; background: rgba(var(--v-theme-primary), 0.045); }
 .relay-create-progress { padding: 14px; border: 1px solid rgba(var(--v-theme-primary), 0.24); border-radius: 8px; background: rgba(var(--v-theme-primary), 0.055); }
 .relay-progress-stats { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; }
+.relay-progress-testing { display: flex; flex-wrap: wrap; gap: 4px 10px; max-height: 76px; overflow-y: auto; font-family: monospace; font-size: 12px; }
 .relay-progress-addresses { max-height: 160px; overflow-y: auto; padding: 8px 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.1); border-radius: 6px; font-family: monospace; font-size: 12px; line-height: 1.65; background: rgba(var(--v-theme-surface), 0.55); }
 .relay-pool-actions { display: flex !important; flex-wrap: wrap; gap: 8px; }
 .relay-pool-actions :deep(.v-btn) { margin: 0 !important; }

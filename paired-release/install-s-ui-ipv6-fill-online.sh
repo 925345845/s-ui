@@ -4,11 +4,11 @@ set -euo pipefail
 case "$(uname -m)" in
   x86_64|amd64)
     package_arch="amd64"
-    archive_sha256="6b678b5c68d311d4de44fcab0a3afc24e57b98ae0554b159f01d69cc1bcedcd1"
+    archive_sha256="e9f8824415666c55e7eabb1c36d547fa71cfa7ead1c00c80270796c8a449a697"
     ;;
   aarch64|arm64)
     package_arch="arm64"
-    archive_sha256="78f3c16efdc9e69bc6b4e2a2ed22a7830b3bb59c8f004861660f1e2b4e36ce55"
+    archive_sha256="5c5761260fe18e2d36f70448e62c031b0a219cc7f27b0ac0a3c892e13fda69f8"
     ;;
   *)
     echo "不支持当前架构：$(uname -m)" >&2
@@ -18,7 +18,7 @@ esac
 
 release_branch="${S_UI_IPV6_FILL_BRANCH:-socks5-upstream-flexible-500}"
 base_url="${S_UI_IPV6_FILL_BASE_URL:-https://raw.githubusercontent.com/925345845/s-ui/${release_branch}/paired-release}"
-release_version="${S_UI_IPV6_FILL_VERSION:-v1.5.28-socks5-500-ipv6-fill-3}"
+release_version="${S_UI_IPV6_FILL_VERSION:-v1.5.28-socks5-500-ipv6-fill-4}"
 archive_base_url="${S_UI_IPV6_FILL_ARCHIVE_BASE_URL:-https://github.com/925345845/s-ui/releases/download/${release_version}}"
 tmp_dir="$(mktemp -d /tmp/s-ui-ipv6-fill-online.XXXXXX)"
 cleanup() {
@@ -28,7 +28,7 @@ trap cleanup EXIT
 
 installer="$tmp_dir/install-s-ui-ipv6-fill.sh"
 rollback="$tmp_dir/rollback-s-ui-ipv6-fill.sh"
-archive="$tmp_dir/s-ui-linux-${package_arch}-ipv6-fill-v3.tar.gz"
+archive="$tmp_dir/s-ui-linux-${package_arch}-ipv6-fill-v4.tar.gz"
 
 echo "正在下载 ${package_arch} 成功保留/自动补齐版..."
 curl -fL --retry 3 --connect-timeout 15 \
@@ -38,7 +38,7 @@ curl -fL --retry 3 --connect-timeout 15 \
   "$base_url/rollback-s-ui-ipv6-fill.sh" \
   -o "$rollback"
 curl -fL --retry 3 --connect-timeout 15 \
-  "$archive_base_url/s-ui-linux-${package_arch}-ipv6-fill-v3.tar.gz" \
+  "$archive_base_url/s-ui-linux-${package_arch}-ipv6-fill-v4.tar.gz" \
   -o "$archive"
 
 printf '%s  %s\n' "$archive_sha256" "$archive" | sha256sum -c -

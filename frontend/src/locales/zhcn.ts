@@ -669,6 +669,7 @@
     progressSucceeded: "已成功",
     progressFailed: "失败并替换",
     progressTested: "已测试",
+    progressBatch: "本批测试中",
     progressCurrent: "当前测试",
     progressKept: "已保留的成功 IP",
     pools: "中转批次",
