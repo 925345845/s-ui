@@ -27,6 +27,7 @@ cleanup() {
 trap cleanup EXIT
 
 installer="$tmp_dir/install-s-ui-ipv6-fill.sh"
+rollback="$tmp_dir/rollback-s-ui-ipv6-fill.sh"
 archive="$tmp_dir/s-ui-linux-${package_arch}-ipv6-fill.tar.gz"
 
 echo "正在下载 ${package_arch} 成功保留/自动补齐版..."
@@ -34,9 +35,15 @@ curl -fL --retry 3 --connect-timeout 15 \
   "$base_url/install-s-ui-ipv6-fill.sh" \
   -o "$installer"
 curl -fL --retry 3 --connect-timeout 15 \
+  "$base_url/rollback-s-ui-ipv6-fill.sh" \
+  -o "$rollback"
+curl -fL --retry 3 --connect-timeout 15 \
   "$archive_base_url/s-ui-linux-${package_arch}-ipv6-fill.tar.gz" \
   -o "$archive"
 
 printf '%s  %s\n' "$archive_sha256" "$archive" | sha256sum -c -
 chmod +x "$installer"
 "$installer" "$archive"
+install -d -m 755 /usr/local/s-ui/bin
+install -m 755 "$rollback" /usr/local/s-ui/bin/rollback-s-ui-ipv6-fill
+echo "回退命令：sudo /usr/local/s-ui/bin/rollback-s-ui-ipv6-fill"
