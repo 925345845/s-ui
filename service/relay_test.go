@@ -15,8 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Hhz0823/1s-ui/core"
 	"github.com/Hhz0823/1s-ui/database"
 	"github.com/Hhz0823/1s-ui/database/model"
+	"github.com/Hhz0823/1s-ui/logger"
+	"github.com/op/go-logging"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -623,6 +626,9 @@ func TestNormalizeRelayDomainStrategy(t *testing.T) {
 		{name: "vinted default", mode: relayModeVinted, want: relayDomainStrategyPreferIPv6, valid: true},
 		{name: "vinted prefer IPv6", mode: relayModeVinted, value: relayDomainStrategyPreferIPv6, want: relayDomainStrategyPreferIPv6, valid: true},
 		{name: "vinted rejects IPv6 only", mode: relayModeVinted, value: relayDomainStrategyIPv6Only},
+		{name: "vinted strict default", mode: relayModeVintedStrict, want: relayDomainStrategyPreferIPv6, valid: true},
+		{name: "vinted strict prefer IPv6", mode: relayModeVintedStrict, value: relayDomainStrategyPreferIPv6, want: relayDomainStrategyPreferIPv6, valid: true},
+		{name: "vinted strict rejects IPv6 only", mode: relayModeVintedStrict, value: relayDomainStrategyIPv6Only},
 		{name: "invalid", mode: relayModeIPv6, value: "prefer_ipv4"},
 	}
 	for _, test := range tests {
@@ -638,6 +644,15 @@ func TestNormalizeRelayDomainStrategy(t *testing.T) {
 				t.Fatalf("expected strategy %q to be rejected", test.value)
 			}
 		})
+	}
+}
+
+func TestVintedStrictSessionCannotRotate(t *testing.T) {
+	if relayModeCanRotate(relayModeVintedStrict) {
+		t.Fatal("Vinted strict session mode must keep its IPv6/IPv4 pair fixed")
+	}
+	if !relayModeCanRotate(relayModeVinted) || !relayModeCanRotate(relayModeIPv6) {
+		t.Fatal("existing Vinted and IPv6 modes must retain their current rotation behavior")
 	}
 }
 
@@ -662,6 +677,14 @@ func TestRelayVintedDirectOutboundStaysIPv6Only(t *testing.T) {
 	options := relayDirectOutboundOptions(RelayCreateRequest{Mode: relayModeVinted, DomainStrategy: relayDomainStrategyPreferIPv6}, item)
 	if options["inet6_bind_address"] != item.IPv6 || options["domain_strategy"] != relayDomainStrategyIPv6Only {
 		t.Fatalf("unexpected Vinted IPv6 child options: %#v", options)
+	}
+}
+
+func TestRelayVintedStrictDirectOutboundStaysIPv6Only(t *testing.T) {
+	item := model.RelayItem{IPv6: "2001:db8::10"}
+	options := relayDirectOutboundOptions(RelayCreateRequest{Mode: relayModeVintedStrict, DomainStrategy: relayDomainStrategyPreferIPv6}, item)
+	if options["inet6_bind_address"] != item.IPv6 || options["domain_strategy"] != relayDomainStrategyIPv6Only {
+		t.Fatalf("unexpected Vinted strict IPv6 child options: %#v", options)
 	}
 }
 
@@ -1151,6 +1174,9 @@ func TestUpdateRelayRouteRulesCreatesVintedSplitRoutes(t *testing.T) {
 	if ipv4Rule["outbound"] != item.IPv4OutboundTag || !relayTestRuleContains(ipv4Rule, "domain", "dd.vinted.lt") || !relayTestRuleContains(ipv4Rule, "domain", "metrics-ingress-web.svc.vinted.com") {
 		t.Fatalf("Vinted IPv4 exceptions rule = %#v", ipv4Rule)
 	}
+	if _, exists := ipv4Rule["domain_suffix"]; exists {
+		t.Fatalf("legacy Vinted mode unexpectedly changed its IPv4 domain policy: %#v", ipv4Rule)
+	}
 	if ipv6Rule["outbound"] != item.IPv6OutboundTag || !relayTestRuleContains(ipv6Rule, "domain", "api.www.vinted.com") || !relayTestRuleContains(ipv6Rule, "domain", "d34r8q7sht0t9k.cloudfront.net") {
 		t.Fatalf("Vinted IPv6 exact rule = %#v", ipv6Rule)
 	}
@@ -1159,6 +1185,98 @@ func TestUpdateRelayRouteRulesCreatesVintedSplitRoutes(t *testing.T) {
 	}
 	if resolveRule["action"] != "resolve" || fallbackRule["outbound"] != item.OutboundTag {
 		t.Fatalf("Vinted fallback rules = %#v / %#v", resolveRule, fallbackRule)
+	}
+}
+
+func TestBuildRelayRouteRulesCreatesVintedStrictSessionRoutes(t *testing.T) {
+	item := model.RelayItem{
+		InboundTag: "relay-vinted-strict-in", OutboundTag: "relay-vinted-strict-fallback",
+		IPv6OutboundTag: "relay-vinted-strict-ipv6", IPv4OutboundTag: "relay-vinted-strict-ipv4",
+		VintedSplit: true, VintedStrict: true,
+	}
+	targets := map[string]string{item.InboundTag: item.OutboundTag}
+	rules := buildRelayRouteRules([]model.RelayItem{item}, targets, false)
+	if len(rules) != 7 {
+		t.Fatalf("Vinted strict rule count = %d, want 7", len(rules))
+	}
+	sniffRule := rules[0].(map[string]interface{})
+	ipv4ExceptionRule := rules[1].(map[string]interface{})
+	ipv6ExactRule := rules[2].(map[string]interface{})
+	ipv6SuffixRule := rules[3].(map[string]interface{})
+	ipv4RejectRule := rules[4].(map[string]interface{})
+	resolveRule := rules[5].(map[string]interface{})
+	fallbackRule := rules[6].(map[string]interface{})
+	if sniffRule["action"] != "sniff" || !relayRuleHasStrictSniffers(sniffRule) {
+		t.Fatalf("strict sniff rule = %#v", sniffRule)
+	}
+	if _, exists := sniffRule["override_destination"]; exists {
+		t.Fatalf("strict sniff rule contains unsupported override_destination: %#v", sniffRule)
+	}
+	if ipv4ExceptionRule["outbound"] != item.IPv4OutboundTag ||
+		!relayTestRuleContains(ipv4ExceptionRule, "domain", "dd.vinted.lt") ||
+		!relayTestRuleContains(ipv4ExceptionRule, "domain_suffix", "datadome.co") ||
+		!relayTestRuleContains(ipv4ExceptionRule, "domain_suffix", "captcha-delivery.com") {
+		t.Fatalf("strict IPv4 exception rule = %#v", ipv4ExceptionRule)
+	}
+	if ipv6ExactRule["outbound"] != item.IPv6OutboundTag || !relayTestRuleContains(ipv6ExactRule, "domain", "api.www.vinted.com") {
+		t.Fatalf("strict IPv6 exact rule = %#v", ipv6ExactRule)
+	}
+	if ipv6SuffixRule["outbound"] != item.IPv6OutboundTag || !relayTestRuleContains(ipv6SuffixRule, "domain_suffix", "vinted.com") {
+		t.Fatalf("strict IPv6 suffix rule = %#v", ipv6SuffixRule)
+	}
+	if ipv4RejectRule["action"] != "reject" || relayRuleIPVersion(ipv4RejectRule) != 4 {
+		t.Fatalf("strict IPv4 reject rule = %#v", ipv4RejectRule)
+	}
+	if resolveRule["action"] != "resolve" || fallbackRule["outbound"] != item.OutboundTag {
+		t.Fatalf("strict fallback rules = %#v / %#v", resolveRule, fallbackRule)
+	}
+}
+
+func TestCoreAcceptsVintedStrictSessionRoutes(t *testing.T) {
+	logger.InitLogger(logging.CRITICAL)
+	item := model.RelayItem{
+		InboundTag: "relay-vinted-strict-in", OutboundTag: "relay-vinted-strict-fallback",
+		IPv6OutboundTag: "relay-vinted-strict-ipv6", IPv4OutboundTag: "relay-vinted-strict-ipv4",
+		VintedSplit: true, VintedStrict: true,
+	}
+	rules := buildRelayRouteRules(
+		[]model.RelayItem{item}, map[string]string{item.InboundTag: item.OutboundTag}, false,
+	)
+	config := mustJSON(map[string]interface{}{
+		"log": map[string]interface{}{"disabled": true},
+		"dns": map[string]interface{}{"servers": []interface{}{
+			map[string]interface{}{"type": "local", "tag": relayPairedDNSResolverTag},
+		}},
+		"outbounds": []interface{}{
+			map[string]interface{}{
+				"type": core.VintedStrictOutboundType, "tag": item.IPv6OutboundTag,
+				"allowed_domains": relayVintedIPv6Domains, "allowed_domain_suffixes": relayVintedIPv6DomainSuffixes,
+				"ipv4_domains": relayVintedStrictIPv4Domains, "ipv4_domain_suffixes": relayVintedStrictIPv4DomainSuffixes,
+			},
+			map[string]interface{}{"type": "socks", "tag": item.IPv4OutboundTag, "server": "127.0.0.1", "server_port": 9, "version": "5"},
+			map[string]interface{}{
+				"type": core.RelayFallbackOutboundType, "tag": item.OutboundTag,
+				"ipv6_outbound": item.IPv6OutboundTag, "ipv4_outbound": item.IPv4OutboundTag,
+			},
+		},
+		"route": map[string]interface{}{"rules": rules},
+	})
+	instance := core.NewCore()
+	if err := instance.Start(config); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.Stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateVintedStrictUpstreamsRejectsDuplicateCredentials(t *testing.T) {
+	upstreams := []RelayUpstream{
+		{Server: "proxy.example", Port: 1080, Username: "session-a", Password: "one"},
+		{Server: "PROXY.EXAMPLE.", Port: 1080, Username: "session-a", Password: "two"},
+	}
+	if err := validateVintedStrictUpstreams(nil, upstreams); err == nil || !strings.Contains(err.Error(), "duplicates") {
+		t.Fatalf("duplicate strict upstream error = %v", err)
 	}
 }
 

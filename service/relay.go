@@ -34,6 +34,7 @@ const (
 	relayModePaired               = "paired"
 	relayModeDualStack            = "dualstack"
 	relayModeVinted               = "vinted"
+	relayModeVintedStrict         = "vinted_strict"
 	relaySourceAutoAddIPv6        = "help660vip/auto-add-ipv6"
 	relayDomainStrategyIPv6Only   = "ipv6_only"
 	relayDomainStrategyPreferIPv6 = "prefer_ipv6"
@@ -54,21 +55,41 @@ const (
 )
 
 func relayModeUsesUpstream(mode string) bool {
-	return mode == relayModeUpstream || mode == relayModePaired || mode == relayModeDualStack || mode == relayModeVinted
+	return mode == relayModeUpstream || mode == relayModePaired || mode == relayModeDualStack || mode == relayModeVinted || mode == relayModeVintedStrict
 }
 
 func relayModeUsesIPv6(mode string) bool {
-	return mode == relayModeIPv6 || mode == relayModePaired || mode == relayModeDualStack || mode == relayModeVinted
+	return mode == relayModeIPv6 || mode == relayModePaired || mode == relayModeDualStack || mode == relayModeVinted || mode == relayModeVintedStrict
 }
 
 func relayModePairsUpstream(mode string) bool {
-	return mode == relayModePaired || mode == relayModeDualStack || mode == relayModeVinted
+	return mode == relayModePaired || mode == relayModeDualStack || mode == relayModeVinted || mode == relayModeVintedStrict
+}
+
+func relayModeCanRotate(mode string) bool {
+	return relayModeUsesIPv6(mode) && mode != relayModeVintedStrict
 }
 
 var relayVintedIPv4Domains = []string{
 	"dd.vinted.lt",
 	"metrics-ingress-web.svc.vinted.com",
 	"metrics.vinted.lt",
+}
+
+var relayVintedStrictIPv4Domains = []string{
+	"dd.vinted.lt",
+	"metrics-ingress-web.svc.vinted.com",
+	"metrics.vinted.lt",
+	"api-js.datadome.co",
+	"js.datadome.co",
+	"ct.captcha-delivery.com",
+	"geo.captcha-delivery.com",
+	"static.captcha-delivery.com",
+}
+
+var relayVintedStrictIPv4DomainSuffixes = []string{
+	"datadome.co",
+	"captcha-delivery.com",
 }
 
 var relayVintedIPv6Domains = []string{
@@ -329,7 +350,7 @@ func (s *ConfigService) ensureRelayRefreshLinks(pools []model.RelayPool) error {
 			existing[fmt.Sprintf("%d:%s", link.PoolID, link.InboundTag)] = true
 		}
 		for _, pool := range pools {
-			if !relayModeUsesIPv6(pool.Mode) {
+			if !relayModeCanRotate(pool.Mode) {
 				continue
 			}
 			var items []model.RelayItem
@@ -897,8 +918,8 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		return nil, err
 	}
 	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
-	if req.Mode != relayModeIPv6 && req.Mode != relayModeUpstream && req.Mode != relayModePaired && req.Mode != relayModeDualStack && req.Mode != relayModeVinted {
-		return nil, common.NewError("relay mode must be ipv6, upstream, paired, dualstack, or vinted")
+	if req.Mode != relayModeIPv6 && req.Mode != relayModeUpstream && req.Mode != relayModePaired && req.Mode != relayModeDualStack && req.Mode != relayModeVinted && req.Mode != relayModeVintedStrict {
+		return nil, common.NewError("relay mode must be ipv6, upstream, paired, dualstack, vinted, or vinted_strict")
 	}
 	if relayModeUsesUpstream(req.Mode) && len(req.Upstreams) == 0 {
 		parsed, parseErr := parseRelayUpstreams(req.UpstreamText)
@@ -915,6 +936,11 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 			req.Upstreams[i].Server = strings.Trim(req.Upstreams[i].Server, "[]")
 		}
 		req.Count = len(req.Upstreams)
+	}
+	if req.Mode == relayModeVintedStrict {
+		if err := validateVintedStrictUpstreams(database.GetDB(), req.Upstreams); err != nil {
+			return nil, err
+		}
 	}
 	var strategyErr error
 	req.DomainStrategy, strategyErr = normalizeRelayDomainStrategy(req.Mode, req.DomainStrategy)
@@ -1134,6 +1160,15 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 			items[i].UpstreamPort = upstream.Port
 			items[i].UpstreamUsername = upstream.Username
 			items[i].UpstreamPassword = upstream.Password
+		} else if req.Mode == relayModeVintedStrict {
+			outbound.Type = core.VintedStrictOutboundType
+			outbound.Options, err = json.Marshal(map[string]interface{}{
+				"inet6_bind_address":      items[i].IPv6,
+				"allowed_domains":         relayVintedIPv6Domains,
+				"allowed_domain_suffixes": relayVintedIPv6DomainSuffixes,
+				"ipv4_domains":            relayVintedStrictIPv4Domains,
+				"ipv4_domain_suffixes":    relayVintedStrictIPv4DomainSuffixes,
+			})
 		} else {
 			outbound.Options, err = json.Marshal(relayDirectOutboundOptions(req, items[i]))
 		}
@@ -1145,8 +1180,14 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		}
 		items[i].OutboundTag = outbound.Tag
 		if relayModePairsUpstream(req.Mode) {
-			items[i].VintedSplit = req.Mode == relayModeVinted
+			items[i].VintedSplit = req.Mode == relayModeVinted || req.Mode == relayModeVintedStrict
+			items[i].VintedStrict = req.Mode == relayModeVintedStrict
 			upstream := req.Upstreams[i]
+			if req.Mode == relayModeVintedStrict {
+				items[i].UpstreamServer = upstream.Server
+				items[i].UpstreamPort = upstream.Port
+				items[i].UpstreamUsername = upstream.Username
+			}
 			ipv4Outbound := model.Outbound{
 				Type: "socks",
 				Tag:  fmt.Sprintf("relay-ipv4-%s", common.Random(7)),
@@ -1159,7 +1200,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 				return nil, err
 			}
 			items[i].IPv4OutboundTag = ipv4Outbound.Tag
-			if req.Mode == relayModeDualStack || req.Mode == relayModeVinted {
+			if req.Mode == relayModeDualStack || req.Mode == relayModeVinted || req.Mode == relayModeVintedStrict {
 				items[i].IPv6OutboundTag = outbound.Tag
 				fallbackOutbound := model.Outbound{
 					Type: core.RelayFallbackOutboundType,
@@ -1204,8 +1245,10 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	if err := tx.Create(&pool).Error; err != nil {
 		return nil, err
 	}
-	if err := ensureRelayRefreshLinksTx(tx, pool.Id, items); err != nil {
-		return nil, err
+	if relayModeCanRotate(req.Mode) {
+		if err := ensureRelayRefreshLinksTx(tx, pool.Id, items); err != nil {
+			return nil, err
+		}
 	}
 	if err := updateRelayRouteRules(tx, items, req.DomainStrategy == relayDomainStrategyIPv6Only, false); err != nil {
 		return nil, err
@@ -1260,12 +1303,12 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 }
 
 func normalizeRelayDomainStrategy(mode, value string) (string, error) {
-	if mode == relayModePaired || mode == relayModeDualStack || mode == relayModeVinted {
+	if mode == relayModePaired || mode == relayModeDualStack || mode == relayModeVinted || mode == relayModeVintedStrict {
 		value = strings.ToLower(strings.TrimSpace(value))
 		if value == "" || value == relayDomainStrategyPreferIPv6 {
 			return relayDomainStrategyPreferIPv6, nil
 		}
-		return "", common.NewError("paired, dualstack, and vinted relay modes require prefer_ipv6 domain strategy")
+		return "", common.NewError("paired, dualstack, vinted, and vinted_strict relay modes require prefer_ipv6 domain strategy")
 	}
 	if mode != relayModeIPv6 {
 		return "", nil
@@ -1284,7 +1327,7 @@ func normalizeRelayDomainStrategy(mode, value string) (string, error) {
 
 func relayDirectOutboundOptions(req RelayCreateRequest, item model.RelayItem) map[string]interface{} {
 	strategy := req.DomainStrategy
-	if req.Mode == relayModeDualStack || req.Mode == relayModeVinted {
+	if req.Mode == relayModeDualStack || req.Mode == relayModeVinted || req.Mode == relayModeVintedStrict {
 		strategy = relayDomainStrategyIPv6Only
 	}
 	if strategy == "" {
@@ -1425,7 +1468,10 @@ func (s *ConfigService) SetRelayRotation(id uint, request RelayRotationRequest, 
 	if err := database.GetDB().First(&pool, id).Error; err != nil {
 		return nil, err
 	}
-	if !relayModeUsesIPv6(pool.Mode) {
+	if pool.Mode == relayModeVintedStrict {
+		return nil, common.NewError("Vinted strict session pools keep a fixed IPv6/IPv4 pair and cannot rotate")
+	}
+	if !relayModeCanRotate(pool.Mode) {
 		return nil, common.NewError("IPv4 upstream-only relay pools cannot rotate IPv6 addresses")
 	}
 	if request.Enabled {
@@ -1523,7 +1569,10 @@ func (s *ConfigService) rotateRelayItemsLocked(id uint, inboundTag, actor string
 	if err := db.First(&pool, id).Error; err != nil {
 		return nil, err
 	}
-	if !relayModeUsesIPv6(pool.Mode) {
+	if pool.Mode == relayModeVintedStrict {
+		return nil, common.NewError("Vinted strict session pools keep a fixed IPv6/IPv4 pair and cannot rotate")
+	}
+	if !relayModeCanRotate(pool.Mode) {
 		return nil, common.NewError("IPv4 upstream-only relay pools cannot rotate IPv6 addresses")
 	}
 	var oldItems []model.RelayItem
@@ -1748,7 +1797,7 @@ func updateRelayRotatedOutbounds(tx *gorm.DB, mode string, items []model.RelayIt
 }
 
 func relayItemIPv6OutboundTag(mode string, item model.RelayItem) string {
-	if mode == relayModeDualStack || mode == relayModeVinted {
+	if mode == relayModeDualStack || mode == relayModeVinted || mode == relayModeVintedStrict {
 		return item.IPv6OutboundTag
 	}
 	return item.OutboundTag
@@ -2687,6 +2736,9 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 			if ipv4Targets[inbound] != "" && fmt.Sprint(entry["action"]) == "resolve" && fmt.Sprint(entry["server"]) == relayPairedDNSResolverTag {
 				generated = true
 			}
+			if fmt.Sprint(entry["action"]) == "sniff" && relayRuleHasStrictSniffers(entry) {
+				generated = true
+			}
 		}
 		ipv4Reject := fmt.Sprint(entry["action"]) == "reject" && relayRuleIPVersion(entry) == 4
 		if generated || ipv4Reject {
@@ -2712,18 +2764,29 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 }
 
 func buildRelayRouteRules(items []model.RelayItem, targets map[string]string, ipv6Only bool) []interface{} {
-	newRules := make([]interface{}, 0, len(items)*5)
+	newRules := make([]interface{}, 0, len(items)*7)
 	for _, item := range items {
 		if _, ok := targets[item.InboundTag]; !ok {
 			continue
 		}
 		if item.IPv6OutboundTag != "" && item.IPv4OutboundTag != "" {
 			if item.VintedSplit {
+				ipv4Domains := relayVintedIPv4Domains
+				ipv4Rule := map[string]interface{}{
+					"inbound": []string{item.InboundTag}, "domain": ipv4Domains,
+					"action": "route", "outbound": item.IPv4OutboundTag,
+				}
+				if item.VintedStrict {
+					ipv4Domains = relayVintedStrictIPv4Domains
+					ipv4Rule["domain"] = ipv4Domains
+					ipv4Rule["domain_suffix"] = relayVintedStrictIPv4DomainSuffixes
+					newRules = append(newRules, map[string]interface{}{
+						"inbound": []string{item.InboundTag}, "action": "sniff",
+						"sniffer": []string{"tls", "http", "quic"}, "timeout": "1s",
+					})
+				}
 				newRules = append(newRules,
-					map[string]interface{}{
-						"inbound": []string{item.InboundTag}, "domain": relayVintedIPv4Domains,
-						"action": "route", "outbound": item.IPv4OutboundTag,
-					},
+					ipv4Rule,
 					map[string]interface{}{
 						"inbound": []string{item.InboundTag}, "domain": relayVintedIPv6Domains,
 						"action": "route", "outbound": item.IPv6OutboundTag,
@@ -2733,6 +2796,11 @@ func buildRelayRouteRules(items []model.RelayItem, targets map[string]string, ip
 						"action": "route", "outbound": item.IPv6OutboundTag,
 					},
 				)
+				if item.VintedStrict {
+					newRules = append(newRules, map[string]interface{}{
+						"inbound": []string{item.InboundTag}, "ip_version": 4, "action": "reject",
+					})
+				}
 			}
 			newRules = append(newRules,
 				map[string]interface{}{
@@ -2768,6 +2836,27 @@ func buildRelayRouteRules(items []model.RelayItem, targets map[string]string, ip
 		})
 	}
 	return newRules
+}
+
+func relayRuleHasStrictSniffers(rule map[string]interface{}) bool {
+	wanted := map[string]bool{"tls": true, "http": true, "quic": true}
+	found := map[string]bool{}
+	switch sniffers := rule["sniffer"].(type) {
+	case []string:
+		for _, sniffer := range sniffers {
+			found[sniffer] = true
+		}
+	case []interface{}:
+		for _, sniffer := range sniffers {
+			found[fmt.Sprint(sniffer)] = true
+		}
+	}
+	for sniffer := range wanted {
+		if !found[sniffer] {
+			return false
+		}
+	}
+	return len(found) == len(wanted)
 }
 
 func relayPairedDNSResolverRequired(rules []interface{}) bool {
@@ -2880,6 +2969,45 @@ func validateUpstream(upstream RelayUpstream) error {
 		return common.NewError("SOCKS5 server is invalid")
 	}
 	return nil
+}
+
+func validateVintedStrictUpstreams(db *gorm.DB, upstreams []RelayUpstream) error {
+	requested := make(map[string]bool, len(upstreams))
+	for index, upstream := range upstreams {
+		key := relayUpstreamIdentity(upstream)
+		if requested[key] {
+			return common.NewErrorf("Vinted strict session SOCKS5 entry %d duplicates another entry; each session requires unique credentials", index+1)
+		}
+		requested[key] = true
+	}
+
+	var pools []model.RelayPool
+	if err := db.Where("mode = ?", relayModeVintedStrict).Find(&pools).Error; err != nil {
+		return err
+	}
+	for _, pool := range pools {
+		var items []model.RelayItem
+		if err := json.Unmarshal(pool.Items, &items); err != nil {
+			return fmt.Errorf("relay pool %q: invalid items: %w", pool.Name, err)
+		}
+		for _, item := range items {
+			if item.UpstreamServer == "" || item.UpstreamPort == 0 {
+				continue
+			}
+			key := relayUpstreamIdentity(RelayUpstream{
+				Server: item.UpstreamServer, Port: item.UpstreamPort, Username: item.UpstreamUsername,
+			})
+			if requested[key] {
+				return common.NewError("a Vinted strict session already uses one of these SOCKS5 credentials; reuse is blocked to keep one fixed IPv4 identity per session")
+			}
+		}
+	}
+	return nil
+}
+
+func relayUpstreamIdentity(upstream RelayUpstream) string {
+	server := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(strings.Trim(upstream.Server, "[]")), "."))
+	return net.JoinHostPort(server, strconv.Itoa(upstream.Port)) + "\x00" + upstream.Username
 }
 
 func parseRelayUpstreams(text string) ([]RelayUpstream, error) {

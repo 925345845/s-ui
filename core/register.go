@@ -73,6 +73,7 @@ func OutboundRegistry() *outbound.Registry {
 
 	direct.RegisterOutbound(registry)
 	registerRelayFallbackOutbound(registry)
+	registerVintedStrictOutbound(registry)
 
 	block.RegisterOutbound(registry)
 
