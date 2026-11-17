@@ -33,6 +33,7 @@ const (
 	relayModeUpstream             = "upstream"
 	relayModePaired               = "paired"
 	relayModeDualStack            = "dualstack"
+	relayModeVinted               = "vinted"
 	relaySourceAutoAddIPv6        = "help660vip/auto-add-ipv6"
 	relayDomainStrategyIPv6Only   = "ipv6_only"
 	relayDomainStrategyPreferIPv6 = "prefer_ipv6"
@@ -53,15 +54,36 @@ const (
 )
 
 func relayModeUsesUpstream(mode string) bool {
-	return mode == relayModeUpstream || mode == relayModePaired || mode == relayModeDualStack
+	return mode == relayModeUpstream || mode == relayModePaired || mode == relayModeDualStack || mode == relayModeVinted
 }
 
 func relayModeUsesIPv6(mode string) bool {
-	return mode == relayModeIPv6 || mode == relayModePaired || mode == relayModeDualStack
+	return mode == relayModeIPv6 || mode == relayModePaired || mode == relayModeDualStack || mode == relayModeVinted
 }
 
 func relayModePairsUpstream(mode string) bool {
-	return mode == relayModePaired || mode == relayModeDualStack
+	return mode == relayModePaired || mode == relayModeDualStack || mode == relayModeVinted
+}
+
+var relayVintedIPv4Domains = []string{
+	"dd.vinted.lt",
+	"metrics-ingress-web.svc.vinted.com",
+	"metrics.vinted.lt",
+}
+
+var relayVintedIPv6Domains = []string{
+	"api.www.vinted.com",
+	"www.vinted.com",
+	"images1.vinted.net",
+	"marketplace-web-assets.vinted.com",
+	"static-assets.vinted.com",
+	"fdde0be2.svc.vinted.com",
+	"d34r8q7sht0t9k.cloudfront.net",
+}
+
+var relayVintedIPv6DomainSuffixes = []string{
+	"vinted.com",
+	"vinted.net",
 }
 
 var relayIPv6EgressTargets = []string{
@@ -875,8 +897,8 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		return nil, err
 	}
 	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
-	if req.Mode != relayModeIPv6 && req.Mode != relayModeUpstream && req.Mode != relayModePaired && req.Mode != relayModeDualStack {
-		return nil, common.NewError("relay mode must be ipv6, upstream, paired, or dualstack")
+	if req.Mode != relayModeIPv6 && req.Mode != relayModeUpstream && req.Mode != relayModePaired && req.Mode != relayModeDualStack && req.Mode != relayModeVinted {
+		return nil, common.NewError("relay mode must be ipv6, upstream, paired, dualstack, or vinted")
 	}
 	if relayModeUsesUpstream(req.Mode) && len(req.Upstreams) == 0 {
 		parsed, parseErr := parseRelayUpstreams(req.UpstreamText)
@@ -1123,6 +1145,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		}
 		items[i].OutboundTag = outbound.Tag
 		if relayModePairsUpstream(req.Mode) {
+			items[i].VintedSplit = req.Mode == relayModeVinted
 			upstream := req.Upstreams[i]
 			ipv4Outbound := model.Outbound{
 				Type: "socks",
@@ -1136,7 +1159,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 				return nil, err
 			}
 			items[i].IPv4OutboundTag = ipv4Outbound.Tag
-			if req.Mode == relayModeDualStack {
+			if req.Mode == relayModeDualStack || req.Mode == relayModeVinted {
 				items[i].IPv6OutboundTag = outbound.Tag
 				fallbackOutbound := model.Outbound{
 					Type: core.RelayFallbackOutboundType,
@@ -1237,12 +1260,12 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 }
 
 func normalizeRelayDomainStrategy(mode, value string) (string, error) {
-	if mode == relayModePaired || mode == relayModeDualStack {
+	if mode == relayModePaired || mode == relayModeDualStack || mode == relayModeVinted {
 		value = strings.ToLower(strings.TrimSpace(value))
 		if value == "" || value == relayDomainStrategyPreferIPv6 {
 			return relayDomainStrategyPreferIPv6, nil
 		}
-		return "", common.NewError("paired and dualstack relay modes require prefer_ipv6 domain strategy")
+		return "", common.NewError("paired, dualstack, and vinted relay modes require prefer_ipv6 domain strategy")
 	}
 	if mode != relayModeIPv6 {
 		return "", nil
@@ -1261,7 +1284,7 @@ func normalizeRelayDomainStrategy(mode, value string) (string, error) {
 
 func relayDirectOutboundOptions(req RelayCreateRequest, item model.RelayItem) map[string]interface{} {
 	strategy := req.DomainStrategy
-	if req.Mode == relayModeDualStack {
+	if req.Mode == relayModeDualStack || req.Mode == relayModeVinted {
 		strategy = relayDomainStrategyIPv6Only
 	}
 	if strategy == "" {
@@ -1725,7 +1748,7 @@ func updateRelayRotatedOutbounds(tx *gorm.DB, mode string, items []model.RelayIt
 }
 
 func relayItemIPv6OutboundTag(mode string, item model.RelayItem) string {
-	if mode == relayModeDualStack {
+	if mode == relayModeDualStack || mode == relayModeVinted {
 		return item.IPv6OutboundTag
 	}
 	return item.OutboundTag
@@ -2672,45 +2695,7 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 		filtered = append(filtered, raw)
 	}
 	if !remove {
-		newRules := make([]interface{}, 0, len(items)*3)
-		for _, item := range items {
-			if _, ok := targets[item.InboundTag]; !ok {
-				continue
-			}
-			if item.IPv6OutboundTag != "" && item.IPv4OutboundTag != "" {
-				newRules = append(newRules,
-					map[string]interface{}{
-						"inbound": []string{item.InboundTag}, "action": "resolve", "strategy": relayDomainStrategyPreferIPv6, "server": relayPairedDNSResolverTag,
-					},
-					map[string]interface{}{
-						"inbound": []string{item.InboundTag}, "action": "route", "outbound": item.OutboundTag,
-					},
-				)
-				continue
-			}
-			if item.IPv4OutboundTag != "" {
-				newRules = append(newRules,
-					map[string]interface{}{
-						"inbound": []string{item.InboundTag}, "action": "resolve", "strategy": relayDomainStrategyPreferIPv6, "server": relayPairedDNSResolverTag,
-					},
-					map[string]interface{}{
-						"inbound": []string{item.InboundTag}, "ip_cidr": []string{"::/0"}, "action": "route", "outbound": item.OutboundTag,
-					},
-					map[string]interface{}{
-						"inbound": []string{item.InboundTag}, "ip_cidr": []string{"0.0.0.0/0"}, "action": "route", "outbound": item.IPv4OutboundTag,
-					},
-				)
-				continue
-			}
-			if ipv6Only {
-				newRules = append(newRules, map[string]interface{}{
-					"inbound": []string{item.InboundTag}, "ip_version": 4, "action": "reject",
-				})
-			}
-			newRules = append(newRules, map[string]interface{}{
-				"inbound": []string{item.InboundTag}, "action": "route", "outbound": item.OutboundTag,
-			})
-		}
+		newRules := buildRelayRouteRules(items, targets, ipv6Only)
 		rules = append(newRules, filtered...)
 	} else {
 		rules = filtered
@@ -2724,6 +2709,65 @@ func updateRelayRouteRules(tx *gorm.DB, items []model.RelayItem, ipv6Only, remov
 		return err
 	}
 	return tx.Model(&model.Setting{}).Where("key = ?", "config").Update("value", string(updated)).Error
+}
+
+func buildRelayRouteRules(items []model.RelayItem, targets map[string]string, ipv6Only bool) []interface{} {
+	newRules := make([]interface{}, 0, len(items)*5)
+	for _, item := range items {
+		if _, ok := targets[item.InboundTag]; !ok {
+			continue
+		}
+		if item.IPv6OutboundTag != "" && item.IPv4OutboundTag != "" {
+			if item.VintedSplit {
+				newRules = append(newRules,
+					map[string]interface{}{
+						"inbound": []string{item.InboundTag}, "domain": relayVintedIPv4Domains,
+						"action": "route", "outbound": item.IPv4OutboundTag,
+					},
+					map[string]interface{}{
+						"inbound": []string{item.InboundTag}, "domain": relayVintedIPv6Domains,
+						"action": "route", "outbound": item.IPv6OutboundTag,
+					},
+					map[string]interface{}{
+						"inbound": []string{item.InboundTag}, "domain_suffix": relayVintedIPv6DomainSuffixes,
+						"action": "route", "outbound": item.IPv6OutboundTag,
+					},
+				)
+			}
+			newRules = append(newRules,
+				map[string]interface{}{
+					"inbound": []string{item.InboundTag}, "action": "resolve", "strategy": relayDomainStrategyPreferIPv6, "server": relayPairedDNSResolverTag,
+				},
+				map[string]interface{}{
+					"inbound": []string{item.InboundTag}, "action": "route", "outbound": item.OutboundTag,
+				},
+			)
+			continue
+		}
+		if item.IPv4OutboundTag != "" {
+			newRules = append(newRules,
+				map[string]interface{}{
+					"inbound": []string{item.InboundTag}, "action": "resolve", "strategy": relayDomainStrategyPreferIPv6, "server": relayPairedDNSResolverTag,
+				},
+				map[string]interface{}{
+					"inbound": []string{item.InboundTag}, "ip_cidr": []string{"::/0"}, "action": "route", "outbound": item.OutboundTag,
+				},
+				map[string]interface{}{
+					"inbound": []string{item.InboundTag}, "ip_cidr": []string{"0.0.0.0/0"}, "action": "route", "outbound": item.IPv4OutboundTag,
+				},
+			)
+			continue
+		}
+		if ipv6Only {
+			newRules = append(newRules, map[string]interface{}{
+				"inbound": []string{item.InboundTag}, "ip_version": 4, "action": "reject",
+			})
+		}
+		newRules = append(newRules, map[string]interface{}{
+			"inbound": []string{item.InboundTag}, "action": "route", "outbound": item.OutboundTag,
+		})
+	}
+	return newRules
 }
 
 func relayPairedDNSResolverRequired(rules []interface{}) bool {

@@ -620,6 +620,9 @@ func TestNormalizeRelayDomainStrategy(t *testing.T) {
 		{name: "dualstack default", mode: relayModeDualStack, want: relayDomainStrategyPreferIPv6, valid: true},
 		{name: "dualstack prefer IPv6", mode: relayModeDualStack, value: relayDomainStrategyPreferIPv6, want: relayDomainStrategyPreferIPv6, valid: true},
 		{name: "dualstack rejects IPv6 only", mode: relayModeDualStack, value: relayDomainStrategyIPv6Only},
+		{name: "vinted default", mode: relayModeVinted, want: relayDomainStrategyPreferIPv6, valid: true},
+		{name: "vinted prefer IPv6", mode: relayModeVinted, value: relayDomainStrategyPreferIPv6, want: relayDomainStrategyPreferIPv6, valid: true},
+		{name: "vinted rejects IPv6 only", mode: relayModeVinted, value: relayDomainStrategyIPv6Only},
 		{name: "invalid", mode: relayModeIPv6, value: "prefer_ipv4"},
 	}
 	for _, test := range tests {
@@ -651,6 +654,14 @@ func TestRelayDualStackDirectOutboundStaysIPv6Only(t *testing.T) {
 	options := relayDirectOutboundOptions(RelayCreateRequest{Mode: relayModeDualStack, DomainStrategy: relayDomainStrategyPreferIPv6}, item)
 	if options["inet6_bind_address"] != item.IPv6 || options["domain_strategy"] != relayDomainStrategyIPv6Only {
 		t.Fatalf("unexpected dual-stack IPv6 child options: %#v", options)
+	}
+}
+
+func TestRelayVintedDirectOutboundStaysIPv6Only(t *testing.T) {
+	item := model.RelayItem{IPv6: "2001:db8::10"}
+	options := relayDirectOutboundOptions(RelayCreateRequest{Mode: relayModeVinted, DomainStrategy: relayDomainStrategyPreferIPv6}, item)
+	if options["inet6_bind_address"] != item.IPv6 || options["domain_strategy"] != relayDomainStrategyIPv6Only {
+		t.Fatalf("unexpected Vinted IPv6 child options: %#v", options)
 	}
 }
 
@@ -1120,6 +1131,53 @@ func TestUpdateRelayRouteRulesCreatesDualStackFallbackRoute(t *testing.T) {
 	if len(rules) != 2 {
 		t.Fatalf("dual-stack rule count after removal = %d, want 2", len(rules))
 	}
+}
+
+func TestUpdateRelayRouteRulesCreatesVintedSplitRoutes(t *testing.T) {
+	item := model.RelayItem{
+		InboundTag: "relay-vinted-in", OutboundTag: "relay-vinted-fallback",
+		IPv6OutboundTag: "relay-vinted-ipv6", IPv4OutboundTag: "relay-vinted-ipv4", VintedSplit: true,
+	}
+	targets := map[string]string{item.InboundTag: item.OutboundTag}
+	rules := buildRelayRouteRules([]model.RelayItem{item}, targets, false)
+	if len(rules) != 5 {
+		t.Fatalf("Vinted split rule count = %d, want 5", len(rules))
+	}
+	ipv4Rule := rules[0].(map[string]interface{})
+	ipv6Rule := rules[1].(map[string]interface{})
+	suffixRule := rules[2].(map[string]interface{})
+	resolveRule := rules[3].(map[string]interface{})
+	fallbackRule := rules[4].(map[string]interface{})
+	if ipv4Rule["outbound"] != item.IPv4OutboundTag || !relayTestRuleContains(ipv4Rule, "domain", "dd.vinted.lt") || !relayTestRuleContains(ipv4Rule, "domain", "metrics-ingress-web.svc.vinted.com") {
+		t.Fatalf("Vinted IPv4 exceptions rule = %#v", ipv4Rule)
+	}
+	if ipv6Rule["outbound"] != item.IPv6OutboundTag || !relayTestRuleContains(ipv6Rule, "domain", "api.www.vinted.com") || !relayTestRuleContains(ipv6Rule, "domain", "d34r8q7sht0t9k.cloudfront.net") {
+		t.Fatalf("Vinted IPv6 exact rule = %#v", ipv6Rule)
+	}
+	if suffixRule["outbound"] != item.IPv6OutboundTag || !relayTestRuleContains(suffixRule, "domain_suffix", "vinted.com") || !relayTestRuleContains(suffixRule, "domain_suffix", "vinted.net") {
+		t.Fatalf("Vinted IPv6 suffix rule = %#v", suffixRule)
+	}
+	if resolveRule["action"] != "resolve" || fallbackRule["outbound"] != item.OutboundTag {
+		t.Fatalf("Vinted fallback rules = %#v / %#v", resolveRule, fallbackRule)
+	}
+}
+
+func relayTestRuleContains(rule map[string]interface{}, field, value string) bool {
+	switch values := rule[field].(type) {
+	case []string:
+		for _, candidate := range values {
+			if candidate == value {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, candidate := range values {
+			if fmt.Sprint(candidate) == value {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestUpdateRelayPairedDNSResolver(t *testing.T) {
