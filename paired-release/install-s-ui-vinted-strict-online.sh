@@ -16,8 +16,8 @@ case "$(uname -m)" in
     ;;
 esac
 
-release_branch="${S_UI_VINTED_STRICT_BRANCH:-vinted-strict-session-experimental}"
-base_url="${S_UI_VINTED_STRICT_BASE_URL:-https://raw.githubusercontent.com/925345845/s-ui/${release_branch}/paired-release}"
+release_ref="${S_UI_VINTED_STRICT_REF:-installer-vinted-strict-test-1}"
+base_url="${S_UI_VINTED_STRICT_BASE_URL:-https://raw.githubusercontent.com/925345845/s-ui/${release_ref}/paired-release}"
 release_version="${S_UI_VINTED_STRICT_VERSION:-v1.5.28-socks5-500-vinted-strict-test-1}"
 archive_base_url="${S_UI_VINTED_STRICT_ARCHIVE_BASE_URL:-https://github.com/925345845/s-ui/releases/download/${release_version}}"
 tmp_dir="$(mktemp -d /tmp/s-ui-vinted-strict-online.XXXXXX)"
