@@ -258,6 +258,8 @@ func updateRelayCreateProgress(status, address string) {
 		relayProgress.Succeeded++
 		relayProgress.SuccessfulIP = append(relayProgress.SuccessfulIP, address)
 		relayProgress.TestingIP = removeRelayProgressAddress(relayProgress.TestingIP, address)
+	case "discarded":
+		relayProgress.TestingIP = removeRelayProgressAddress(relayProgress.TestingIP, address)
 	}
 	if len(relayProgress.TestingIP) > 0 {
 		relayProgress.Current = relayProgress.TestingIP[len(relayProgress.TestingIP)-1]
@@ -2048,6 +2050,7 @@ type relayIPv6CandidateOperations struct {
 	probe    relayIPv6EgressProbe
 	random   func(netip.Addr, int) (netip.Addr, error)
 	progress func(string, string)
+	workers  int
 }
 
 func defaultRelayIPv6CandidateOperations() relayIPv6CandidateOperations {
@@ -2058,6 +2061,7 @@ func defaultRelayIPv6CandidateOperations() relayIPv6CandidateOperations {
 		probe:    probeRelayIPv6Egress,
 		random:   randomRelayIPv6,
 		progress: updateRelayCreateProgress,
+		workers:  relayIPv6ProbeWorkers,
 	}
 }
 
@@ -2071,6 +2075,10 @@ func (s *ConfigService) ensureRelayIPv6(ctx context.Context, items []model.Relay
 func ensureRelayIPv6Candidates(ctx context.Context, items []model.RelayItem, addSystemAddresses bool, existing map[string]bool, added *[]model.RelayItem, operations relayIPv6CandidateOperations) ([]model.RelayItem, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	workers := operations.workers
+	if workers <= 0 || workers > relayIPv6ProbeWorkers {
+		workers = relayIPv6ProbeWorkers
 	}
 	occupied := make(map[string]bool, len(existing)+len(items))
 	for address := range existing {
@@ -2092,6 +2100,7 @@ func ensureRelayIPv6Candidates(ctx context.Context, items []model.RelayItem, add
 
 	type candidateTest struct {
 		index   int
+		item    model.RelayItem
 		address netip.Addr
 		text    string
 		added   bool
@@ -2105,12 +2114,16 @@ func ensureRelayIPv6Candidates(ctx context.Context, items []model.RelayItem, add
 		if ctx.Err() != nil {
 			return nil, common.NewError("relay creation canceled")
 		}
-		batch := make([]candidateTest, 0, min(relayIPv6ProbeWorkers, len(pending)))
-		chosen := make(map[string]bool, relayIPv6ProbeWorkers)
-		for index := 0; index < len(items) && len(batch) < relayIPv6ProbeWorkers; index++ {
-			if !pending[index] {
-				continue
+		batch := make([]candidateTest, 0, workers)
+		chosen := make(map[string]bool, workers)
+		pendingIndexes := make([]int, 0, len(pending))
+		for index := range items {
+			if pending[index] {
+				pendingIndexes = append(pendingIndexes, index)
 			}
+		}
+		for len(batch) < workers {
+			index := pendingIndexes[len(batch)%len(pendingIndexes)]
 			var candidate netip.Addr
 			for {
 				if ctx.Err() != nil {
@@ -2162,9 +2175,9 @@ func ensureRelayIPv6Candidates(ctx context.Context, items []model.RelayItem, add
 					continue
 				}
 				candidateItem.AddedByUs = true
+				*added = append(*added, candidateItem)
 			}
-			items[index] = candidateItem
-			batch = append(batch, candidateTest{index: index, address: candidate, text: candidateText, added: candidateItem.AddedByUs})
+			batch = append(batch, candidateTest{index: index, item: candidateItem, address: candidate, text: candidateText, added: candidateItem.AddedByUs})
 			if operations.progress != nil {
 				operations.progress("testing", candidateText)
 			}
@@ -2173,9 +2186,8 @@ func ensureRelayIPv6Candidates(ctx context.Context, items []model.RelayItem, add
 		results := make(chan candidateResult, len(batch))
 		for _, candidate := range batch {
 			go func(candidate candidateTest) {
-				item := items[candidate.index]
 				ready := make(chan error, 1)
-				go func() { ready <- operations.ready([]model.RelayItem{item}) }()
+				go func() { ready <- operations.ready([]model.RelayItem{candidate.item}) }()
 				var err error
 				select {
 				case err = <-ready:
@@ -2192,30 +2204,67 @@ func ensureRelayIPv6Candidates(ctx context.Context, items []model.RelayItem, add
 		for range batch {
 			result := <-results
 			candidate := result.candidate
-			item := items[candidate.index]
-			if result.err != nil {
-				if candidate.added {
-					if deleteErr := operations.remove(item.Interface, candidate.text, item.Prefix); deleteErr != nil {
-						logger.Warningf("remove failed relay IPv6 %s: %v", candidate.text, deleteErr)
-						*added = append(*added, item)
+			item := candidate.item
+			removeTemporary := func() error {
+				if !candidate.added {
+					return nil
+				}
+				if err := operations.remove(item.Interface, candidate.text, item.Prefix); err != nil {
+					return err
+				}
+				for addedIndex, addedItem := range *added {
+					if addedItem.Interface == item.Interface && addedItem.IPv6 == candidate.text {
+						*added = append((*added)[:addedIndex], (*added)[addedIndex+1:]...)
+						break
 					}
 				}
-				items[candidate.index].AddedByUs = false
+				return nil
+			}
+			if ctx.Err() != nil || result.err != nil || !pending[candidate.index] {
+				if removeErr := removeTemporary(); removeErr != nil {
+					logger.Warningf("remove unselected relay IPv6 %s: %v", candidate.text, removeErr)
+					if operations.progress != nil {
+						operations.progress("failed", candidate.text)
+					}
+					return nil, fmt.Errorf("remove unselected relay IPv6 %s: %w", candidate.text, removeErr)
+				}
+				if operations.progress != nil {
+					if result.err != nil && ctx.Err() == nil && pending[candidate.index] {
+						operations.progress("failed", candidate.text)
+					} else {
+						operations.progress("discarded", candidate.text)
+					}
+				}
+				if result.err != nil && ctx.Err() == nil && pending[candidate.index] {
+					rejected[candidate.index][candidate.text] = true
+				}
+				continue
+			}
+
+			if result.err == nil {
+				items[candidate.index] = item
+				occupied[candidate.text] = true
+				delete(pending, candidate.index)
+				if operations.progress != nil {
+					operations.progress("succeeded", candidate.text)
+				}
+				if candidate.added {
+					existing[candidate.text] = true
+				}
+			} else {
+				if candidate.added {
+					if deleteErr := removeTemporary(); deleteErr != nil {
+						logger.Warningf("remove failed relay IPv6 %s: %v", candidate.text, deleteErr)
+						if operations.progress != nil {
+							operations.progress("failed", candidate.text)
+						}
+						return nil, fmt.Errorf("remove failed relay IPv6 %s: %w", candidate.text, deleteErr)
+					}
+				}
 				if operations.progress != nil {
 					operations.progress("failed", candidate.text)
 				}
 				rejected[candidate.index][candidate.text] = true
-				continue
-			}
-
-			occupied[candidate.text] = true
-			delete(pending, candidate.index)
-			if operations.progress != nil {
-				operations.progress("succeeded", candidate.text)
-			}
-			if candidate.added {
-				*added = append(*added, item)
-				existing[candidate.text] = true
 			}
 		}
 		if ctx.Err() != nil {

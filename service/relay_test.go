@@ -242,6 +242,7 @@ func TestEnsureRelayIPv6CandidatesKeepsSuccessesAndReplacesFailures(t *testing.T
 				firstSuccessSnapshot = relayCreateProgressSnapshot()
 			}
 		},
+		workers: 1,
 	}
 	existing := make(map[string]bool)
 	added := make([]model.RelayItem, 0)
@@ -334,6 +335,89 @@ func TestEnsureRelayIPv6CandidatesTestsBatchConcurrently(t *testing.T) {
 	}
 }
 
+func TestEnsureRelayIPv6CandidatesBatchTestsOneSlotAcrossEightAddresses(t *testing.T) {
+	beginRelayCreateProgress(relayModeIPv6, []model.RelayItem{{IPv6: "2001:db8::10", Prefix: 64}})
+	defer finishRelayCreateProgress()
+	release := make(chan struct{})
+	started := make(chan string, relayIPv6ProbeWorkers)
+	accepted := make(chan string, 1)
+	removed := make(map[string]bool)
+	randomValue := 0x100
+	operations := relayIPv6CandidateOperations{
+		add: func(_, _ string, _ int) error { return nil },
+		remove: func(_, address string, _ int) error {
+			removed[address] = true
+			return nil
+		},
+		ready: func([]model.RelayItem) error { return nil },
+		probe: func(_ context.Context, address netip.Addr) error {
+			started <- address.String()
+			if address.String() == "2001:db8::10" {
+				return nil
+			}
+			<-release
+			return errors.New("candidate rejected")
+		},
+		random: func(netip.Addr, int) (netip.Addr, error) {
+			randomValue++
+			return netip.MustParseAddr(fmt.Sprintf("2001:db8::%x", randomValue)), nil
+		},
+		progress: func(status, address string) {
+			updateRelayCreateProgress(status, address)
+			if status == "succeeded" {
+				accepted <- address
+			}
+		},
+	}
+	items := []model.RelayItem{{IPv6: "2001:db8::10", Interface: "eth0", Prefix: 64}}
+	existing := make(map[string]bool)
+	added := make([]model.RelayItem, 0)
+	done := make(chan error, 1)
+	go func() {
+		_, err := ensureRelayIPv6Candidates(context.Background(), items, true, existing, &added, operations)
+		done <- err
+	}()
+	tested := make(map[string]bool)
+	for range relayIPv6ProbeWorkers {
+		select {
+		case address := <-started:
+			tested[address] = true
+		case <-time.After(2 * time.Second):
+			close(release)
+			t.Fatal("one pending slot did not start eight concurrent IPv6 candidates")
+		}
+	}
+	select {
+	case address := <-accepted:
+		if address != "2001:db8::10" {
+			t.Fatalf("accepted address = %s, want initial successful candidate", address)
+		}
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("first successful IPv6 was not accepted while the other candidates were running")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if len(tested) != relayIPv6ProbeWorkers {
+		t.Fatalf("distinct candidates tested = %d, want %d (%v)", len(tested), relayIPv6ProbeWorkers, tested)
+	}
+	if len(added) != 1 || added[0].IPv6 != "2001:db8::10" {
+		t.Fatalf("retained temporary addresses = %#v, want only the successful address", added)
+	}
+	if len(existing) != 1 || !existing["2001:db8::10"] {
+		t.Fatalf("accepted addresses = %#v", existing)
+	}
+	if len(removed) != relayIPv6ProbeWorkers-1 {
+		t.Fatalf("discarded candidate addresses removed = %d, want %d (%v)", len(removed), relayIPv6ProbeWorkers-1, removed)
+	}
+	progress := relayCreateProgressSnapshot()
+	if progress == nil || progress.Succeeded != 1 || len(progress.SuccessfulIP) != 1 || len(progress.TestingIP) != 0 {
+		t.Fatalf("batch progress does not show one retained success and completed cleanup: %#v", progress)
+	}
+}
+
 func TestCancelRelayCreateProgressCancelsActiveContext(t *testing.T) {
 	ctx := beginRelayCreateProgress(relayModeIPv6, []model.RelayItem{{IPv6: "2001:db8::10", Prefix: 64}})
 	if !cancelRelayCreateProgress() {
@@ -370,7 +454,8 @@ func TestEnsureRelayIPv6CandidatesCancelRemovesTemporaryAddress(t *testing.T) {
 			<-ctx.Done()
 			return ctx.Err()
 		},
-		random: randomRelayIPv6,
+		random:  randomRelayIPv6,
+		workers: 1,
 	}
 	items := []model.RelayItem{{IPv6: "2001:db8::10", Interface: "eth0", Prefix: 64}}
 	added := make([]model.RelayItem, 0)
@@ -417,8 +502,9 @@ func TestEnsureRelayIPv6CandidatesCancelInterruptsAddressReadiness(t *testing.T)
 			removed <- address
 			return nil
 		},
-		probe:  func(context.Context, netip.Addr) error { return nil },
-		random: randomRelayIPv6,
+		probe:   func(context.Context, netip.Addr) error { return nil },
+		random:  randomRelayIPv6,
+		workers: 1,
 	}
 	items := []model.RelayItem{{IPv6: "2001:db8::10", Interface: "eth0", Prefix: 64}}
 	added := make([]model.RelayItem, 0)
@@ -489,6 +575,7 @@ func TestEnsureRelayIPv6CandidatesContinuesPastOldAttemptLimit(t *testing.T) {
 			randomCalls++
 			return netip.MustParseAddr(fmt.Sprintf("2001:db8::%x", 0x100+randomCalls)), nil
 		},
+		workers: 1,
 	}
 	existing := make(map[string]bool)
 	added := make([]model.RelayItem, 0)
