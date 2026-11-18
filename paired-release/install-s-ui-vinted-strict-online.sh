@@ -4,11 +4,11 @@ set -euo pipefail
 case "$(uname -m)" in
   x86_64|amd64)
     package_arch="amd64"
-    archive_sha256="0745a8394739452ee3ea5b81035b96f3fc7197fd98eca0bf93cd7ea9c514f363"
+    archive_sha256="8baacd85e9ce809cfa90c8e0bb1b4ff28691e65d69e501f6d66f49d4cf67260b"
     ;;
   aarch64|arm64)
     package_arch="arm64"
-    archive_sha256="f33b9f074a39e26f55c96c8144245a8c70821542a87d5e9a3f4d85219d06cb06"
+    archive_sha256="9ef7f4965a427e20a5c25810b4edc9f52d3dfc7dd104d955e2c42402515ddc91"
     ;;
   *)
     echo "不支持当前架构：$(uname -m)" >&2
@@ -16,9 +16,9 @@ case "$(uname -m)" in
     ;;
 esac
 
-release_ref="${S_UI_VINTED_STRICT_REF:-installer-vinted-strict-test-3}"
+release_ref="${S_UI_VINTED_STRICT_REF:-installer-vinted-strict-test-4}"
 base_url="${S_UI_VINTED_STRICT_BASE_URL:-https://raw.githubusercontent.com/925345845/s-ui/${release_ref}/paired-release}"
-release_version="${S_UI_VINTED_STRICT_VERSION:-v1.5.28-socks5-500-vinted-strict-test-3}"
+release_version="${S_UI_VINTED_STRICT_VERSION:-v1.5.28-socks5-500-vinted-strict-test-4}"
 archive_base_url="${S_UI_VINTED_STRICT_ARCHIVE_BASE_URL:-https://github.com/925345845/s-ui/releases/download/${release_version}}"
 tmp_dir="$(mktemp -d /tmp/s-ui-vinted-strict-online.XXXXXX)"
 cleanup() {
