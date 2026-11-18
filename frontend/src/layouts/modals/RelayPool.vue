@@ -18,7 +18,7 @@
           <v-tab value="pools">{{ $t('relay.pools') }}</v-tab>
         </v-tabs>
 
-        <section v-if="loading && relayProgress && relayProgress.target > 0" class="relay-create-progress mb-4">
+        <section v-if="(loading || relayTaskActive) && relayProgress && relayProgress.target > 0" class="relay-create-progress mb-4">
           <div class="d-flex align-center ga-2 mb-2">
             <v-icon icon="mdi-progress-check" color="primary" />
             <span class="text-subtitle-2 font-weight-medium">{{ $t('relay.progressTitle') }}</span>
@@ -57,7 +57,7 @@
               </div>
               <v-row class="relay-quick-fields mt-2">
                 <v-col cols="12" sm="6" md="2">
-                  <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable :disabled="relayTaskActive" hide-details />
+                  <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
                 </v-col>
                 <v-col cols="6" sm="3" md="1">
                   <v-text-field v-model.number="form.count" type="number" min="1" max="500" :label="$t('relay.count')" :error-messages="relayCountValid ? [] : [$t('relay.countRange')]" hide-details="auto" />
@@ -110,10 +110,10 @@
                 <v-text-field v-model.number="form.password_length" type="number" min="8" max="64" :label="$t('relay.passwordLength')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                  <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8::1/64" dir="ltr" :disabled="relayTaskActive" hide-details />
+                  <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8::1/64" dir="ltr" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                  <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" :disabled="relayTaskActive" hide-details />
+                  <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
                 <v-select v-model="form.domain_strategy" :items="domainStrategyItems" item-title="title" item-value="value" :label="$t('relay.addressMode')" hide-details />
@@ -206,13 +206,13 @@
                 <v-text-field v-model.number="form.port_start" type="number" min="1" max="65535" :label="$t('relay.portStart')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable :disabled="relayTaskActive" hide-details />
+                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" :disabled="relayTaskActive" hide-details />
+                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" :disabled="relayTaskActive" hide-details />
+                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
                 <v-text-field v-model="form.username_prefix" :label="$t('relay.usernamePrefix')" dir="ltr" hide-details />
@@ -253,13 +253,13 @@
                 <v-text-field v-model.number="form.port_start" type="number" min="1" max="65535" :label="$t('relay.portStart')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable :disabled="relayTaskActive" hide-details />
+                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" :disabled="relayTaskActive" hide-details />
+                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" :disabled="relayTaskActive" hide-details />
+                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
                 <v-text-field v-model="form.username_prefix" :label="$t('relay.usernamePrefix')" dir="ltr" hide-details />
@@ -300,13 +300,13 @@
                 <v-text-field v-model.number="form.port_start" type="number" min="1" max="65535" :label="$t('relay.portStart')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable :disabled="relayTaskActive" hide-details />
+                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" :disabled="relayTaskActive" hide-details />
+                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" :disabled="relayTaskActive" hide-details />
+                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
                 <v-text-field v-model="form.username_prefix" :label="$t('relay.usernamePrefix')" dir="ltr" hide-details />
@@ -344,13 +344,13 @@
                 <v-text-field v-model.number="form.port_start" type="number" min="1" max="65535" :label="$t('relay.portStart')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable :disabled="relayTaskActive" hide-details />
+                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" :disabled="relayTaskActive" hide-details />
+                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" :disabled="relayTaskActive" hide-details />
+                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
                 <v-text-field v-model="form.username_prefix" :label="$t('relay.usernamePrefix')" dir="ltr" hide-details />
@@ -460,7 +460,7 @@
 </template>
 
 <script lang="ts" setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { push } from 'notivue'
 import HttpUtils from '@/plugins/httputil'
 import Data from '@/store/modules/data'
@@ -637,6 +637,21 @@ const loadData = async (silent = false) => {
   }
 }
 
+let progressTimer: ReturnType<typeof setInterval> | undefined
+let progressPollPending = false
+const stopProgressPolling = () => {
+  if (progressTimer) clearInterval(progressTimer)
+  progressTimer = undefined
+}
+const startProgressPolling = () => {
+  if (progressTimer) return
+  progressTimer = setInterval(() => {
+    if (progressPollPending || !props.visible) return
+    progressPollPending = true
+    void loadData(true).finally(() => { progressPollPending = false })
+  }, 1000)
+}
+
 const parseItems = (items: any): RelayItem[] => {
   if (Array.isArray(items)) return items
   try { return JSON.parse(items || '[]') } catch { return [] }
@@ -664,15 +679,7 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack' | 'vint
   }
   loading.value = true
   relayProgress.value = null
-  let progressTimer: ReturnType<typeof setInterval> | undefined
-  let progressPollPending = false
-  if (mode !== 'upstream') {
-    progressTimer = setInterval(() => {
-      if (progressPollPending) return
-      progressPollPending = true
-      void loadData(true).finally(() => { progressPollPending = false })
-    }, 1000)
-  }
+  if (mode !== 'upstream') startProgressPolling()
   try {
     const payload: any = { ...form, mode }
     payload.source = quick ? 'help660vip/auto-add-ipv6' : ''
@@ -732,8 +739,8 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack' | 'vint
   } catch (error: any) {
     push.error({ message: error?.message || i18n.global.t('relay.createFailed') })
   } finally {
-    if (progressTimer) clearInterval(progressTimer)
     loading.value = false
+    if (!relayTaskActive.value) stopProgressPolling()
   }
 }
 
@@ -829,13 +836,23 @@ const remove = async (id: number) => {
 
 const close = () => emit('close')
 watch(() => props.visible, (visible) => {
-  if (!visible) return
+  if (!visible) {
+    stopProgressPolling()
+    return
+  }
   if (isRemote.value && props.connectionHost) form.public_host = props.connectionHost
-  loadData()
+  void loadData().then(() => {
+    if (relayTaskActive.value) startProgressPolling()
+  })
+})
+watch(relayTaskActive, (active) => {
+  if (props.visible && active) startProgressPolling()
+  else if (!active && !loading.value) stopProgressPolling()
 })
 watch(() => props.connectionHost, (host) => {
   if (isRemote.value && host) form.public_host = host
 })
+onBeforeUnmount(stopProgressPolling)
 </script>
 
 <style scoped>
