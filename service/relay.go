@@ -136,6 +136,7 @@ var relayShadowsocksMethods = map[string]bool{
 var relayMu sync.Mutex
 var relayProgressMu sync.RWMutex
 var relayProgress *RelayCreateProgress
+var relayProgressCancel context.CancelFunc
 
 type RelayIPv6 struct {
 	Interface string `json:"interface"`
@@ -185,23 +186,25 @@ type RelayData struct {
 }
 
 type RelayCreateProgress struct {
-	Active       bool     `json:"active"`
-	Mode         string   `json:"mode"`
-	Target       int      `json:"target"`
-	BaseIPv6     string   `json:"base_ipv6,omitempty"`
-	Prefix       int      `json:"prefix,omitempty"`
-	Tested       int      `json:"tested"`
-	Failed       int      `json:"failed"`
-	Succeeded    int      `json:"succeeded"`
-	Current      string   `json:"current,omitempty"`
-	TestingIP    []string `json:"testing_ip"`
-	SuccessfulIP []string `json:"successful_ip"`
-	StartedAt    int64    `json:"started_at"`
-	UpdatedAt    int64    `json:"updated_at"`
+	Active          bool     `json:"active"`
+	CancelRequested bool     `json:"cancel_requested,omitempty"`
+	Mode            string   `json:"mode"`
+	Target          int      `json:"target"`
+	BaseIPv6        string   `json:"base_ipv6,omitempty"`
+	Prefix          int      `json:"prefix,omitempty"`
+	Tested          int      `json:"tested"`
+	Failed          int      `json:"failed"`
+	Succeeded       int      `json:"succeeded"`
+	Current         string   `json:"current,omitempty"`
+	TestingIP       []string `json:"testing_ip"`
+	SuccessfulIP    []string `json:"successful_ip"`
+	StartedAt       int64    `json:"started_at"`
+	UpdatedAt       int64    `json:"updated_at"`
 }
 
-func beginRelayCreateProgress(mode string, items []model.RelayItem) {
+func beginRelayCreateProgress(mode string, items []model.RelayItem) context.Context {
 	now := time.Now().UnixMilli()
+	ctx, cancel := context.WithCancel(context.Background())
 	progress := &RelayCreateProgress{
 		Active: true, Mode: mode, Target: len(items), TestingIP: make([]string, 0, relayIPv6ProbeWorkers),
 		SuccessfulIP: make([]string, 0, len(items)), StartedAt: now, UpdatedAt: now,
@@ -213,8 +216,29 @@ func beginRelayCreateProgress(mode string, items []model.RelayItem) {
 		}
 	}
 	relayProgressMu.Lock()
+	if relayProgressCancel != nil {
+		relayProgressCancel()
+	}
 	relayProgress = progress
+	relayProgressCancel = cancel
 	relayProgressMu.Unlock()
+	return ctx
+}
+
+func cancelRelayCreateProgress() bool {
+	relayProgressMu.Lock()
+	if relayProgress == nil || !relayProgress.Active || relayProgress.CancelRequested {
+		relayProgressMu.Unlock()
+		return false
+	}
+	relayProgress.CancelRequested = true
+	relayProgress.UpdatedAt = time.Now().UnixMilli()
+	cancel := relayProgressCancel
+	relayProgressMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return true
 }
 
 func updateRelayCreateProgress(status, address string) {
@@ -254,6 +278,8 @@ func removeRelayProgressAddress(addresses []string, address string) []string {
 
 func finishRelayCreateProgress() {
 	relayProgressMu.Lock()
+	cancel := relayProgressCancel
+	relayProgressCancel = nil
 	if relayProgress != nil {
 		relayProgress.Active = false
 		relayProgress.Current = ""
@@ -261,6 +287,20 @@ func finishRelayCreateProgress() {
 		relayProgress.UpdatedAt = time.Now().UnixMilli()
 	}
 	relayProgressMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (s *ConfigService) CancelRelayCreate() bool {
+	return cancelRelayCreateProgress()
+}
+
+func relayCreateCancellationError(ctx context.Context) error {
+	if ctx != nil && ctx.Err() != nil {
+		return common.NewError("relay creation canceled")
+	}
+	return nil
 }
 
 func relayCreateProgressSnapshot() *RelayCreateProgress {
@@ -1022,8 +1062,9 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	if err != nil {
 		return nil, err
 	}
+	createContext := context.Background()
 	if relayModeUsesIPv6(req.Mode) {
-		beginRelayCreateProgress(req.Mode, items)
+		createContext = beginRelayCreateProgress(req.Mode, items)
 		defer finishRelayCreateProgress()
 	}
 	added := make([]model.RelayItem, 0)
@@ -1050,7 +1091,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	if relayModeUsesIPv6(req.Mode) && runtime.GOOS == "linux" {
 		// Accept addresses one at a time. A failed candidate is removed and
 		// replaced without rolling back addresses that already passed.
-		items, err = s.ensureRelayIPv6(items, req.AddSystemAddresses, existingAddresses, &added)
+		items, err = s.ensureRelayIPv6(createContext, items, req.AddSystemAddresses, existingAddresses, &added)
 		if err != nil {
 			return nil, err
 		}
@@ -1075,6 +1116,9 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		if err := waitRelayAddressesReady(items); err != nil {
 			return nil, err
 		}
+	}
+	if err := relayCreateCancellationError(createContext); err != nil {
+		return nil, err
 	}
 
 	db := database.GetDB()
@@ -1132,6 +1176,9 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		}
 	}
 	for i := range items {
+		if err := relayCreateCancellationError(createContext); err != nil {
+			return nil, err
+		}
 		listenAddress := "::"
 		if relayModeUsesIPv6(req.Mode) {
 			listenAddress = relayInboundListenAddress(req.Mode, publicHost)
@@ -1265,6 +1312,9 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 	}
 	pool.Items = mustJSON(items)
 	if err := tx.Model(&model.RelayPool{}).Where("id = ?", pool.Id).Update("items", pool.Items).Error; err != nil {
+		return nil, err
+	}
+	if err := relayCreateCancellationError(createContext); err != nil {
 		return nil, err
 	}
 
@@ -2014,11 +2064,14 @@ func defaultRelayIPv6CandidateOperations() relayIPv6CandidateOperations {
 // ensureRelayIPv6 fills every requested slot with an independently verified
 // address. Accepted addresses stay assigned while failed candidates are
 // removed and replaced, so one bad address cannot cancel a successful batch.
-func (s *ConfigService) ensureRelayIPv6(items []model.RelayItem, addSystemAddresses bool, existing map[string]bool, added *[]model.RelayItem) ([]model.RelayItem, error) {
-	return ensureRelayIPv6Candidates(items, addSystemAddresses, existing, added, defaultRelayIPv6CandidateOperations())
+func (s *ConfigService) ensureRelayIPv6(ctx context.Context, items []model.RelayItem, addSystemAddresses bool, existing map[string]bool, added *[]model.RelayItem) ([]model.RelayItem, error) {
+	return ensureRelayIPv6Candidates(ctx, items, addSystemAddresses, existing, added, defaultRelayIPv6CandidateOperations())
 }
 
-func ensureRelayIPv6Candidates(items []model.RelayItem, addSystemAddresses bool, existing map[string]bool, added *[]model.RelayItem, operations relayIPv6CandidateOperations) ([]model.RelayItem, error) {
+func ensureRelayIPv6Candidates(ctx context.Context, items []model.RelayItem, addSystemAddresses bool, existing map[string]bool, added *[]model.RelayItem, operations relayIPv6CandidateOperations) ([]model.RelayItem, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	occupied := make(map[string]bool, len(existing)+len(items))
 	for address := range existing {
 		occupied[address] = true
@@ -2049,6 +2102,9 @@ func ensureRelayIPv6Candidates(items []model.RelayItem, addSystemAddresses bool,
 	}
 
 	for len(pending) > 0 {
+		if ctx.Err() != nil {
+			return nil, common.NewError("relay creation canceled")
+		}
 		batch := make([]candidateTest, 0, min(relayIPv6ProbeWorkers, len(pending)))
 		chosen := make(map[string]bool, relayIPv6ProbeWorkers)
 		for index := 0; index < len(items) && len(batch) < relayIPv6ProbeWorkers; index++ {
@@ -2057,6 +2113,9 @@ func ensureRelayIPv6Candidates(items []model.RelayItem, addSystemAddresses bool,
 			}
 			var candidate netip.Addr
 			for {
+				if ctx.Err() != nil {
+					return nil, common.NewError("relay creation canceled")
+				}
 				candidate = initialAddresses[index]
 				if attempts[index] > 0 {
 					var randomErr error
@@ -2115,9 +2174,16 @@ func ensureRelayIPv6Candidates(items []model.RelayItem, addSystemAddresses bool,
 		for _, candidate := range batch {
 			go func(candidate candidateTest) {
 				item := items[candidate.index]
-				err := operations.ready([]model.RelayItem{item})
+				ready := make(chan error, 1)
+				go func() { ready <- operations.ready([]model.RelayItem{item}) }()
+				var err error
+				select {
+				case err = <-ready:
+				case <-ctx.Done():
+					err = ctx.Err()
+				}
 				if err == nil {
-					err = operations.probe(context.Background(), candidate.address)
+					err = operations.probe(ctx, candidate.address)
 				}
 				results <- candidateResult{candidate: candidate, err: err}
 			}(candidate)
@@ -2151,6 +2217,9 @@ func ensureRelayIPv6Candidates(items []model.RelayItem, addSystemAddresses bool,
 				*added = append(*added, item)
 				existing[candidate.text] = true
 			}
+		}
+		if ctx.Err() != nil {
+			return nil, common.NewError("relay creation canceled")
 		}
 	}
 	return items, nil

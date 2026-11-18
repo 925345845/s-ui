@@ -19,11 +19,22 @@
         </v-tabs>
 
         <section v-if="(loading || relayTaskActive) && relayProgress && relayProgress.target > 0" class="relay-create-progress mb-4">
-          <div class="d-flex align-center ga-2 mb-2">
+          <div class="d-flex align-center flex-wrap ga-2 mb-2">
             <v-icon icon="mdi-progress-check" color="primary" />
             <span class="text-subtitle-2 font-weight-medium">{{ $t('relay.progressTitle') }}</span>
             <v-spacer />
             <span class="text-body-2">{{ relayProgress.succeeded }} / {{ relayProgress.target }}</span>
+            <v-btn
+              color="error"
+              variant="tonal"
+              size="small"
+              prepend-icon="mdi-stop-circle-outline"
+              :loading="canceling"
+              :disabled="canceling || relayProgress.cancel_requested"
+              @click="cancelRelayCreate"
+            >
+              {{ relayProgress.cancel_requested ? $t('relay.progressCanceling') : $t('relay.progressCancel') }}
+            </v-btn>
           </div>
           <v-progress-linear :model-value="progressPercent" color="primary" height="10" rounded />
           <div class="relay-progress-stats mt-2">
@@ -476,7 +487,7 @@ interface RelayPool {
 interface RelayCapabilities { os: string; can_add_system_ipv6: boolean; unavailable_reason?: string }
 interface RelayCreateProgress {
   active: boolean; mode: string; target: number; tested: number; failed: number; succeeded: number
-  base_ipv6?: string; prefix?: number; current?: string; testing_ip: string[]; successful_ip: string[]; started_at: number; updated_at: number
+  cancel_requested?: boolean; base_ipv6?: string; prefix?: number; current?: string; testing_ip: string[]; successful_ip: string[]; started_at: number; updated_at: number
 }
 
 const props = defineProps<{
@@ -492,6 +503,8 @@ const emit = defineEmits<{
 const tab = ref('ipv6')
 const advancedPanel = ref<string>()
 const loading = ref(false)
+const canceling = ref(false)
+const cancelRequestedByUser = ref(false)
 const refreshing = ref(false)
 const deleting = ref(0)
 const downloading = ref(0)
@@ -678,6 +691,7 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack' | 'vint
     return
   }
   loading.value = true
+  cancelRequestedByUser.value = false
   relayProgress.value = null
   if (mode !== 'upstream') startProgressPolling()
   try {
@@ -729,6 +743,7 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack' | 'vint
       if (isRemote.value) emit('changed')
       else await Data().loadData()
     } else {
+      if (cancelRequestedByUser.value && String(msg.msg || '').includes('relay creation canceled')) return
       const egressMatch = String(msg.msg || '').match(/relay_ipv6_egress_unreachable\|([^|]+)\|/)
       push.error({
         message: egressMatch
@@ -741,6 +756,32 @@ const create = async (mode: 'ipv6' | 'upstream' | 'paired' | 'dualstack' | 'vint
   } finally {
     loading.value = false
     if (!relayTaskActive.value) stopProgressPolling()
+  }
+}
+
+const cancelRelayCreate = async () => {
+  if (!relayTaskActive.value || canceling.value) return
+  canceling.value = true
+  try {
+    const endpoint = isRemote.value ? `api/agents/${props.agentId}/relay/cancel` : 'api/relay/cancel'
+    const response = await fetch(endpoint, {
+      method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    })
+    let msg: any
+    try { msg = await response.json() } catch { msg = { success: false, msg: i18n.global.t('relay.progressCancelFailed') } }
+    if (!response.ok || !msg.success) throw new Error(msg.msg || i18n.global.t('relay.progressCancelFailed'))
+    if (msg.obj?.canceled) {
+      cancelRequestedByUser.value = true
+      if (relayProgress.value) relayProgress.value.cancel_requested = true
+      push.success({ message: i18n.global.t('relay.progressCancelRequested') })
+      startProgressPolling()
+    } else {
+      await loadData(true)
+    }
+  } catch (error: any) {
+    push.error({ message: error?.message || i18n.global.t('relay.progressCancelFailed') })
+  } finally {
+    canceling.value = false
   }
 }
 

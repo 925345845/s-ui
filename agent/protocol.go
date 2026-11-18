@@ -44,6 +44,7 @@ const (
 	RPCMethodInboundQuickAdd  = "inbounds.quick_add"
 	RPCMethodRelayGet         = "relay.get"
 	RPCMethodRelayCreate      = "relay.create"
+	RPCMethodRelayCancel      = "relay.cancel"
 	RPCMethodRelayDelete      = "relay.delete"
 	RPCMethodRelayRotate      = "relay.rotate"
 	RPCMethodRelayRotationSet = "relay.rotation_set"

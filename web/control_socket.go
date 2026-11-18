@@ -104,6 +104,8 @@ func (s *Server) startControlSocket() error {
 			if callErr == nil {
 				result, callErr = local.CreateRemoteRelay(payload)
 			}
+		case agent.RPCMethodRelayCancel:
+			result = map[string]bool{"canceled": local.CancelRemoteRelay()}
 		case agent.RPCMethodRelayDelete:
 			var payload service.RemoteRelayDeleteRequest
 			callErr = decodeLocalRPCPayload(request.Payload, &payload)

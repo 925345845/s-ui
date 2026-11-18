@@ -255,6 +255,22 @@ func (a *ApiService) CreateAgentRelay(c *gin.Context) {
 	jsonObj(c, result, err)
 }
 
+func (a *ApiService) CancelAgentRelayCreate(c *gin.Context) {
+	id, err := parseAgentNodeID(c)
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	response, err := a.AgentService.DispatchRPC(id, agent.RPCMethodRelayCancel, map[string]interface{}{}, GetLoginUser(c))
+	if err != nil {
+		jsonObj(c, nil, err)
+		return
+	}
+	var result map[string]bool
+	err = json.Unmarshal(response.Payload, &result)
+	jsonObj(c, result, err)
+}
+
 func (a *ApiService) DeleteAgentRelay(c *gin.Context) {
 	id, err := parseAgentNodeID(c)
 	if err != nil {
@@ -1002,6 +1018,10 @@ func (a *ApiService) CreateRelay(c *gin.Context, loginUser string) {
 		return
 	}
 	jsonObj(c, pool, nil)
+}
+
+func (a *ApiService) CancelRelayCreate(c *gin.Context) {
+	jsonObj(c, map[string]bool{"canceled": a.ConfigService.CancelRelayCreate()}, nil)
 }
 
 func (a *ApiService) DeleteRelay(c *gin.Context, loginUser string) {

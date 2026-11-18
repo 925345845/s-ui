@@ -498,6 +498,7 @@ func validAgentRPCMethod(method string) bool {
 		agent.RPCMethodInboundQuickAdd,
 		agent.RPCMethodRelayGet,
 		agent.RPCMethodRelayCreate,
+		agent.RPCMethodRelayCancel,
 		agent.RPCMethodRelayDelete,
 		agent.RPCMethodRelayRotate,
 		agent.RPCMethodRelayRotationSet,

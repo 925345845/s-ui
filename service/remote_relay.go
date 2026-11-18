@@ -53,6 +53,10 @@ func (s *LocalControlService) CreateRemoteRelay(request RemoteRelayCreateRequest
 	return s.ConfigService.CreateRelay(request.Request, "agent:"+actor, publicHost)
 }
 
+func (s *LocalControlService) CancelRemoteRelay() bool {
+	return s.ConfigService.CancelRelayCreate()
+}
+
 func (s *LocalControlService) DeleteRemoteRelay(request RemoteRelayDeleteRequest) error {
 	if request.ID == 0 {
 		return common.NewError("invalid relay pool id")

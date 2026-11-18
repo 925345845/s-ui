@@ -246,7 +246,7 @@ func TestEnsureRelayIPv6CandidatesKeepsSuccessesAndReplacesFailures(t *testing.T
 	existing := make(map[string]bool)
 	added := make([]model.RelayItem, 0)
 
-	got, err := ensureRelayIPv6Candidates(items, true, existing, &added, operations)
+	got, err := ensureRelayIPv6Candidates(context.Background(), items, true, existing, &added, operations)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestEnsureRelayIPv6CandidatesTestsBatchConcurrently(t *testing.T) {
 	added := make([]model.RelayItem, 0)
 	done := make(chan error, 1)
 	go func() {
-		_, err := ensureRelayIPv6Candidates(items, true, existing, &added, operations)
+		_, err := ensureRelayIPv6Candidates(context.Background(), items, true, existing, &added, operations)
 		done <- err
 	}()
 	for range items {
@@ -331,6 +331,124 @@ func TestEnsureRelayIPv6CandidatesTestsBatchConcurrently(t *testing.T) {
 	}
 	if maximum.Load() != int32(relayIPv6ProbeWorkers) {
 		t.Fatalf("maximum concurrent probes = %d, want %d", maximum.Load(), relayIPv6ProbeWorkers)
+	}
+}
+
+func TestCancelRelayCreateProgressCancelsActiveContext(t *testing.T) {
+	ctx := beginRelayCreateProgress(relayModeIPv6, []model.RelayItem{{IPv6: "2001:db8::10", Prefix: 64}})
+	if !cancelRelayCreateProgress() {
+		t.Fatal("active relay creation was not canceled")
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("relay creation context was not canceled")
+	}
+	progress := relayCreateProgressSnapshot()
+	if progress == nil || !progress.Active || !progress.CancelRequested {
+		t.Fatalf("cancel request was not reported in progress: %#v", progress)
+	}
+	if cancelRelayCreateProgress() {
+		t.Fatal("duplicate cancel request must not report success")
+	}
+	finishRelayCreateProgress()
+}
+
+func TestEnsureRelayIPv6CandidatesCancelRemovesTemporaryAddress(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	removed := make(chan string, 1)
+	operations := relayIPv6CandidateOperations{
+		add:   func(_, _ string, _ int) error { return nil },
+		ready: func([]model.RelayItem) error { return nil },
+		remove: func(_, address string, _ int) error {
+			removed <- address
+			return nil
+		},
+		probe: func(ctx context.Context, _ netip.Addr) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		random: randomRelayIPv6,
+	}
+	items := []model.RelayItem{{IPv6: "2001:db8::10", Interface: "eth0", Prefix: 64}}
+	added := make([]model.RelayItem, 0)
+	done := make(chan error, 1)
+	go func() {
+		_, err := ensureRelayIPv6Candidates(ctx, items, true, map[string]bool{}, &added, operations)
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("candidate probe did not start")
+	}
+	cancel()
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("cancel error = %v", err)
+	}
+	select {
+	case address := <-removed:
+		if address != "2001:db8::10" {
+			t.Fatalf("removed address = %s", address)
+		}
+	default:
+		t.Fatal("temporary address was not removed after cancellation")
+	}
+	if len(added) != 0 {
+		t.Fatalf("canceled address was retained: %#v", added)
+	}
+}
+
+func TestEnsureRelayIPv6CandidatesCancelInterruptsAddressReadiness(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	removed := make(chan string, 1)
+	operations := relayIPv6CandidateOperations{
+		add: func(_, _ string, _ int) error { return nil },
+		ready: func([]model.RelayItem) error {
+			close(started)
+			<-release
+			return nil
+		},
+		remove: func(_, address string, _ int) error {
+			removed <- address
+			return nil
+		},
+		probe:  func(context.Context, netip.Addr) error { return nil },
+		random: randomRelayIPv6,
+	}
+	items := []model.RelayItem{{IPv6: "2001:db8::10", Interface: "eth0", Prefix: 64}}
+	added := make([]model.RelayItem, 0)
+	done := make(chan error, 1)
+	go func() {
+		_, err := ensureRelayIPv6Candidates(ctx, items, true, map[string]bool{}, &added, operations)
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("address readiness check did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "canceled") {
+			t.Fatalf("cancel error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancellation waited for the address readiness timeout")
+	}
+	close(release)
+	select {
+	case address := <-removed:
+		if address != "2001:db8::10" {
+			t.Fatalf("removed address = %s", address)
+		}
+	default:
+		t.Fatal("temporary address was not removed after readiness cancellation")
 	}
 }
 
@@ -375,7 +493,7 @@ func TestEnsureRelayIPv6CandidatesContinuesPastOldAttemptLimit(t *testing.T) {
 	existing := make(map[string]bool)
 	added := make([]model.RelayItem, 0)
 
-	got, err := ensureRelayIPv6Candidates(items, true, existing, &added, operations)
+	got, err := ensureRelayIPv6Candidates(context.Background(), items, true, existing, &added, operations)
 	if err != nil {
 		t.Fatal(err)
 	}
