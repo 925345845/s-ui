@@ -4,11 +4,11 @@ set -euo pipefail
 case "$(uname -m)" in
   x86_64|amd64)
     package_arch="amd64"
-    archive_sha256="8e035cafb947b108032d72b5a5a558edf95cecfdbcff411685c65d6f9d973690"
+    archive_sha256="50619b276109b06f7d4f2e69a9029c7f647aa82435eb7b657c3a28c5104ad3fb"
     ;;
   aarch64|arm64)
     package_arch="arm64"
-    archive_sha256="28f36c0190621d74583ce274d108d11400a17b6a4d99509c2436229adb4c78a1"
+    archive_sha256="bf4bcfe593817df5c7c6dd8963dbc5dcbcde75345f11b4818bfc541242c46090"
     ;;
   *)
     echo "不支持当前架构：$(uname -m)" >&2
