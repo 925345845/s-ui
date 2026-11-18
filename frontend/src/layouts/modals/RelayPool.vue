@@ -32,6 +32,9 @@
             <span>{{ $t('relay.progressTested') }}: {{ relayProgress.tested }}</span>
             <span>{{ $t('relay.progressBatch') }}: {{ relayProgress.testing_ip?.length ?? 0 }}</span>
           </div>
+          <div v-if="relayProgress.base_ipv6 && relayProgress.prefix" class="relay-progress-config mt-2" dir="ltr">
+            {{ $t('relay.progressUsingPrefix') }}: {{ relayProgress.base_ipv6 }}/{{ relayProgress.prefix }}
+          </div>
           <div v-if="relayProgress.testing_ip?.length" class="relay-progress-testing mt-2" dir="ltr">
             <span v-for="address in relayProgress.testing_ip" :key="address">{{ address }}</span>
           </div>
@@ -54,7 +57,7 @@
               </div>
               <v-row class="relay-quick-fields mt-2">
                 <v-col cols="12" sm="6" md="2">
-                  <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
+                  <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable :disabled="relayTaskActive" hide-details />
                 </v-col>
                 <v-col cols="6" sm="3" md="1">
                   <v-text-field v-model.number="form.count" type="number" min="1" max="500" :label="$t('relay.count')" :error-messages="relayCountValid ? [] : [$t('relay.countRange')]" hide-details="auto" />
@@ -69,7 +72,7 @@
                   <v-select v-model="form.domain_strategy" :items="domainStrategyItems" item-title="title" item-value="value" :label="$t('relay.addressMode')" hide-details />
                 </v-col>
                 <v-col cols="12" sm="6" md="2" class="relay-quick-button-col">
-                  <v-btn color="primary" block prepend-icon="mdi-access-point-plus" :loading="loading" :disabled="!canQuickCreateIPv6" @click="create('ipv6', true)">{{ $t('relay.autoAddCreate') }}</v-btn>
+                  <v-btn color="primary" block prepend-icon="mdi-access-point-plus" :loading="loading" :disabled="relayTaskActive || !canQuickCreateIPv6" @click="create('ipv6', true)">{{ $t('relay.autoAddCreate') }}</v-btn>
                 </v-col>
               </v-row>
               <v-alert v-if="capabilityMessage" type="warning" variant="tonal" density="compact" class="mt-3">
@@ -107,10 +110,10 @@
                 <v-text-field v-model.number="form.password_length" type="number" min="8" max="64" :label="$t('relay.passwordLength')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8::1/64" dir="ltr" hide-details />
+                  <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8::1/64" dir="ltr" :disabled="relayTaskActive" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" hide-details />
+                  <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" :disabled="relayTaskActive" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
                 <v-select v-model="form.domain_strategy" :items="domainStrategyItems" item-title="title" item-value="value" :label="$t('relay.addressMode')" hide-details />
@@ -142,7 +145,7 @@
               </v-list-item>
             </v-list>
             <div class="relay-actions">
-              <v-btn color="primary" prepend-icon="mdi-playlist-plus" :loading="loading" :disabled="!canCreateIPv6" @click="create('ipv6')">{{ $t('relay.createAdvanced') }}</v-btn>
+              <v-btn color="primary" prepend-icon="mdi-playlist-plus" :loading="loading" :disabled="relayTaskActive || !canCreateIPv6" @click="create('ipv6')">{{ $t('relay.createAdvanced') }}</v-btn>
               <v-btn variant="text" prepend-icon="mdi-refresh" :loading="refreshing" @click="loadData">{{ $t('actions.update') }}</v-btn>
             </div>
           </v-window-item>
@@ -203,13 +206,13 @@
                 <v-text-field v-model.number="form.port_start" type="number" min="1" max="65535" :label="$t('relay.portStart')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
+                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable :disabled="relayTaskActive" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" hide-details />
+                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" :disabled="relayTaskActive" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" hide-details />
+                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" :disabled="relayTaskActive" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
                 <v-text-field v-model="form.username_prefix" :label="$t('relay.usernamePrefix')" dir="ltr" hide-details />
@@ -231,7 +234,7 @@
               </v-col>
             </v-row>
             <div class="relay-actions">
-              <v-btn color="primary" prepend-icon="mdi-link-variant-plus" :loading="loading" :disabled="!canCreatePaired" @click="create('paired')">{{ $t('relay.createPaired') }}</v-btn>
+              <v-btn color="primary" prepend-icon="mdi-link-variant-plus" :loading="loading" :disabled="relayTaskActive || !canCreatePaired" @click="create('paired')">{{ $t('relay.createPaired') }}</v-btn>
             </div>
           </v-window-item>
 
@@ -250,13 +253,13 @@
                 <v-text-field v-model.number="form.port_start" type="number" min="1" max="65535" :label="$t('relay.portStart')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
+                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable :disabled="relayTaskActive" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" hide-details />
+                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" :disabled="relayTaskActive" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" hide-details />
+                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" :disabled="relayTaskActive" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
                 <v-text-field v-model="form.username_prefix" :label="$t('relay.usernamePrefix')" dir="ltr" hide-details />
@@ -278,7 +281,7 @@
               </v-col>
             </v-row>
             <div class="relay-actions">
-              <v-btn color="primary" prepend-icon="mdi-swap-horizontal-bold" :loading="loading" :disabled="!canCreatePaired" @click="create('dualstack')">{{ $t('relay.createDualStack') }}</v-btn>
+              <v-btn color="primary" prepend-icon="mdi-swap-horizontal-bold" :loading="loading" :disabled="relayTaskActive || !canCreatePaired" @click="create('dualstack')">{{ $t('relay.createDualStack') }}</v-btn>
             </div>
           </v-window-item>
 
@@ -297,13 +300,13 @@
                 <v-text-field v-model.number="form.port_start" type="number" min="1" max="65535" :label="$t('relay.portStart')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
+                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable :disabled="relayTaskActive" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" hide-details />
+                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" :disabled="relayTaskActive" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" hide-details />
+                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" :disabled="relayTaskActive" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
                 <v-text-field v-model="form.username_prefix" :label="$t('relay.usernamePrefix')" dir="ltr" hide-details />
@@ -322,7 +325,7 @@
               </v-col>
             </v-row>
             <div class="relay-actions">
-              <v-btn color="primary" prepend-icon="mdi-store-cog" :loading="loading" :disabled="!canCreatePaired" @click="create('vinted')">{{ $t('relay.createVinted') }}</v-btn>
+              <v-btn color="primary" prepend-icon="mdi-store-cog" :loading="loading" :disabled="relayTaskActive || !canCreatePaired" @click="create('vinted')">{{ $t('relay.createVinted') }}</v-btn>
             </div>
           </v-window-item>
 
@@ -341,13 +344,13 @@
                 <v-text-field v-model.number="form.port_start" type="number" min="1" max="65535" :label="$t('relay.portStart')" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable hide-details />
+                <v-select v-model="form.interface" :items="interfaceItems" item-title="title" item-value="value" :label="$t('relay.interface')" clearable :disabled="relayTaskActive" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" hide-details />
+                <v-text-field v-model="form.base_ipv6" :label="$t('relay.baseIPv6')" placeholder="2001:db8:1234::1/64" dir="ltr" :disabled="relayTaskActive" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
-                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" hide-details />
+                <v-text-field v-model.number="form.prefix" type="number" min="1" max="128" :label="$t('relay.prefix')" :disabled="relayTaskActive" hide-details />
               </v-col>
               <v-col cols="12" sm="6" md="4">
                 <v-text-field v-model="form.username_prefix" :label="$t('relay.usernamePrefix')" dir="ltr" hide-details />
@@ -366,7 +369,7 @@
               </v-col>
             </v-row>
             <div class="relay-actions">
-              <v-btn color="warning" prepend-icon="mdi-shield-lock" :loading="loading" :disabled="!canCreatePaired" @click="create('vinted_strict')">{{ $t('relay.createVintedStrict') }}</v-btn>
+              <v-btn color="warning" prepend-icon="mdi-shield-lock" :loading="loading" :disabled="relayTaskActive || !canCreatePaired" @click="create('vinted_strict')">{{ $t('relay.createVintedStrict') }}</v-btn>
             </div>
           </v-window-item>
 
@@ -473,7 +476,7 @@ interface RelayPool {
 interface RelayCapabilities { os: string; can_add_system_ipv6: boolean; unavailable_reason?: string }
 interface RelayCreateProgress {
   active: boolean; mode: string; target: number; tested: number; failed: number; succeeded: number
-  current?: string; testing_ip: string[]; successful_ip: string[]; started_at: number; updated_at: number
+  base_ipv6?: string; prefix?: number; current?: string; testing_ip: string[]; successful_ip: string[]; started_at: number; updated_at: number
 }
 
 const props = defineProps<{
@@ -500,6 +503,7 @@ const rotationSupported = ref(false)
 const poolPage = ref(1)
 const capabilities = ref<RelayCapabilities | null>(null)
 const relayProgress = ref<RelayCreateProgress | null>(null)
+const relayTaskActive = computed(() => relayProgress.value?.active === true)
 const poolPageSize = 8
 const exportPreviewLimit = 8
 const isRemote = computed(() => Number.isInteger(props.agentId) && Number(props.agentId) > 0)
@@ -842,6 +846,7 @@ watch(() => props.connectionHost, (host) => {
 .relay-quick-section { padding: 14px; border: 1px solid rgba(var(--v-theme-primary), 0.2); border-radius: 8px; background: rgba(var(--v-theme-primary), 0.045); }
 .relay-create-progress { padding: 14px; border: 1px solid rgba(var(--v-theme-primary), 0.24); border-radius: 8px; background: rgba(var(--v-theme-primary), 0.055); }
 .relay-progress-stats { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; }
+.relay-progress-config { font-family: monospace; font-size: 12px; overflow-wrap: anywhere; }
 .relay-progress-testing { display: flex; flex-wrap: wrap; gap: 4px 10px; max-height: 76px; overflow-y: auto; font-family: monospace; font-size: 12px; }
 .relay-progress-addresses { max-height: 160px; overflow-y: auto; padding: 8px 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.1); border-radius: 6px; font-family: monospace; font-size: 12px; line-height: 1.65; background: rgba(var(--v-theme-surface), 0.55); }
 .relay-pool-actions { display: flex !important; flex-wrap: wrap; gap: 8px; }

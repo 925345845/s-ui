@@ -126,6 +126,40 @@ func TestRandomRelayIPv6KeepsPrefix(t *testing.T) {
 	}
 }
 
+func TestPrepareRelayItemsUsesExplicitBaseIPv6AndSelectedPrefix(t *testing.T) {
+	req := RelayCreateRequest{
+		Mode: relayModeIPv6, Count: 32, PortStart: 30000, Prefix: 64,
+		Interface: "eth0", BaseIPv6: "2602:f92a:100:ba00::a",
+		UsernamePrefix: "relay", PasswordLength: 12,
+	}
+	items, err := (&ConfigService{}).prepareRelayItems(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := netip.MustParsePrefix("2602:f92a:100:ba00::/64")
+	for index, item := range items {
+		address, parseErr := netip.ParseAddr(item.IPv6)
+		if parseErr != nil {
+			t.Fatalf("item %d IPv6 %q: %v", index+1, item.IPv6, parseErr)
+		}
+		if item.Prefix != 64 || !want.Contains(address) {
+			t.Fatalf("item %d IPv6 = %s/%d, want address in %s", index+1, address, item.Prefix, want)
+		}
+	}
+}
+
+func TestRelayCreateProgressReportsEffectiveBasePrefix(t *testing.T) {
+	items := []model.RelayItem{
+		{IPv6: "2602:f92a:100:ba35:21:7d:5c05:9efd", Prefix: 56},
+	}
+	beginRelayCreateProgress(relayModeVinted, items)
+	defer finishRelayCreateProgress()
+	progress := relayCreateProgressSnapshot()
+	if progress.BaseIPv6 != "2602:f92a:100:ba00::" || progress.Prefix != 56 {
+		t.Fatalf("effective task prefix = %s/%d, want 2602:f92a:100:ba00::/56", progress.BaseIPv6, progress.Prefix)
+	}
+}
+
 func TestResolveRelayDetectedBaseHonorsNarrowerRequestedPrefix(t *testing.T) {
 	req := RelayCreateRequest{Interface: "eth0", Prefix: 64, Count: 32}
 	detected := []RelayIPv6{{
@@ -162,7 +196,7 @@ func TestResolveRelayDetectedBaseRejectsBroaderRequestedPrefix(t *testing.T) {
 }
 
 func TestEnsureRelayIPv6CandidatesKeepsSuccessesAndReplacesFailures(t *testing.T) {
-	beginRelayCreateProgress(relayModeIPv6, 3)
+	beginRelayCreateProgress(relayModeIPv6, []model.RelayItem{{IPv6: "2001:db8::10", Prefix: 64}, {IPv6: "2001:db8::20", Prefix: 64}, {IPv6: "2001:db8::30", Prefix: 64}})
 	defer finishRelayCreateProgress()
 	items := []model.RelayItem{
 		{IPv6: "2001:db8::10", Interface: "eth0", Prefix: 64},
@@ -301,7 +335,7 @@ func TestEnsureRelayIPv6CandidatesTestsBatchConcurrently(t *testing.T) {
 }
 
 func TestRelayCreateProgressSerializesEmptySuccessListAsArray(t *testing.T) {
-	beginRelayCreateProgress(relayModeIPv6, 10)
+	beginRelayCreateProgress(relayModeIPv6, make([]model.RelayItem, 10))
 	defer finishRelayCreateProgress()
 	encoded, err := json.Marshal(relayCreateProgressSnapshot())
 	if err != nil {

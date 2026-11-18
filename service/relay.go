@@ -188,6 +188,8 @@ type RelayCreateProgress struct {
 	Active       bool     `json:"active"`
 	Mode         string   `json:"mode"`
 	Target       int      `json:"target"`
+	BaseIPv6     string   `json:"base_ipv6,omitempty"`
+	Prefix       int      `json:"prefix,omitempty"`
 	Tested       int      `json:"tested"`
 	Failed       int      `json:"failed"`
 	Succeeded    int      `json:"succeeded"`
@@ -198,12 +200,20 @@ type RelayCreateProgress struct {
 	UpdatedAt    int64    `json:"updated_at"`
 }
 
-func beginRelayCreateProgress(mode string, target int) {
+func beginRelayCreateProgress(mode string, items []model.RelayItem) {
 	now := time.Now().UnixMilli()
-	relayProgressMu.Lock()
-	relayProgress = &RelayCreateProgress{
-		Active: true, Mode: mode, Target: target, TestingIP: make([]string, 0, relayIPv6ProbeWorkers), SuccessfulIP: make([]string, 0, target), StartedAt: now, UpdatedAt: now,
+	progress := &RelayCreateProgress{
+		Active: true, Mode: mode, Target: len(items), TestingIP: make([]string, 0, relayIPv6ProbeWorkers),
+		SuccessfulIP: make([]string, 0, len(items)), StartedAt: now, UpdatedAt: now,
 	}
+	if len(items) > 0 && items[0].IPv6 != "" && items[0].Prefix > 0 {
+		if address, err := netip.ParseAddr(items[0].IPv6); err == nil && address.Is6() {
+			progress.BaseIPv6 = netip.PrefixFrom(address, items[0].Prefix).Masked().Addr().String()
+			progress.Prefix = items[0].Prefix
+		}
+	}
+	relayProgressMu.Lock()
+	relayProgress = progress
 	relayProgressMu.Unlock()
 }
 
@@ -1013,7 +1023,7 @@ func (s *ConfigService) CreateRelay(req RelayCreateRequest, actor, publicHost st
 		return nil, err
 	}
 	if relayModeUsesIPv6(req.Mode) {
-		beginRelayCreateProgress(req.Mode, len(items))
+		beginRelayCreateProgress(req.Mode, items)
 		defer finishRelayCreateProgress()
 	}
 	added := make([]model.RelayItem, 0)

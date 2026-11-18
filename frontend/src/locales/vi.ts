@@ -630,6 +630,7 @@
     progressFailed: "Thất bại và đã thay thế",
     progressTested: "Đã kiểm tra",
     progressBatch: "Đang kiểm tra trong lô",
+    progressUsingPrefix: "Tiền tố đang dùng cho tác vụ này",
     progressCurrent: "Đang kiểm tra",
     progressKept: "IP thành công đã được giữ lại",
     pools: "Nhóm chuyển tiếp",

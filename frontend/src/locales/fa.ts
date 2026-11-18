@@ -630,6 +630,7 @@
     progressFailed: "ناموفق و جایگزین‌شده",
     progressTested: "آزمایش‌شده",
     progressBatch: "در حال آزمایش در این دسته",
+    progressUsingPrefix: "پیشوند استفاده‌شده در این کار",
     progressCurrent: "در حال آزمایش",
     progressKept: "IPهای موفق حفظ‌شده",
     pools: "استخرهای رله",

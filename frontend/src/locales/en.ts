@@ -677,6 +677,7 @@
     progressFailed: "Failed and replaced",
     progressTested: "Tested",
     progressBatch: "Testing in this batch",
+    progressUsingPrefix: "Prefix used by this task",
     progressCurrent: "Testing now",
     progressKept: "Successful IPs retained",
     pools: "Relay pools",
