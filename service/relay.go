@@ -2249,10 +2249,31 @@ func resolveRelayBase(req RelayCreateRequest) (netip.Addr, int, string, error) {
 	if err != nil {
 		return netip.Addr{}, 0, "", err
 	}
+	return resolveRelayDetectedBase(req, detected)
+}
+
+func resolveRelayDetectedBase(req RelayCreateRequest, detected []RelayIPv6) (netip.Addr, int, string, error) {
 	for _, candidate := range detected {
 		if req.Interface == "" || req.Interface == candidate.Interface {
-			ip, _ := netip.ParseAddr(candidate.Address)
-			return ip, candidate.Prefix, candidate.Interface, nil
+			ip, err := netip.ParseAddr(candidate.Address)
+			if err != nil {
+				continue
+			}
+			prefix := candidate.Prefix
+			if req.Prefix > 0 {
+				if req.Prefix < candidate.Prefix {
+					return netip.Addr{}, 0, "", common.NewErrorf(
+						"selected IPv6 prefix /%d is broader than detected interface prefix /%d; enter an explicit base IPv6 if the larger routed prefix is intentional",
+						req.Prefix, candidate.Prefix,
+					)
+				}
+				prefix = req.Prefix
+			}
+			hostBits := 128 - prefix
+			if prefix < 1 || prefix > 128 || hostBits == 0 || (hostBits < 63 && req.Count > (1<<hostBits)-1) {
+				return netip.Addr{}, 0, "", common.NewError("IPv6 prefix does not contain enough addresses for this pool")
+			}
+			return ip, prefix, candidate.Interface, nil
 		}
 	}
 	return netip.Addr{}, 0, "", common.NewError("no public IPv6 address was detected")

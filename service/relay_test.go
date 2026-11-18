@@ -126,6 +126,41 @@ func TestRandomRelayIPv6KeepsPrefix(t *testing.T) {
 	}
 }
 
+func TestResolveRelayDetectedBaseHonorsNarrowerRequestedPrefix(t *testing.T) {
+	req := RelayCreateRequest{Interface: "eth0", Prefix: 64, Count: 32}
+	detected := []RelayIPv6{{
+		Interface: "eth0", Address: "2602:f96c:d9:3441::1", Prefix: 48,
+	}}
+	base, prefix, iface, err := resolveRelayDetectedBase(req, detected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prefix != 64 || iface != "eth0" || base.String() != "2602:f96c:d9:3441::1" {
+		t.Fatalf("resolved base = %s/%d on %s", base, prefix, iface)
+	}
+	want := netip.MustParsePrefix("2602:f96c:d9:3441::/64")
+	for index := 0; index < 32; index++ {
+		candidate, randomErr := randomRelayIPv6(base, prefix)
+		if randomErr != nil {
+			t.Fatal(randomErr)
+		}
+		if !want.Contains(candidate) {
+			t.Fatalf("generated IPv6 %s escaped selected /64", candidate)
+		}
+	}
+}
+
+func TestResolveRelayDetectedBaseRejectsBroaderRequestedPrefix(t *testing.T) {
+	req := RelayCreateRequest{Interface: "eth0", Prefix: 48, Count: 1}
+	detected := []RelayIPv6{{
+		Interface: "eth0", Address: "2602:f96c:d9:3441::1", Prefix: 64,
+	}}
+	_, _, _, err := resolveRelayDetectedBase(req, detected)
+	if err == nil || !strings.Contains(err.Error(), "broader than detected") {
+		t.Fatalf("broader prefix error = %v", err)
+	}
+}
+
 func TestEnsureRelayIPv6CandidatesKeepsSuccessesAndReplacesFailures(t *testing.T) {
 	beginRelayCreateProgress(relayModeIPv6, 3)
 	defer finishRelayCreateProgress()
